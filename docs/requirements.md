@@ -75,7 +75,7 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 - **FR-R4** Failover to the next candidate happens only when the previous provider **definitely did not process** the request (connection refused, circuit open). Unknown outcomes are never failed over.
 
 ### 4.5 Inbound PSP webhooks and status resolution
-- **FR-W1** Accept PSP webhooks at `/v1/webhooks/providers/{provider}`. Verify the signature, reject invalid requests, store the raw event, deduplicate on the provider event id, acknowledge fast, and process with retries (inbox pattern).
+- **FR-W1** Accept PSP webhooks at `/v1/webhooks/providers/{provider}/{account_id}` (merchant-owned PSP accounts; events are limited to that merchant) or `/v1/webhooks/providers/{provider}` (platform-level secrets). Verify the signature, reject invalid requests, store the raw event, deduplicate on the provider event id per account, acknowledge fast, and process with retries (inbox pattern).
 - **FR-W2** Verify amount and currency of a PSP-reported success against the attempt. Mismatches are not applied; they are flagged for reconciliation.
 - **FR-W3** Poll PSP status, with backoff, for attempts and refunds that are `UNKNOWN`, `PENDING`, or waiting on the customer. Respect PSP/NPCI status-check rate limits. Escalate anything unresolved after 72 h.
 - **FR-W4** Duplicate or out-of-order events must never move state backwards (transitions are monotonic).

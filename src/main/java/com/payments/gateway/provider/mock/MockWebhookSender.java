@@ -24,12 +24,14 @@ public class MockWebhookSender {
         this.clock = clock;
     }
 
-    public int send(String gatewayBaseUrl, MockPaymentProvider provider, MockWebhookPayload payload) {
+    /** Posts to the transaction's merchant account endpoint, as a PSP configured per merchant account would. */
+    public int send(String gatewayBaseUrl, MockPaymentProvider provider, MockPsp.Txn txn, MockWebhookPayload payload) {
         String body = json.write(payload);
-        HttpRequest request = HttpRequest.newBuilder(URI.create(gatewayBaseUrl + "/v1/webhooks/providers/" + provider.code()))
+        String path = "/v1/webhooks/providers/" + provider.code() + (txn.accountId() == null ? "" : "/" + txn.accountId());
+        HttpRequest request = HttpRequest.newBuilder(URI.create(gatewayBaseUrl + path))
                 .timeout(Duration.ofSeconds(5))
                 .header("Content-Type", "application/json")
-                .header(MockPaymentProvider.SIGNATURE_HEADER, provider.sign(clock.instant().getEpochSecond(), body))
+                .header(MockPaymentProvider.SIGNATURE_HEADER, provider.sign(txn, clock.instant().getEpochSecond(), body))
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
         try {

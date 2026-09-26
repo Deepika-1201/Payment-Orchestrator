@@ -90,7 +90,11 @@ public class PaymentOutcomeService {
         return runFollowUps(applied);
     }
 
-    public boolean applyProviderEvent(String providerCode, ProviderEvent event) {
+    /**
+     * {@code merchantScope} is set for webhooks received on a merchant's own PSP account endpoint: that merchant holds
+     * the signing secret, so its events may only touch its own attempts.
+     */
+    public boolean applyProviderEvent(String providerCode, String merchantScope, ProviderEvent event) {
         if (event.payment().outcome() == ProviderPaymentResult.Outcome.NOT_FOUND) {
             return false;
         }
@@ -104,15 +108,20 @@ public class PaymentOutcomeService {
         if (locator.isEmpty()) {
             return false;
         }
+        if (merchantScope != null && !merchantScope.equals(locator.get().merchantId())) {
+            log.warn("Ignored {} event {} from merchant {}'s account: attempt {} belongs to another merchant",
+                    providerCode, event.eventId(), merchantScope, locator.get().attemptId());
+            meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", "foreign_resource").increment();
+            return false;
+        }
         apply(locator.get().paymentId(), locator.get().attemptId(), ProviderResults.toUpdate(event.payment()),
                 TransitionSource.PROVIDER_WEBHOOK);
         return true;
     }
 
     /** The PSP definitely did not process the attempt: fail it and move to the next candidate, if any. */
-    public FailoverResult failover(String paymentId, String attemptId, String nextProvider, String reason) {
+    public FailoverResult failover(String paymentId, String attemptId, String nextProvider, Failure failure) {
         Instant now = clock.instant();
-        Failure failure = new Failure("provider_unavailable", FailureCategory.PROVIDER_UNAVAILABLE, reason);
         return tx.execute(status -> {
             Payment payment = payments.lockById(paymentId).orElseThrow();
             PaymentAttempt attempt = payment.attempt(attemptId).orElseThrow();
@@ -138,7 +147,7 @@ public class PaymentOutcomeService {
             return payment;
         }
         try {
-            ProviderPaymentResult result = providerClient.capture(attempt.providerCode(),
+            ProviderPaymentResult result = providerClient.capture(payment.merchantId(), attempt.providerCode(),
                     new CaptureRequest(attempt.id(), attempt.providerReference(), attempt.amount()));
             return switch (result.outcome()) {
                 case SUCCEEDED -> apply(paymentId, attemptId, ProviderResults.toUpdate(result), TransitionSource.PROVIDER_RESPONSE);
@@ -163,7 +172,7 @@ public class PaymentOutcomeService {
             return;
         }
         try {
-            ProviderPaymentResult result = providerClient.voidAuthorization(attempt.providerCode(),
+            ProviderPaymentResult result = providerClient.voidAuthorization(payment.merchantId(), attempt.providerCode(),
                     new VoidRequest(attempt.id(), attempt.providerReference()));
             if (result.outcome() == ProviderPaymentResult.Outcome.VOIDED) {
                 apply(paymentId, attemptId, ProviderResults.toUpdate(result), TransitionSource.PROVIDER_RESPONSE);

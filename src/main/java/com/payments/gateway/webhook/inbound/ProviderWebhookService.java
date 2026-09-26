@@ -2,8 +2,10 @@ package com.payments.gateway.webhook.inbound;
 
 import com.payments.gateway.payment.application.PaymentOutcomeService;
 import com.payments.gateway.payment.application.RefundService;
+import com.payments.gateway.provider.MerchantAccountResolver;
 import com.payments.gateway.provider.ProviderRegistry;
 import com.payments.gateway.provider.spi.InboundWebhook;
+import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
@@ -37,6 +39,7 @@ public class ProviderWebhookService {
     }
 
     private final ProviderRegistry providers;
+    private final MerchantAccountResolver accounts;
     private final ProviderWebhookRepository inbox;
     private final PaymentOutcomeService payments;
     private final RefundService refunds;
@@ -46,11 +49,13 @@ public class ProviderWebhookService {
     private final MeterRegistry meters;
     private final int maxAttempts;
 
-    public ProviderWebhookService(ProviderRegistry providers, ProviderWebhookRepository inbox,
+    public ProviderWebhookService(ProviderRegistry providers, MerchantAccountResolver accounts,
+                                  ProviderWebhookRepository inbox,
                                   PaymentOutcomeService payments, RefundService refunds, JsonCodec json,
                                   WorkerProperties workers, Clock clock, MeterRegistry meters,
                                   @Value("${pg.webhooks.inbound.max-attempts:10}") int maxAttempts) {
         this.providers = providers;
+        this.accounts = accounts;
         this.inbox = inbox;
         this.payments = payments;
         this.refunds = refunds;
@@ -61,29 +66,40 @@ public class ProviderWebhookService {
         this.maxAttempts = maxAttempts;
     }
 
-    public ReceiveResult receive(String providerCode, Map<String, String> headers, String body) {
+    /**
+     * {@code accountId} is set for the merchant account endpoint: the adapter verifies with that account's secret
+     * and the events may only affect that merchant. Null is the provider-wide endpoint (platform-level secrets).
+     */
+    public ReceiveResult receive(String providerCode, String accountId, Map<String, String> headers, String body) {
         PaymentProvider provider = providers.find(providerCode)
                 .orElseThrow(() -> GatewayException.notFound("Provider", providerCode));
+        MerchantAccount account = null;
+        if (accountId != null) {
+            account = accounts.findById(accountId).filter(found -> found.providerCode().equals(providerCode))
+                    .orElseThrow(() -> GatewayException.notFound("Webhook endpoint", providerCode + "/" + accountId));
+        }
         Instant now = clock.instant();
         List<ProviderEvent> events;
         try {
-            events = provider.parseWebhook(new InboundWebhook(headers, body, now));
+            events = provider.parseWebhook(account, new InboundWebhook(headers, body, now));
         } catch (WebhookVerificationException e) {
             meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", "invalid").increment();
-            log.warn("Rejected webhook from {}: {}", providerCode, e.getMessage());
+            log.warn("Rejected webhook from {}{}: {}", providerCode, accountId == null ? "" : "/" + accountId, e.getMessage());
             throw new GatewayException(ErrorCode.INVALID_SIGNATURE, "Webhook verification failed");
         }
+        String merchantScope = account == null ? null : account.merchantId();
         int received = 0;
         int duplicates = 0;
         for (ProviderEvent event : events) {
             String inboxId = Ids.newId("pwe");
-            if (!inbox.insertIfAbsent(inboxId, providerCode, event.eventId(), event.eventType(), body, json.write(event), now)) {
+            if (!inbox.insertIfAbsent(inboxId, providerCode, accountId, merchantScope, event.eventId(), event.eventType(),
+                    body, json.write(event), now)) {
                 duplicates++;
                 meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", "duplicate").increment();
                 continue;
             }
             received++;
-            process(inboxId, providerCode, event, 0);
+            process(inboxId, providerCode, merchantScope, event, 0);
         }
         return new ReceiveResult(received, duplicates);
     }
@@ -93,16 +109,17 @@ public class ProviderWebhookService {
         List<ProviderWebhookRepository.PendingEvent> due = inbox.claimDue(now, now.plus(LEASE), workers.batchSize());
         for (ProviderWebhookRepository.PendingEvent pending : due) {
             ProviderEvent event = json.read(pending.normalizedEvent(), ProviderEvent.class);
-            process(pending.id(), pending.providerCode(), event, pending.attempts());
+            process(pending.id(), pending.providerCode(), pending.merchantId(), event, pending.attempts());
         }
         return due.size();
     }
 
-    private void process(String inboxId, String providerCode, ProviderEvent event, int previousAttempts) {
+    private void process(String inboxId, String providerCode, String merchantScope, ProviderEvent event,
+                         int previousAttempts) {
         try {
             boolean applied = switch (event.kind()) {
-                case PAYMENT -> payments.applyProviderEvent(providerCode, event);
-                case REFUND -> refunds.applyProviderEvent(providerCode, event);
+                case PAYMENT -> payments.applyProviderEvent(providerCode, merchantScope, event);
+                case REFUND -> refunds.applyProviderEvent(providerCode, merchantScope, event);
             };
             inbox.markDone(inboxId, applied ? "PROCESSED" : "IGNORED", clock.instant());
             meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", applied ? "processed" : "ignored").increment();

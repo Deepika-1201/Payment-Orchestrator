@@ -310,15 +310,23 @@ tx2: lock p; refund.transition(result); if SUCCEEDED: p.recordRefundSucceeded();
 public interface PaymentProvider {
     String code();
     ProviderCapabilities capabilities();
-    ProviderPaymentResult initiatePayment(InitiatePaymentRequest request);   // may throw ProviderUnavailableException / ProviderTimeoutException
-    ProviderPaymentResult fetchPaymentStatus(PaymentStatusQuery query);      // NOT_FOUND if the PSP never saw the reference
-    ProviderPaymentResult capture(CaptureRequest request);
-    ProviderPaymentResult voidAuthorization(VoidRequest request);
-    ProviderRefundResult refund(RefundRequest request);
-    ProviderRefundResult fetchRefundStatus(RefundStatusQuery query);
-    List<ProviderEvent> parseWebhook(InboundWebhook webhook);                // verifies signature; throws WebhookVerificationException
+    List<CredentialField> credentialFields();                              // what the admin API accepts per merchant account
+    ProviderPaymentResult initiatePayment(MerchantAccount a, InitiatePaymentRequest r); // may throw ProviderUnavailableException / ProviderTimeoutException
+    ProviderPaymentResult fetchPaymentStatus(MerchantAccount a, PaymentStatusQuery q);  // NOT_FOUND if the PSP never saw the reference
+    ProviderPaymentResult capture(MerchantAccount a, CaptureRequest r);
+    ProviderPaymentResult voidAuthorization(MerchantAccount a, VoidRequest r);
+    ProviderRefundResult refund(MerchantAccount a, RefundRequest r);
+    ProviderRefundResult fetchRefundStatus(MerchantAccount a, RefundStatusQuery q);
+    List<ProviderEvent> parseWebhook(MerchantAccount a, InboundWebhook w); // a == null on the provider-wide endpoint; throws WebhookVerificationException
+    SettlementReport fetchSettlementReport(MerchantAccount a, SettlementReportQuery q);
 }
 ```
+
+**Merchant accounts** (ADR-014) work as follows:
+- **What a call carries:** every call is made for one merchant's own account at the PSP, as `MerchantAccount(id, merchantId, providerCode, credentials)`.
+- **Resolution:** `ProviderClient` resolves the account through the `MerchantAccountResolver` port, which the merchant module implements. This happens before the circuit breaker, so a lookup problem is never charged to the PSP.
+- **Status:** accounts resolve whatever their status, because work already in flight on a disabled account must finish.
+- **Logging:** `MerchantAccount.toString()` omits credential values.
 
 **Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture`, `voidSupported`, `partialRefunds`, `statusQuery`. The orchestrator checks a capability before invoking an optional operation.
 
@@ -329,6 +337,7 @@ public interface PaymentProvider {
 | Signal | Adapter maps to | Orchestrator action |
 |---|---|---|
 | Connect refused, DNS failure, circuit open | `ProviderUnavailableException` | Fail over to next candidate |
+| PSP rejects the merchant account's credentials (401) | `ProviderCredentialsException` (a `ProviderUnavailableException`) | Fail over; attempt `FAILED (provider_credentials_rejected, VALIDATION)`. It does not count against the PSP's circuit or score. Metric `result=credentials_rejected`, WARN log with the account id |
 | Read timeout, connection reset after send, ambiguous 5xx | `ProviderTimeoutException` | Attempt `UNKNOWN`; resolver |
 | Business decline | `FAILED` result, category `ISSUER` / `CUSTOMER` | Payment back to `REQUIRES_PAYMENT_METHOD` |
 | Invalid request / auth error at PSP | `FAILED` result, category `VALIDATION` / `PROVIDER` | Same, plus alert |
@@ -352,6 +361,11 @@ Deterministic scenarios by **amount paise suffix** (like PSP test cards):
 | other | Card, netbanking, UPI intent/QR → `REQUIRES_ACTION` (redirect / intent URI / QR); UPI collect → `PENDING`. Completed through the simulator, which sends a signed webhook |
 
 Refund amount suffix: `…07` pending (resolved by status check), `…08` timeout but processed, `…09` failed, otherwise immediate success.
+
+Mock credentials are optional:
+- An `api_key` starting with `bad_` is rejected with `ProviderCredentialsException`.
+- A `webhook_secret` becomes that account's signing secret. Without one, the platform secret `pg.providers.mock.webhook-secret` is used.
+- The simulator delivers each transaction's webhooks to its merchant account endpoint.
 
 Simulator endpoints (only when `pg.providers.mock.enabled=true`):
 - `GET /simulator/{provider}/checkout/{providerReference}` — HTML "PSP hosted page" with Pay / Fail buttons.
@@ -438,18 +452,23 @@ run(merchant, key, fingerprint, action):
 ## 9. Webhooks
 
 ### 9.1 Inbound (PSP → gateway)
-`POST /v1/webhooks/providers/{code}` works as follows:
-1. The adapter's `parseWebhook` verifies the signature (the mock uses `X-Mock-Signature: t=…,v1=HMAC-SHA256(secret, t + "." + body)` with a 5 min tolerance).
-2. Insert into `provider_webhook_events` (`ON CONFLICT DO NOTHING`).
-3. Process inline.
-4. Respond `200`, or `401` if the signature is invalid.
+There are two endpoints:
+- **Merchant account endpoint:** `POST /v1/webhooks/providers/{code}/{account_id}`. Use it for PSPs where each merchant owns the account, which is the orchestrator default. The admin API returns its path as `webhook_path`, to configure at the PSP.
+- **Provider-wide endpoint:** `POST /v1/webhooks/providers/{code}`, for platform-level secrets only (for example, the mocks' shared secret).
 
-Failed processing stays `RECEIVED` with `next_attempt_at`, and `InboxRetryJob` retries it with backoff (max 10). The request body is capped at 256 KB.
+Processing:
+1. Resolve the account; it must exist and belong to `{code}`, otherwise `404`.
+2. The adapter's `parseWebhook(account, …)` verifies the signature with that account's secret (the mock uses `X-Mock-Signature: t=…,v1=HMAC-SHA256(secret, t + "." + body)`, 5 min tolerance).
+3. Insert into `provider_webhook_events` with `merchant_account_id` and `merchant_id`. Deduplication is `UNIQUE NULLS NOT DISTINCT (provider_code, merchant_account_id, provider_event_id)`, so one account cannot claim another's event ids.
+4. Process inline. **Tenant scope:** because the merchant holds its account's signing secret, events from an account endpoint may only change that merchant's attempts and refunds. Anything else is stored `IGNORED`, logged at WARN and counted as `pg.webhooks.inbound{result=foreign_resource}`.
+5. Respond `200`, or `401` if the signature is invalid.
+
+Failed processing stays `RECEIVED` with `next_attempt_at`, and `InboxRetryJob` retries it with backoff (max 10). Retries keep the merchant scope. The request body is capped at 256 KB.
 
 ### 9.2 Outbound (gateway → merchant)
 - `MerchantEventRecorder` listens to `MerchantEventRequested` **inside** the state-change transaction and inserts `merchant_events` + `webhook_deliveries`. This is the transactional outbox.
 - `WebhookDeliveryWorker` claims due deliveries (`FOR UPDATE SKIP LOCKED`, lease 60 s), validates the URL (SSRF), POSTs with a 2 s connect / 5 s read timeout, and records the result.
-- Headers: `PG-Event-Id`, `PG-Event-Type`, `PG-Signature: t=<unix>,v1=<hex>`.
+- Headers: `PG-Event-Id`, `PG-Event-Type`, `PG-Signature: t=<unix>,v1=<hex>`. After `POST /admin/v1/merchants/{id}/webhook-secret`, the previous secret stays valid for `previous_valid_for_seconds` (default 24 h, `0` for a compromise). Until then the header carries one `v1` per valid secret, so merchants can switch without failed deliveries.
 - Body: `{"id":"evt_…","type":"payment.succeeded","created_at":"…","data":{"object":{…payment resource…}}}`.
 - Retry schedule: 30 s, 2 m, 10 m, 30 m, 1 h, 3 h, 6 h, 12 h, 24 h (±20% jitter), which is 10 attempts over ≈ 47 h, then `DEAD`. `POST /admin/v1/webhook-deliveries/{id}/replay` re-queues it.
 
@@ -585,8 +604,16 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `GET /v1/refunds/{id}` | Retrieve refund | `200` refund |
 | `POST /v1/checkout-sessions` | Hosted checkout session for a `requires_payment_method` payment (§17) | `201` session with `url` |
 | `POST /v1/webhooks/providers/{code}` | PSP webhooks (signature-authenticated) | `200` |
-| `POST /admin/v1/merchants` | Create merchant (+ webhook secret, shown once) | `201` |
-| `POST /admin/v1/merchants/{id}/api-keys` | Issue an API key (shown once) | `201` |
+| `POST /admin/v1/merchants` | Create merchant (+ webhook secret, shown once); `providers` optional | `201` |
+| `GET/PATCH /admin/v1/merchants/{id}` | Read; update `name`, `webhook_url`, `late_success_policy`, `payment_expiry_seconds` | `200` |
+| `DELETE /admin/v1/merchants/{id}/webhook-url` | Stop new webhooks (queued deliveries keep their URL) | `200` |
+| `POST /admin/v1/merchants/{id}/webhook-secret` | Rotate `{previous_valid_for_seconds}`; new secret shown once | `200` |
+| `POST /admin/v1/merchants/{id}/suspend` · `/reactivate` | Suspend `{reason}`: blocks API keys and checkout links. Payments in flight still complete, refund and reconcile | `200` |
+| `POST /admin/v1/merchants/{id}/api-keys` | Issue an API key (shown once; `sk_test_`/`sk_live_` per `pg.security.api-key-mode`) | `201` |
+| `GET /admin/v1/merchants/{id}/api-keys` · `POST …/api-keys/{key_id}/revoke` | List keys (hint, status, `last_used_at` hourly); revoke immediately | `200` |
+| `GET /admin/v1/merchants/{id}/provider-accounts` | Accounts with masked credentials and `webhook_path` | `200` |
+| `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` | Link or re-enable `{credentials}` (validated against the adapter's fields; replaces stored ones) | `200` |
+| `POST /admin/v1/merchants/{id}/provider-accounts/{provider}/disable` | No new payments; in-flight work and reconciliation continue | `200` |
 | `GET/POST/PUT /admin/v1/routing-rules` | Manage routing rules | `200/201` |
 | `GET /admin/v1/providers/health` | Circuit states + scores | `200` |
 | `POST /admin/v1/webhook-deliveries/{id}/replay` | Re-queue a delivery | `202` |
@@ -680,6 +707,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.webhooks.outbound.allow-private-targets` | `false` | Only `true` for local/test |
 | `pg.security.admin-tokens` | — (required) | Admin bearer tokens |
 | `pg.security.data-encryption-key` | — (required) | Base64 AES-256 key for secrets at rest (from KMS/Secrets Manager in AWS) |
+| `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
 
@@ -699,6 +727,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration (embedded PostgreSQL) | End-to-end flows over HTTP: UPI intent via simulator webhook, card manual capture, cancel/void, timeout → resolver, never-submitted, failover on outage, duplicate webhooks, idempotency replay/conflict/reuse, refunds (partial, multiple, over-refund, concurrent), late success auto-refund, merchant webhook delivery and retry, auth failures | `*IntegrationTest` |
 | Integration | Ledger: balanced postings, late-success netting, idempotency, DB-level balance and immutability. Reconciliation: clean day nets to zero, auto-heal, missing internally/at provider, amount mismatch, duplicate, short payout, auto-resolution, idempotent reruns | `LedgerIntegrationTest`, `ReconciliationIntegrationTest` |
 | Contract | Endpoint parity with `docs/openapi.yaml`; requests, responses (statuses, media types, required headers, strict schemas) and webhook events validated against it | `ApiContractTest` |
+| Integration | Merchant lifecycle: settings and audit, suspension (keys and checkout blocked, in-flight payments finish), key rotation and immediate revocation, webhook secret rotation with dual signatures. PSP accounts: encrypted and masked credentials, per-account webhook secret, rejected credentials fail over without opening the shared circuit, disabled accounts finish in-flight work, cross-tenant webhook forgery and event-id squatting | `MerchantAdminIntegrationTest`, `ProviderAccountIntegrationTest` |
 | Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt. Hosted checkout: session rules, escaping, CSP hash, UPI collect, card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |

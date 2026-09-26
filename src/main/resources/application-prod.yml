@@ -25,3 +25,6 @@ pg:
       enabled: false
   checkout:
     public-base-url: ${PG_CHECKOUT_BASE_URL}
+  # A sandbox deployment sets PG_API_KEY_MODE=test and uses PSP sandbox credentials.
+  security:
+    api-key-mode: ${PG_API_KEY_MODE:live}

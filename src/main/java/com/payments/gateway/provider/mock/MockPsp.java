@@ -38,6 +38,8 @@ public final class MockPsp {
     public static final class Txn {
         private final String reference;
         private final String merchantId;
+        private final String accountId;
+        private final String webhookSecret;
         private final String merchantReference;
         private final Money amount;
         private final PaymentMethod method;
@@ -48,10 +50,12 @@ public final class MockPsp {
         private Instant capturedAt;
         private long refunded;
 
-        Txn(String reference, String merchantId, String merchantReference, Money amount, PaymentMethod method,
-            boolean manualCapture, String returnUrl, TxnState state, Instant now) {
+        Txn(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
+            Money amount, PaymentMethod method, boolean manualCapture, String returnUrl, TxnState state, Instant now) {
             this.reference = reference;
             this.merchantId = merchantId;
+            this.accountId = accountId;
+            this.webhookSecret = webhookSecret;
             this.merchantReference = merchantReference;
             this.amount = amount;
             this.method = method;
@@ -67,6 +71,16 @@ public final class MockPsp {
 
         public String merchantId() {
             return merchantId;
+        }
+
+        /** The merchant's account at this PSP; its webhooks go to that account's endpoint. */
+        public String accountId() {
+            return accountId;
+        }
+
+        /** The account's own webhook secret, or null to sign with the platform-level mock secret. */
+        public String webhookSecret() {
+            return webhookSecret;
         }
 
         public String merchantReference() {
@@ -151,9 +165,10 @@ public final class MockPsp {
         this.code = code;
     }
 
-    Txn create(String reference, String merchantId, String merchantReference, Money amount, PaymentMethod method,
-               boolean manualCapture, String returnUrl, TxnState state, Instant now) {
-        Txn txn = new Txn(reference, merchantId, merchantReference, amount, method, manualCapture, returnUrl, state, now);
+    Txn create(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
+               Money amount, PaymentMethod method, boolean manualCapture, String returnUrl, TxnState state, Instant now) {
+        Txn txn = new Txn(reference, merchantId, accountId, webhookSecret, merchantReference, amount, method,
+                manualCapture, returnUrl, state, now);
         String existing = transactionsByMerchantRef.putIfAbsent(merchantReference, reference);
         if (existing != null) {
             return transactions.get(existing);
@@ -231,8 +246,8 @@ public final class MockPsp {
     // ------------------------------------------------------------------ report anomalies (simulation only)
 
     public Txn addOrphanCapture(String merchantId, Money amount, Instant now) {
-        Txn orphan = new Txn(Ids.newId(code.toLowerCase(Locale.ROOT)), merchantId, null, amount, null, false, null,
-                TxnState.CAPTURED, now);
+        Txn orphan = new Txn(Ids.newId(code.toLowerCase(Locale.ROOT)), merchantId, null, null, null, amount, null, false,
+                null, TxnState.CAPTURED, now);
         orphanCaptures.add(orphan);
         return orphan;
     }

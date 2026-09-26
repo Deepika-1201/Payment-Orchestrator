@@ -3,8 +3,8 @@ package com.payments.gateway.merchant;
 import java.time.Duration;
 import java.time.Instant;
 
-public record Merchant(String id, String name, Status status, String webhookUrl, LateSuccessPolicy lateSuccessPolicy,
-                       Duration paymentExpiry, Instant createdAt) {
+public record Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
+                       LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt) {
 
     public enum Status {
         ACTIVE,
@@ -19,5 +19,13 @@ public record Merchant(String id, String name, Status status, String webhookUrl,
 
     public boolean acceptsLateSuccess() {
         return lateSuccessPolicy == LateSuccessPolicy.ACCEPT;
+    }
+
+    public Merchant withSettings(String newName, String newWebhookUrl, LateSuccessPolicy newPolicy, Duration newExpiry) {
+        return new Merchant(id, newName, status, statusReason, newWebhookUrl, newPolicy, newExpiry, createdAt);
+    }
+
+    public Merchant withStatus(Status newStatus, String reason) {
+        return new Merchant(id, name, newStatus, reason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt);
     }
 }

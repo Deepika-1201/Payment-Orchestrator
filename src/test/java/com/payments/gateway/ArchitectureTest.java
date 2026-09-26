@@ -23,6 +23,12 @@ class ArchitectureTest {
             .should().onlyDependOnClassesThat().resideInAnyPackage("..provider.spi..", "..shared.model..", "java..");
 
     @ArchTest
+    static final ArchRule providersReachMerchantAccountsOnlyThroughTheirOwnPort = noClasses()
+            .that().resideInAPackage("..provider..")
+            .should().dependOnClassesThat().resideInAnyPackage("..merchant..", "..payment..", "..routing..", "..webhook..",
+                    "..ledger..", "..reconciliation..", "..checkout..", "..risk..", "..idempotency..", "..platform..");
+
+    @ArchTest
     static final ArchRule sharedKernelDependsOnNoBusinessModule = noClasses()
             .that().resideInAPackage("..shared..")
             .should().dependOnClassesThat().resideInAnyPackage("..payment..", "..merchant..", "..provider..", "..routing..",

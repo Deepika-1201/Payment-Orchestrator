@@ -1,7 +1,9 @@
 package com.payments.gateway.provider;
 
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
+import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
@@ -21,13 +23,13 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
-/** Single entry point for PSP calls: circuit breaking, failure classification, latency metrics. */
+/** Single entry point for PSP calls: merchant account resolution, circuit breaking, failure classification, metrics. */
 @Component
 public class ProviderClient {
 
@@ -36,12 +38,15 @@ public class ProviderClient {
     private final ProviderRegistry registry;
     private final ProviderHealthTracker health;
     private final MeterRegistry meters;
+    private final MerchantAccountResolver accounts;
     private final CircuitBreakerRegistry circuitBreakers;
 
-    public ProviderClient(ProviderRegistry registry, ProviderHealthTracker health, MeterRegistry meters) {
+    public ProviderClient(ProviderRegistry registry, ProviderHealthTracker health, MeterRegistry meters,
+                          MerchantAccountResolver accounts) {
         this.registry = registry;
         this.health = health;
         this.meters = meters;
+        this.accounts = accounts;
         this.circuitBreakers = CircuitBreakerRegistry.of(CircuitBreakerConfig.custom()
                 .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
                 .slidingWindowSize(20)
@@ -53,32 +58,33 @@ public class ProviderClient {
                 .build());
     }
 
-    public ProviderPaymentResult initiate(String providerCode, InitiatePaymentRequest request) {
-        return call(providerCode, "initiate", provider -> provider.initiatePayment(request));
+    public ProviderPaymentResult initiate(String merchantId, String providerCode, InitiatePaymentRequest request) {
+        return call(merchantId, providerCode, "initiate", (provider, account) -> provider.initiatePayment(account, request));
     }
 
-    public ProviderPaymentResult fetchStatus(String providerCode, PaymentStatusQuery query) {
-        return call(providerCode, "status", provider -> provider.fetchPaymentStatus(query));
+    public ProviderPaymentResult fetchStatus(String merchantId, String providerCode, PaymentStatusQuery query) {
+        return call(merchantId, providerCode, "status", (provider, account) -> provider.fetchPaymentStatus(account, query));
     }
 
-    public ProviderPaymentResult capture(String providerCode, CaptureRequest request) {
-        return call(providerCode, "capture", provider -> provider.capture(request));
+    public ProviderPaymentResult capture(String merchantId, String providerCode, CaptureRequest request) {
+        return call(merchantId, providerCode, "capture", (provider, account) -> provider.capture(account, request));
     }
 
-    public ProviderPaymentResult voidAuthorization(String providerCode, VoidRequest request) {
-        return call(providerCode, "void", provider -> provider.voidAuthorization(request));
+    public ProviderPaymentResult voidAuthorization(String merchantId, String providerCode, VoidRequest request) {
+        return call(merchantId, providerCode, "void", (provider, account) -> provider.voidAuthorization(account, request));
     }
 
-    public ProviderRefundResult refund(String providerCode, RefundRequest request) {
-        return call(providerCode, "refund", provider -> provider.refund(request));
+    public ProviderRefundResult refund(String merchantId, String providerCode, RefundRequest request) {
+        return call(merchantId, providerCode, "refund", (provider, account) -> provider.refund(account, request));
     }
 
-    public ProviderRefundResult fetchRefundStatus(String providerCode, RefundStatusQuery query) {
-        return call(providerCode, "refund_status", provider -> provider.fetchRefundStatus(query));
+    public ProviderRefundResult fetchRefundStatus(String merchantId, String providerCode, RefundStatusQuery query) {
+        return call(merchantId, providerCode, "refund_status", (provider, account) -> provider.fetchRefundStatus(account, query));
     }
 
     public SettlementReport fetchSettlementReport(String providerCode, SettlementReportQuery query) {
-        return call(providerCode, "settlement_report", provider -> provider.fetchSettlementReport(query));
+        return call(query.merchantId(), providerCode, "settlement_report",
+                (provider, account) -> provider.fetchSettlementReport(account, query));
     }
 
     public boolean isAvailable(String providerCode) {
@@ -94,8 +100,10 @@ public class ProviderClient {
         circuitBreakers.getAllCircuitBreakers().forEach(CircuitBreaker::reset);
     }
 
-    private <T> T call(String providerCode, String operation, Function<PaymentProvider, T> action) {
+    private <T> T call(String merchantId, String providerCode, String operation,
+                       BiFunction<PaymentProvider, MerchantAccount, T> action) {
         PaymentProvider provider = registry.require(providerCode);
+        MerchantAccount account = accounts.require(merchantId, providerCode);
         CircuitBreaker breaker = circuitBreakers.circuitBreaker(providerCode);
         if (!breaker.tryAcquirePermission()) {
             record(providerCode, operation, "circuit_open", 0);
@@ -104,12 +112,17 @@ public class ProviderClient {
         MDC.put(Mdc.PROVIDER, providerCode);
         long start = System.nanoTime();
         try {
-            T result = action.apply(provider);
+            T result = action.apply(provider, account);
             long elapsed = System.nanoTime() - start;
             breaker.onSuccess(elapsed, TimeUnit.NANOSECONDS);
             health.recordLatency(providerCode, Duration.ofNanos(elapsed));
             record(providerCode, operation, "ok", elapsed);
             return result;
+        } catch (ProviderCredentialsException e) {
+            breaker.releasePermission();
+            record(providerCode, operation, "credentials_rejected", System.nanoTime() - start);
+            log.warn("PSP rejected the credentials of merchant account {}: {}", account.id(), e.getMessage());
+            throw e;
         } catch (ProviderUnavailableException | ProviderTimeoutException e) {
             long elapsed = System.nanoTime() - start;
             breaker.onError(elapsed, TimeUnit.NANOSECONDS, e);

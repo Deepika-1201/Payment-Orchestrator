@@ -5,26 +5,35 @@ import com.payments.gateway.merchant.MerchantAdminService;
 import com.payments.gateway.merchant.MerchantAdminService.CreatedMerchant;
 import com.payments.gateway.merchant.MerchantAdminService.IssuedApiKey;
 import com.payments.gateway.merchant.MerchantDirectory;
+import com.payments.gateway.merchant.MerchantRepository.ApiKeyRow;
+import com.payments.gateway.merchant.ProviderAccountService;
+import com.payments.gateway.merchant.ProviderAccountService.AccountView;
 import com.payments.gateway.shared.web.WireEnums;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+/** Merchant lifecycle: onboarding, settings, suspension, API keys, webhook secret and PSP accounts (FR-M1-M3). */
 @RestController
 @RequestMapping("/admin/v1/merchants")
 public class AdminMerchantController {
@@ -34,22 +43,56 @@ public class AdminMerchantController {
             @Size(max = 2048) String webhookUrl,
             String lateSuccessPolicy,
             @Min(60) @Max(86400) Integer paymentExpirySeconds,
-            @NotEmpty @Size(max = 10) List<@NotBlank String> providers) {
+            @Size(max = 10) List<@NotBlank String> providers) {
     }
 
-    public record MerchantResponse(String id, String name, String status, String webhookUrl, String lateSuccessPolicy,
-                                   long paymentExpirySeconds, List<String> providers, String webhookSecret,
-                                   Instant createdAt) {
+    public record UpdateMerchantRequest(
+            @Size(min = 1, max = 200) String name,
+            @Size(max = 2048) String webhookUrl,
+            String lateSuccessPolicy,
+            @Min(60) @Max(86400) Integer paymentExpirySeconds) {
     }
 
-    public record ApiKeyResponse(String id, String apiKey, String hint, String mode, Instant createdAt) {
+    public record SuspendRequest(@NotBlank @Size(max = 500) String reason) {
     }
+
+    public record RotateWebhookSecretRequest(@Min(0) @Max(604_800) Integer previousValidForSeconds) {
+    }
+
+    public record LinkProviderAccountRequest(
+            @Size(max = 20) Map<@NotBlank @Size(max = 64) String, @NotNull @Size(max = 4096) String> credentials) {
+    }
+
+    public record MerchantResponse(String id, String name, String status, String statusReason, String webhookUrl,
+                                   String lateSuccessPolicy, long paymentExpirySeconds, List<String> providers,
+                                   String webhookSecret, Instant createdAt) {
+    }
+
+    public record ApiKeyResponse(String id, String apiKey, String hint, String mode, String status, Instant createdAt,
+                                 Instant lastUsedAt, Instant revokedAt) {
+    }
+
+    public record WebhookSecretResponse(String webhookSecret, Instant previousSecretExpiresAt) {
+    }
+
+    public record ProviderAccountResponse(String id, String provider, String status, Map<String, String> credentials,
+                                          String webhookPath, Instant credentialsUpdatedAt, Instant createdAt,
+                                          Instant disabledAt) {
+    }
+
+    public record ListResponse<T>(List<T> data) {
+    }
+
+    private static final Duration DEFAULT_SECRET_OVERLAP = Duration.ofHours(24);
 
     private final MerchantAdminService admin;
+    private final ProviderAccountService providerAccounts;
     private final MerchantDirectory directory;
 
-    public AdminMerchantController(MerchantAdminService admin, MerchantDirectory directory) {
+    public AdminMerchantController(MerchantAdminService admin, ProviderAccountService providerAccounts,
+                                   MerchantDirectory directory) {
         this.admin = admin;
+        this.providerAccounts = providerAccounts;
         this.directory = directory;
     }
 
@@ -68,8 +111,45 @@ public class AdminMerchantController {
 
     @GetMapping("/{id}")
     public MerchantResponse get(@PathVariable String id) {
-        Merchant merchant = directory.require(id);
-        return toResponse(merchant, List.copyOf(directory.activeProviders(id)), null);
+        return toResponse(directory.require(id));
+    }
+
+    @PatchMapping("/{id}")
+    public MerchantResponse update(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                   @PathVariable String id, @Valid @RequestBody UpdateMerchantRequest request) {
+        Merchant.LateSuccessPolicy policy = request.lateSuccessPolicy() == null ? null
+                : WireEnums.parse(Merchant.LateSuccessPolicy.class, request.lateSuccessPolicy(), "late_success_policy");
+        Duration expiry = request.paymentExpirySeconds() == null ? null : Duration.ofSeconds(request.paymentExpirySeconds());
+        return toResponse(admin.update(id, new MerchantAdminService.SettingsUpdate(request.name(), request.webhookUrl(),
+                policy, expiry), actor));
+    }
+
+    @DeleteMapping("/{id}/webhook-url")
+    public MerchantResponse removeWebhookUrl(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                             @PathVariable String id) {
+        return toResponse(admin.removeWebhookUrl(id, actor));
+    }
+
+    @PostMapping("/{id}/webhook-secret")
+    public WebhookSecretResponse rotateWebhookSecret(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                                     @PathVariable String id,
+                                                     @Valid @RequestBody(required = false) RotateWebhookSecretRequest request) {
+        Duration overlap = request == null || request.previousValidForSeconds() == null ? DEFAULT_SECRET_OVERLAP
+                : Duration.ofSeconds(request.previousValidForSeconds());
+        MerchantAdminService.RotatedSecret rotated = admin.rotateWebhookSecret(id, overlap, actor);
+        return new WebhookSecretResponse(rotated.webhookSecret(), rotated.previousSecretExpiresAt());
+    }
+
+    @PostMapping("/{id}/suspend")
+    public MerchantResponse suspend(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                    @PathVariable String id, @Valid @RequestBody SuspendRequest request) {
+        return toResponse(admin.suspend(id, request.reason(), actor));
+    }
+
+    @PostMapping("/{id}/reactivate")
+    public MerchantResponse reactivate(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                       @PathVariable String id) {
+        return toResponse(admin.reactivate(id, actor));
     }
 
     @PostMapping("/{id}/api-keys")
@@ -77,12 +157,61 @@ public class AdminMerchantController {
     public ApiKeyResponse issueKey(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                    @PathVariable String id) {
         IssuedApiKey key = admin.issueApiKey(id, actor);
-        return new ApiKeyResponse(key.id(), key.apiKey(), key.hint(), "test", key.createdAt());
+        return new ApiKeyResponse(key.id(), key.apiKey(), key.hint(), lower(key.mode()), "active", key.createdAt(), null, null);
+    }
+
+    @GetMapping("/{id}/api-keys")
+    public ListResponse<ApiKeyResponse> listKeys(@PathVariable String id) {
+        return new ListResponse<>(admin.apiKeys(id).stream().map(AdminMerchantController::toResponse).toList());
+    }
+
+    @PostMapping("/{id}/api-keys/{keyId}/revoke")
+    public ApiKeyResponse revokeKey(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                    @PathVariable String id, @PathVariable String keyId) {
+        return toResponse(admin.revokeApiKey(id, keyId, actor));
+    }
+
+    @GetMapping("/{id}/provider-accounts")
+    public ListResponse<ProviderAccountResponse> listProviderAccounts(@PathVariable String id) {
+        return new ListResponse<>(providerAccounts.list(id).stream().map(AdminMerchantController::toResponse).toList());
+    }
+
+    /** Links or re-enables the account; sent credentials replace the stored ones. */
+    @PutMapping("/{id}/provider-accounts/{provider}")
+    public ProviderAccountResponse linkProviderAccount(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                                       @PathVariable String id, @PathVariable String provider,
+                                                       @Valid @RequestBody(required = false) LinkProviderAccountRequest request) {
+        return toResponse(providerAccounts.link(id, provider, request == null ? null : request.credentials(), actor));
+    }
+
+    @PostMapping("/{id}/provider-accounts/{provider}/disable")
+    public ProviderAccountResponse disableProviderAccount(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                                          @PathVariable String id, @PathVariable String provider) {
+        return toResponse(providerAccounts.disable(id, provider, actor));
+    }
+
+    private MerchantResponse toResponse(Merchant merchant) {
+        return toResponse(merchant, List.copyOf(directory.activeProviders(merchant.id())), null);
     }
 
     private static MerchantResponse toResponse(Merchant merchant, List<String> providers, String webhookSecret) {
         return new MerchantResponse(merchant.id(), merchant.name(), WireEnums.wire(merchant.status()),
-                merchant.webhookUrl(), WireEnums.wire(merchant.lateSuccessPolicy()),
+                merchant.statusReason(), merchant.webhookUrl(), WireEnums.wire(merchant.lateSuccessPolicy()),
                 merchant.paymentExpiry().toSeconds(), providers, webhookSecret, merchant.createdAt());
+    }
+
+    private static ApiKeyResponse toResponse(ApiKeyRow key) {
+        return new ApiKeyResponse(key.id(), null, key.hint(), lower(key.mode()), lower(key.status()), key.createdAt(),
+                key.lastUsedAt(), key.revokedAt());
+    }
+
+    private static ProviderAccountResponse toResponse(AccountView account) {
+        return new ProviderAccountResponse(account.id(), account.providerCode(), lower(account.status()),
+                account.credentials(), "/v1/webhooks/providers/" + account.providerCode() + "/" + account.id(),
+                account.credentialsUpdatedAt(), account.createdAt(), account.disabledAt());
+    }
+
+    private static String lower(String value) {
+        return value.toLowerCase(Locale.ROOT);
     }
 }

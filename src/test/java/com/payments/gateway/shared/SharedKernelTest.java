@@ -1,5 +1,6 @@
 package com.payments.gateway.shared;
 
+import com.payments.gateway.shared.crypto.SecretCipher;
 import com.payments.gateway.shared.model.Money;
 import java.util.HashSet;
 import java.util.Set;
@@ -31,5 +32,15 @@ class SharedKernelTest {
         }
         assertThat(ids).hasSize(10_000).allMatch(id -> id.matches("pay_[0-9A-HJKMNP-TV-Z]{26}"));
         assertThat(Ids.ulid(1_000L).substring(0, 10)).isLessThan(Ids.ulid(2_000L).substring(0, 10));
+    }
+
+    @Test
+    void ciphertextIsBoundToItsContext() {
+        SecretCipher cipher = new SecretCipher(new byte[32]);
+        byte[] encrypted = cipher.encrypt("{\"api_key\":\"k\"}", "merchant_provider_account:mpa_1");
+
+        assertThat(cipher.decrypt(encrypted, "merchant_provider_account:mpa_1")).isEqualTo("{\"api_key\":\"k\"}");
+        assertThatThrownBy(() -> cipher.decrypt(encrypted, "merchant_provider_account:mpa_2")).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> cipher.decrypt(encrypted)).isInstanceOf(IllegalStateException.class);
     }
 }

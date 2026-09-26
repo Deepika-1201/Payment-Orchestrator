@@ -102,7 +102,7 @@ public class StatusResolver {
         }
         ProviderPaymentResult result;
         try {
-            result = providerClient.fetchStatus(attempt.providerCode(),
+            result = providerClient.fetchStatus(payment.merchantId(), attempt.providerCode(),
                     new PaymentStatusQuery(attempt.id(), attempt.providerReference()));
         } catch (ProviderTimeoutException | ProviderUnavailableException e) {
             meters.counter("pg.status.checks", "outcome", "error").increment();
@@ -141,7 +141,7 @@ public class StatusResolver {
         }
         ProviderRefundResult result;
         try {
-            result = providerClient.fetchRefundStatus(refund.providerCode(),
+            result = providerClient.fetchRefundStatus(refund.merchantId(), refund.providerCode(),
                     new RefundStatusQuery(refund.id(), refund.providerReference()));
         } catch (ProviderTimeoutException | ProviderUnavailableException e) {
             refundService.recordCheck(refundId);

@@ -316,6 +316,8 @@ webhooks:
         Delivered at least once, possibly out of order; deduplicate on `id` (also in `PG-Event-Id`) and re-read
         the resource if ordering matters. Verify `PG-Signature: t=<unix seconds>,v1=<hex>` where
         `v1 = HMAC-SHA256(webhook_secret, t + "." + raw_body)`, and reject timestamps older than 5 minutes.
+        While a webhook secret is being rotated the header carries one `v1` per valid secret: accept the delivery
+        if any of them matches.
         Any 2xx acknowledges; otherwise delivery is retried with backoff for about 47 hours.
       security: []
       parameters:

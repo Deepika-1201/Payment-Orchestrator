@@ -1,9 +1,12 @@
 package com.payments.gateway.provider.mock;
 
+import com.payments.gateway.provider.spi.CredentialField;
 import com.payments.gateway.provider.spi.InboundWebhook;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
@@ -41,13 +44,18 @@ import java.util.Locale;
 /**
  * Simulated PSP with deterministic scenarios selected by the amount's last two digits (see LLD §5):
  * 01 timeout-but-processed, 03 declined, 04 pending-then-silent-success, 05 timeout-never-processed.
- * Refund amounts: 07 pending, 08 timeout-but-processed, 09 failed.
+ * Refund amounts: 07 pending, 08 timeout-but-processed, 09 failed. Credentials are optional: an {@code api_key}
+ * starting with {@code bad_} is rejected, and a {@code webhook_secret} replaces the platform secret for that account.
  */
 public class MockPaymentProvider implements PaymentProvider {
 
     public static final String SIGNATURE_HEADER = "X-Mock-Signature";
+    public static final String API_KEY = "api_key";
+    public static final String WEBHOOK_SECRET = "webhook_secret";
     private static final long SIGNATURE_TOLERANCE_SECONDS = 300;
     private static final long FEE_BASIS_POINTS = 200;
+    private static final List<CredentialField> CREDENTIALS = List.of(
+            new CredentialField(API_KEY, true, false), new CredentialField(WEBHOOK_SECRET, true, false));
 
     private final String code;
     private final ProviderCapabilities capabilities;
@@ -76,13 +84,18 @@ public class MockPaymentProvider implements PaymentProvider {
         return capabilities;
     }
 
+    @Override
+    public List<CredentialField> credentialFields() {
+        return CREDENTIALS;
+    }
+
     public MockPsp psp() {
         return psp;
     }
 
     @Override
-    public ProviderPaymentResult initiatePayment(InitiatePaymentRequest request) {
-        simulateNetwork();
+    public ProviderPaymentResult initiatePayment(MerchantAccount account, InitiatePaymentRequest request) {
+        simulateNetwork(account);
         var existing = psp.find(null, request.attemptId());
         if (existing.isPresent()) {
             return toResult(existing.get());
@@ -93,37 +106,37 @@ public class MockPaymentProvider implements PaymentProvider {
         int scenario = (int) (request.amount().amount() % 100);
         switch (scenario) {
             case 1 -> {
-                create(reference, request, completed);
+                create(account, reference, request, completed);
                 throw new ProviderTimeoutException(code, "simulated read timeout (request was processed)");
             }
             case 3 -> {
-                Txn txn = create(reference, request, TxnState.FAILED);
+                Txn txn = create(account, reference, request, TxnState.FAILED);
                 txn.moveTo(TxnState.FAILED, "transaction_declined", clock.instant());
                 return toResult(txn);
             }
             case 4 -> {
-                create(reference, request, completed);
+                create(account, reference, request, completed);
                 return ProviderPaymentResult.pending(reference, "pending");
             }
             case 5 -> throw new ProviderTimeoutException(code, "simulated read timeout (request was not processed)");
             default -> {
-                Txn txn = create(reference, request, TxnState.REQUIRES_ACTION);
+                Txn txn = create(account, reference, request, TxnState.REQUIRES_ACTION);
                 return ProviderPaymentResult.requiresAction(reference, nextAction(txn), "requires_action");
             }
         }
     }
 
     @Override
-    public ProviderPaymentResult fetchPaymentStatus(PaymentStatusQuery query) {
-        simulateNetwork();
+    public ProviderPaymentResult fetchPaymentStatus(MerchantAccount account, PaymentStatusQuery query) {
+        simulateNetwork(account);
         return psp.find(query.providerReference(), query.attemptId())
                 .map(this::toResult)
                 .orElseGet(ProviderPaymentResult::notFound);
     }
 
     @Override
-    public ProviderPaymentResult capture(CaptureRequest request) {
-        simulateNetwork();
+    public ProviderPaymentResult capture(MerchantAccount account, CaptureRequest request) {
+        simulateNetwork(account);
         Txn txn = psp.find(request.providerReference(), request.attemptId()).orElse(null);
         if (txn == null) {
             return ProviderPaymentResult.failed(request.providerReference(),
@@ -146,8 +159,8 @@ public class MockPaymentProvider implements PaymentProvider {
     }
 
     @Override
-    public ProviderPaymentResult voidAuthorization(VoidRequest request) {
-        simulateNetwork();
+    public ProviderPaymentResult voidAuthorization(MerchantAccount account, VoidRequest request) {
+        simulateNetwork(account);
         Txn txn = psp.find(request.providerReference(), request.attemptId()).orElse(null);
         if (txn == null) {
             return ProviderPaymentResult.failed(request.providerReference(),
@@ -166,8 +179,8 @@ public class MockPaymentProvider implements PaymentProvider {
     }
 
     @Override
-    public ProviderRefundResult refund(RefundRequest request) {
-        simulateNetwork();
+    public ProviderRefundResult refund(MerchantAccount account, RefundRequest request) {
+        simulateNetwork(account);
         var existing = psp.findRefund(null, request.refundId());
         if (existing.isPresent()) {
             return toResult(existing.get());
@@ -194,16 +207,16 @@ public class MockPaymentProvider implements PaymentProvider {
     }
 
     @Override
-    public ProviderRefundResult fetchRefundStatus(RefundStatusQuery query) {
-        simulateNetwork();
+    public ProviderRefundResult fetchRefundStatus(MerchantAccount account, RefundStatusQuery query) {
+        simulateNetwork(account);
         return psp.findRefund(query.providerRefundReference(), query.refundId())
                 .map(this::toResult)
                 .orElseGet(ProviderRefundResult::notFound);
     }
 
     @Override
-    public List<ProviderEvent> parseWebhook(InboundWebhook webhook) {
-        verifySignature(webhook);
+    public List<ProviderEvent> parseWebhook(MerchantAccount account, InboundWebhook webhook) {
+        verifySignature(webhookSecret(account), webhook);
         MockWebhookPayload payload;
         try {
             payload = json.read(webhook.body(), MockWebhookPayload.class);
@@ -250,11 +263,25 @@ public class MockPaymentProvider implements PaymentProvider {
                 txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode());
     }
 
-    public String sign(long timestampSeconds, String body) {
-        return "t=" + timestampSeconds + ",v1=" + Hashing.hmacSha256Hex(properties.webhookSecret(), timestampSeconds + "." + body);
+    /** Signs as the simulated PSP would for the transaction's account (platform secret if the account has none). */
+    public String sign(Txn txn, long timestampSeconds, String body) {
+        return sign(txn.webhookSecret() == null ? properties.webhookSecret() : txn.webhookSecret(), timestampSeconds, body);
     }
 
-    private void verifySignature(InboundWebhook webhook) {
+    public String sign(long timestampSeconds, String body) {
+        return sign(properties.webhookSecret(), timestampSeconds, body);
+    }
+
+    public static String sign(String secret, long timestampSeconds, String body) {
+        return "t=" + timestampSeconds + ",v1=" + Hashing.hmacSha256Hex(secret, timestampSeconds + "." + body);
+    }
+
+    private String webhookSecret(MerchantAccount account) {
+        return account == null ? properties.webhookSecret()
+                : account.credential(WEBHOOK_SECRET).orElse(properties.webhookSecret());
+    }
+
+    private void verifySignature(String secret, InboundWebhook webhook) {
         String header = webhook.header(SIGNATURE_HEADER);
         if (header == null) {
             throw new WebhookVerificationException("missing signature");
@@ -279,7 +306,7 @@ public class MockPaymentProvider implements PaymentProvider {
         if (Math.abs(clock.instant().getEpochSecond() - timestamp) > SIGNATURE_TOLERANCE_SECONDS) {
             throw new WebhookVerificationException("signature timestamp outside tolerance");
         }
-        String expected = Hashing.hmacSha256Hex(properties.webhookSecret(), timestamp + "." + webhook.body());
+        String expected = Hashing.hmacSha256Hex(secret, timestamp + "." + webhook.body());
         if (!Hashing.constantTimeEquals(expected, signature)) {
             throw new WebhookVerificationException("signature mismatch");
         }
@@ -287,8 +314,8 @@ public class MockPaymentProvider implements PaymentProvider {
 
     /** One settlement per merchant and window; the PSP keeps a 2% fee on each capture. */
     @Override
-    public SettlementReport fetchSettlementReport(SettlementReportQuery query) {
-        simulateNetwork();
+    public SettlementReport fetchSettlementReport(MerchantAccount account, SettlementReportQuery query) {
+        simulateNetwork(account);
         String settlementId = "setl_" + code.toLowerCase(Locale.ROOT) + "_" + query.merchantId() + "_" + query.from().getEpochSecond();
         List<SettlementReport.Line> lines = new ArrayList<>();
         long net = 0;
@@ -323,9 +350,10 @@ public class MockPaymentProvider implements PaymentProvider {
                 "UTR" + query.from().getEpochSecond(), query.to())));
     }
 
-    private Txn create(String reference, InitiatePaymentRequest request, TxnState state) {
-        return psp.create(reference, request.merchantId(), request.attemptId(), request.amount(), request.method(),
-                request.captureMethod() == CaptureMethod.MANUAL, request.returnUrl(), state, clock.instant());
+    private Txn create(MerchantAccount account, String reference, InitiatePaymentRequest request, TxnState state) {
+        return psp.create(reference, request.merchantId(), account.id(), account.credential(WEBHOOK_SECRET).orElse(null),
+                request.attemptId(), request.amount(), request.method(), request.captureMethod() == CaptureMethod.MANUAL,
+                request.returnUrl(), state, clock.instant());
     }
 
     private NextAction nextAction(Txn txn) {
@@ -373,9 +401,12 @@ public class MockPaymentProvider implements PaymentProvider {
         };
     }
 
-    private void simulateNetwork() {
+    private void simulateNetwork(MerchantAccount account) {
         if (!psp.isAvailable()) {
             throw new ProviderUnavailableException(code, "connection refused (simulated outage)");
+        }
+        if (account.credential(API_KEY).filter(key -> key.startsWith("bad_")).isPresent()) {
+            throw new ProviderCredentialsException(code, "401 authentication failed (simulated invalid api_key)");
         }
         Duration latency = properties.latency();
         if (!latency.isZero()) {

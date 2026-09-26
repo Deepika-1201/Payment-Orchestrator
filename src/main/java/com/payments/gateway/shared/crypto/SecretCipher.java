@@ -29,11 +29,23 @@ public final class SecretCipher {
     }
 
     public byte[] encrypt(String plaintext) {
+        return encrypt(plaintext, null);
+    }
+
+    public String decrypt(byte[] payload) {
+        return decrypt(payload, null);
+    }
+
+    /** {@code context} is authenticated but not stored: decryption only succeeds with the same context (e.g. a row id). */
+    public byte[] encrypt(String plaintext, String context) {
         try {
             byte[] iv = new byte[IV_LENGTH];
             random.nextBytes(iv);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, iv));
+            if (context != null) {
+                cipher.updateAAD(context.getBytes(StandardCharsets.UTF_8));
+            }
             byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
             return ByteBuffer.allocate(1 + IV_LENGTH + ciphertext.length).put(VERSION).put(iv).put(ciphertext).array();
         } catch (GeneralSecurityException e) {
@@ -41,13 +53,16 @@ public final class SecretCipher {
         }
     }
 
-    public String decrypt(byte[] payload) {
+    public String decrypt(byte[] payload, String context) {
         if (payload == null || payload.length < 1 + IV_LENGTH + TAG_BITS / 8 || payload[0] != VERSION) {
             throw new IllegalArgumentException("unsupported ciphertext");
         }
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, payload, 1, IV_LENGTH));
+            if (context != null) {
+                cipher.updateAAD(context.getBytes(StandardCharsets.UTF_8));
+            }
             byte[] plaintext = cipher.doFinal(payload, 1 + IV_LENGTH, payload.length - 1 - IV_LENGTH);
             return new String(plaintext, StandardCharsets.UTF_8);
         } catch (GeneralSecurityException e) {

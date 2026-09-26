@@ -6,11 +6,11 @@ import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-/** Inbox of PSP webhooks: stored before processing, deduplicated per provider event id. */
+/** Inbox of PSP webhooks: stored before processing, deduplicated per provider, receiving account and event id. */
 @Repository
 public class ProviderWebhookRepository {
 
-    public record PendingEvent(String id, String providerCode, String normalizedEvent, int attempts) {
+    public record PendingEvent(String id, String providerCode, String merchantId, String normalizedEvent, int attempts) {
     }
 
     private final JdbcClient jdbc;
@@ -19,16 +19,20 @@ public class ProviderWebhookRepository {
         this.jdbc = jdbc;
     }
 
-    public boolean insertIfAbsent(String id, String providerCode, String providerEventId, String eventType,
-                                  String payload, String normalizedEvent, Instant now) {
+    public boolean insertIfAbsent(String id, String providerCode, String merchantAccountId, String merchantId,
+                                  String providerEventId, String eventType, String payload, String normalizedEvent,
+                                  Instant now) {
         return jdbc.sql("""
-                INSERT INTO provider_webhook_events (id, provider_code, provider_event_id, event_type, payload,
-                                                     normalized_event, status, received_at)
-                VALUES (:id, :provider, :eventId, :eventType, :payload, CAST(:normalized AS jsonb), 'RECEIVED', :now)
-                ON CONFLICT (provider_code, provider_event_id) DO NOTHING
+                INSERT INTO provider_webhook_events (id, provider_code, merchant_account_id, merchant_id, provider_event_id,
+                                                     event_type, payload, normalized_event, status, received_at)
+                VALUES (:id, :provider, :accountId, :merchantId, :eventId, :eventType, :payload, CAST(:normalized AS jsonb),
+                        'RECEIVED', :now)
+                ON CONFLICT ON CONSTRAINT ux_provider_event DO NOTHING
                 """)
                 .param("id", id)
                 .param("provider", providerCode)
+                .param("accountId", merchantAccountId)
+                .param("merchantId", merchantId)
                 .param("eventId", providerEventId)
                 .param("eventType", eventType == null ? "unknown" : eventType)
                 .param("payload", payload)
@@ -71,13 +75,13 @@ public class ProviderWebhookRepository {
                                ORDER BY next_attempt_at
                                LIMIT :limit
                                FOR UPDATE SKIP LOCKED)
-                RETURNING id, provider_code, CAST(normalized_event AS text) AS normalized_event, attempts
+                RETURNING id, provider_code, merchant_id, CAST(normalized_event AS text) AS normalized_event, attempts
                 """)
                 .param("leaseUntil", Sql.ts(leaseUntil))
                 .param("now", Sql.ts(now))
                 .param("limit", limit)
                 .query((rs, n) -> new PendingEvent(rs.getString("id"), rs.getString("provider_code"),
-                        rs.getString("normalized_event"), rs.getInt("attempts")))
+                        rs.getString("merchant_id"), rs.getString("normalized_event"), rs.getInt("attempts")))
                 .list();
     }
 }

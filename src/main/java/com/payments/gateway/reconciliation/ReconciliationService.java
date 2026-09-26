@@ -132,8 +132,8 @@ public class ReconciliationService {
         if (!provider.capabilities().settlementReports()) {
             throw GatewayException.validation("provider", providerCode + " does not provide settlement reports");
         }
-        if (!merchants.activeProviders(merchantId).contains(providerCode)) {
-            throw GatewayException.validation("provider", providerCode + " is not linked to merchant " + merchantId);
+        if (!merchants.hasProviderAccount(merchantId, providerCode)) {
+            throw GatewayException.validation("provider", "merchant " + merchantId + " has no " + providerCode + " account");
         }
         if (!to.isAfter(from) || Duration.between(from, to).compareTo(MAX_WINDOW) > 0) {
             throw GatewayException.validation("window", "requires from < to and a window of at most 31 days");
@@ -164,13 +164,16 @@ public class ReconciliationService {
         return get(run.runId);
     }
 
-    /** Daily T+1 job: reconciles the previous local day for every active merchant PSP account. */
+    /**
+     * Daily T+1 job: reconciles the previous local day for every merchant PSP account, including suspended merchants
+     * and accounts disabled within the last week, whose earlier payments still settle.
+     */
     public int runForPreviousDay(ZoneId zone) {
         LocalDate today = LocalDate.ofInstant(clock.instant(), zone);
         Instant to = today.atStartOfDay(zone).toInstant();
         Instant from = today.minusDays(1).atStartOfDay(zone).toInstant();
         int runs = 0;
-        for (MerchantDirectory.ProviderAccount account : merchants.activeProviderAccounts()) {
+        for (MerchantDirectory.ProviderAccount account : merchants.providerAccountsToReconcile(from.minus(Duration.ofDays(7)))) {
             boolean supported = providers.find(account.providerCode()).map(p -> p.capabilities().settlementReports()).orElse(false);
             if (!supported) {
                 continue;
@@ -259,7 +262,7 @@ public class ReconciliationService {
     }
 
     private LineOutcome reconcilePayment(RunContext run, SettlementReport.Line line, String reference) {
-        Optional<InternalItem> found = payments.findPayment(run.provider, line.providerReference(), line.merchantReference());
+        Optional<InternalItem> found = payments.findPayment(run.merchantId, run.provider, line.providerReference(), line.merchantReference());
         if (found.isEmpty()) {
             run.open("MISSING_INTERNALLY", reference, null, null, line.amount().amount(),
                     "The PSP settled a capture the gateway has no record of");
@@ -285,7 +288,7 @@ public class ReconciliationService {
     }
 
     private LineOutcome reconcileRefund(RunContext run, SettlementReport.Line line, String reference) {
-        Optional<InternalItem> found = payments.findRefund(run.provider, line.providerReference(), line.merchantReference());
+        Optional<InternalItem> found = payments.findRefund(run.merchantId, run.provider, line.providerReference(), line.merchantReference());
         if (found.isEmpty()) {
             run.open("MISSING_INTERNALLY", reference, null, null, line.amount().amount(),
                     "The PSP settled a refund the gateway has no record of");

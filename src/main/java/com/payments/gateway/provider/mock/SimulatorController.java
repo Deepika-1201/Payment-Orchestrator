@@ -118,7 +118,7 @@ public class SimulatorController {
         String gatewayBaseUrl = ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
         MockWebhookPayload payload = mock.webhookFor(txn);
         for (int i = 0; i < deliveries; i++) {
-            webhookSender.send(gatewayBaseUrl, mock, payload);
+            webhookSender.send(gatewayBaseUrl, mock, txn, payload);
         }
         return txn;
     }

@@ -98,6 +98,7 @@ pg:
   security:
     admin-tokens: ${PG_ADMIN_TOKENS:}
     data-encryption-key: ${PG_DATA_ENCRYPTION_KEY:}
+    api-key-mode: ${PG_API_KEY_MODE:test}
   providers:
     http:
       connect-timeout: 2s

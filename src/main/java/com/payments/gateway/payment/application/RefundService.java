@@ -121,8 +121,8 @@ public class RefundService {
         Payment payment = payments.findById(refund.paymentId()).orElseThrow();
         PaymentAttempt attempt = payment.attempt(refund.attemptId()).orElseThrow();
         try {
-            ProviderRefundResult result = providerClient.refund(refund.providerCode(), new RefundRequest(refund.id(),
-                    attempt.id(), attempt.providerReference(), refund.amount(), refund.reason()));
+            ProviderRefundResult result = providerClient.refund(payment.merchantId(), refund.providerCode(),
+                    new RefundRequest(refund.id(), attempt.id(), attempt.providerReference(), refund.amount(), refund.reason()));
             return applyResult(refundId, result, TransitionSource.PROVIDER_RESPONSE);
         } catch (ProviderTimeoutException e) {
             return applyStatus(refundId, RefundStatus.UNKNOWN, null, null, TransitionSource.PROVIDER_RESPONSE);
@@ -139,7 +139,8 @@ public class RefundService {
         return applyStatus(refundId, ProviderResults.toRefundStatus(result), result.providerReference(), failure, source);
     }
 
-    public boolean applyProviderEvent(String providerCode, ProviderEvent event) {
+    /** See {@link PaymentOutcomeService#applyProviderEvent}: a merchant account's events only touch its own refunds. */
+    public boolean applyProviderEvent(String providerCode, String merchantScope, ProviderEvent event) {
         Optional<Refund> refund = Optional.empty();
         if (event.providerReference() != null) {
             refund = refunds.findByProviderReference(providerCode, event.providerReference());
@@ -148,6 +149,11 @@ public class RefundService {
             refund = refunds.findById(event.merchantReference()).filter(r -> r.providerCode().equals(providerCode));
         }
         if (refund.isEmpty() || event.refund().outcome() == ProviderRefundResult.Outcome.NOT_FOUND) {
+            return false;
+        }
+        if (merchantScope != null && !merchantScope.equals(refund.get().merchantId())) {
+            log.warn("Ignored {} event {} from merchant {}'s account: refund {} belongs to another merchant",
+                    providerCode, event.eventId(), merchantScope, refund.get().id());
             return false;
         }
         applyResult(refund.get().id(), event.refund(), TransitionSource.PROVIDER_WEBHOOK);

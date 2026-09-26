@@ -5,6 +5,7 @@ import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.AttemptUpdate;
 import com.payments.gateway.payment.domain.Customer;
+import com.payments.gateway.payment.domain.Failure;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
@@ -12,6 +13,7 @@ import com.payments.gateway.payment.domain.TransitionSource;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.provider.ProviderClient;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
@@ -26,6 +28,7 @@ import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.CaptureMethod;
+import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.web.Mdc;
@@ -187,7 +190,7 @@ public class PaymentService {
                     payment.amount(), command.method(), payment.captureMethod(), payment.description(),
                     payment.customer().email(), payment.customer().phone(), command.returnUrl(), command.clientIp());
             try {
-                ProviderPaymentResult result = providerClient.initiate(provider, request);
+                ProviderPaymentResult result = providerClient.initiate(payment.merchantId(), provider, request);
                 if (result.outcome() == ProviderPaymentResult.Outcome.NOT_FOUND) {
                     throw new ProviderTimeoutException(provider, "provider returned NOT_FOUND for initiate");
                 }
@@ -196,7 +199,10 @@ public class PaymentService {
             } catch (ProviderUnavailableException e) {
                 index++;
                 String next = index < candidates.size() ? candidates.get(index) : null;
-                PaymentOutcomeService.FailoverResult failover = outcomes.failover(payment.id(), currentAttemptId, next, e.getMessage());
+                Failure failure = e instanceof ProviderCredentialsException
+                        ? new Failure("provider_credentials_rejected", FailureCategory.VALIDATION, e.getMessage())
+                        : new Failure("provider_unavailable", FailureCategory.PROVIDER_UNAVAILABLE, e.getMessage());
+                PaymentOutcomeService.FailoverResult failover = outcomes.failover(payment.id(), currentAttemptId, next, failure);
                 if (failover.newAttemptId() == null) {
                     return failover.payment();
                 }

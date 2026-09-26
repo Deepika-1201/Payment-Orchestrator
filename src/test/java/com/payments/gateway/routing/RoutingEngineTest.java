@@ -1,10 +1,12 @@
 package com.payments.gateway.routing;
 
+import com.payments.gateway.provider.MerchantAccountResolver;
 import com.payments.gateway.provider.ProviderClient;
 import com.payments.gateway.provider.ProviderHealthTracker;
 import com.payments.gateway.provider.ProviderRegistry;
 import com.payments.gateway.provider.spi.InboundWebhook;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
@@ -28,6 +30,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,7 +59,17 @@ class RoutingEngineTest {
         when(beans.orderedStream()).thenAnswer(invocation -> Stream.of(alpha, beta, gamma));
         ProviderRegistry registry = new ProviderRegistry(beans);
         health = new ProviderHealthTracker();
-        client = new ProviderClient(registry, health, new SimpleMeterRegistry());
+        client = new ProviderClient(registry, health, new SimpleMeterRegistry(), new MerchantAccountResolver() {
+            @Override
+            public MerchantAccount require(String merchantId, String providerCode) {
+                return new MerchantAccount("mpa_" + providerCode, merchantId, providerCode, Map.of());
+            }
+
+            @Override
+            public Optional<MerchantAccount> findById(String accountId) {
+                return Optional.empty();
+            }
+        });
         RoutingRuleRepository repository = mock(RoutingRuleRepository.class);
         when(repository.findAll()).thenAnswer(invocation -> List.copyOf(rules));
         RoutingRuleCache cache = new RoutingRuleCache(repository);
@@ -138,7 +151,7 @@ class RoutingEngineTest {
     @Test
     void openCircuitsAreExcluded() {
         for (int i = 0; i < 12; i++) {
-            assertThatThrownBy(() -> client.initiate("GAMMA", null)).isInstanceOf(ProviderUnavailableException.class);
+            assertThatThrownBy(() -> client.initiate("mer_1", "GAMMA", null)).isInstanceOf(ProviderUnavailableException.class);
         }
         assertThat(client.isAvailable("GAMMA")).isFalse();
         assertThat(engine.route(context(PaymentMethod.upi(UpiFlow.INTENT, null), 10_000, Set.of("GAMMA"))).reason())
@@ -167,37 +180,37 @@ class RoutingEngineTest {
         }
 
         @Override
-        public ProviderPaymentResult initiatePayment(InitiatePaymentRequest request) {
+        public ProviderPaymentResult initiatePayment(MerchantAccount account, InitiatePaymentRequest request) {
             throw new ProviderUnavailableException(code, "unreachable");
         }
 
         @Override
-        public ProviderPaymentResult fetchPaymentStatus(PaymentStatusQuery query) {
+        public ProviderPaymentResult fetchPaymentStatus(MerchantAccount account, PaymentStatusQuery query) {
             return ProviderPaymentResult.notFound();
         }
 
         @Override
-        public ProviderPaymentResult capture(CaptureRequest request) {
+        public ProviderPaymentResult capture(MerchantAccount account, CaptureRequest request) {
             return ProviderPaymentResult.notFound();
         }
 
         @Override
-        public ProviderPaymentResult voidAuthorization(VoidRequest request) {
+        public ProviderPaymentResult voidAuthorization(MerchantAccount account, VoidRequest request) {
             return ProviderPaymentResult.notFound();
         }
 
         @Override
-        public ProviderRefundResult refund(RefundRequest request) {
+        public ProviderRefundResult refund(MerchantAccount account, RefundRequest request) {
             return ProviderRefundResult.notFound();
         }
 
         @Override
-        public ProviderRefundResult fetchRefundStatus(RefundStatusQuery query) {
+        public ProviderRefundResult fetchRefundStatus(MerchantAccount account, RefundStatusQuery query) {
             return ProviderRefundResult.notFound();
         }
 
         @Override
-        public List<ProviderEvent> parseWebhook(InboundWebhook webhook) {
+        public List<ProviderEvent> parseWebhook(MerchantAccount account, InboundWebhook webhook) {
             return List.of();
         }
     }

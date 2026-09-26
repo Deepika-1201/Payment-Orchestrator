@@ -32,7 +32,7 @@ import tools.jackson.core.type.TypeReference;
 @Repository
 public class PaymentRepository {
 
-    public record AttemptLocator(String attemptId, String paymentId, String providerCode) {
+    public record AttemptLocator(String attemptId, String paymentId, String providerCode, String merchantId) {
     }
 
     public record ClaimedAttempt(String attemptId, String paymentId) {
@@ -112,20 +112,25 @@ public class PaymentRepository {
 
     public Optional<AttemptLocator> findAttemptByProviderReference(String providerCode, String providerReference) {
         return jdbc.sql("""
-                SELECT id, payment_id, provider_code FROM payment_attempts
+                SELECT id, payment_id, provider_code, merchant_id FROM payment_attempts
                  WHERE provider_code = :provider AND provider_reference = :reference
                 """)
                 .param("provider", providerCode)
                 .param("reference", providerReference)
-                .query((rs, n) -> new AttemptLocator(rs.getString("id"), rs.getString("payment_id"), rs.getString("provider_code")))
+                .query(PaymentRepository::mapLocator)
                 .optional();
     }
 
     public Optional<AttemptLocator> findAttemptById(String attemptId) {
-        return jdbc.sql("SELECT id, payment_id, provider_code FROM payment_attempts WHERE id = :id")
+        return jdbc.sql("SELECT id, payment_id, provider_code, merchant_id FROM payment_attempts WHERE id = :id")
                 .param("id", attemptId)
-                .query((rs, n) -> new AttemptLocator(rs.getString("id"), rs.getString("payment_id"), rs.getString("provider_code")))
+                .query(PaymentRepository::mapLocator)
                 .optional();
+    }
+
+    private static AttemptLocator mapLocator(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new AttemptLocator(rs.getString("id"), rs.getString("payment_id"), rs.getString("provider_code"),
+                rs.getString("merchant_id"));
     }
 
     /** Claims due status checks with a lease so concurrent workers never process the same attempt. */

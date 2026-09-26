@@ -83,8 +83,8 @@ public class WebhookDeliveryWorker {
                 fail(delivery, attempt, null, "unsafe webhook URL: " + unsafe.get());
                 return;
             }
-            Optional<String> secret = merchants.webhookSecret(delivery.merchantId());
-            if (secret.isEmpty()) {
+            List<String> secrets = merchants.webhookSecrets(delivery.merchantId());
+            if (secrets.isEmpty()) {
                 fail(delivery, attempt, null, "merchant has no webhook secret");
                 return;
             }
@@ -94,7 +94,7 @@ public class WebhookDeliveryWorker {
                     .header("User-Agent", "PaymentGateway-Webhooks/1.0")
                     .header("PG-Event-Id", delivery.eventId())
                     .header("PG-Event-Type", delivery.eventType())
-                    .header(WebhookSigner.HEADER, WebhookSigner.sign(secret.get(), clock.instant().getEpochSecond(), delivery.payload()))
+                    .header(WebhookSigner.HEADER, WebhookSigner.sign(secrets, clock.instant().getEpochSecond(), delivery.payload()))
                     .POST(HttpRequest.BodyPublishers.ofString(delivery.payload()))
                     .build();
             HttpResponse<Void> response = http.send(request, HttpResponse.BodyHandlers.discarding());

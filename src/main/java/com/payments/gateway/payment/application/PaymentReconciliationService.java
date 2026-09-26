@@ -52,23 +52,26 @@ public class PaymentReconciliationService {
         this.refundService = refundService;
     }
 
-    public Optional<InternalItem> findPayment(String providerCode, String providerReference, String merchantReference) {
+    /** Scoped to the merchant whose PSP account produced the report. */
+    public Optional<InternalItem> findPayment(String merchantId, String providerCode, String providerReference,
+                                              String merchantReference) {
         Optional<AttemptLocator> locator = providerReference == null ? Optional.empty()
                 : payments.findAttemptByProviderReference(providerCode, providerReference);
         if (locator.isEmpty() && merchantReference != null) {
             locator = payments.findAttemptById(merchantReference).filter(l -> l.providerCode().equals(providerCode));
         }
-        return locator.flatMap(l -> payments.findById(l.paymentId())
+        return locator.filter(l -> l.merchantId().equals(merchantId)).flatMap(l -> payments.findById(l.paymentId())
                 .flatMap(payment -> payment.attempt(l.attemptId()).map(attempt -> toItem(payment, attempt))));
     }
 
-    public Optional<InternalItem> findRefund(String providerCode, String providerReference, String merchantReference) {
+    public Optional<InternalItem> findRefund(String merchantId, String providerCode, String providerReference,
+                                             String merchantReference) {
         Optional<Refund> refund = providerReference == null ? Optional.empty()
                 : refunds.findByProviderReference(providerCode, providerReference);
         if (refund.isEmpty() && merchantReference != null) {
             refund = refunds.findById(merchantReference).filter(r -> r.providerCode().equals(providerCode));
         }
-        return refund.map(PaymentReconciliationService::toItem);
+        return refund.filter(r -> r.merchantId().equals(merchantId)).map(PaymentReconciliationService::toItem);
     }
 
     /** Applies a PSP-settled capture; the result reflects the attempt after the domain rules ran. */

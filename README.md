@@ -12,7 +12,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-013 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-014 |
 
 ## Quick start
 
@@ -61,8 +61,10 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `POST /v1/payments/{id}/confirm` · `/capture` · `/cancel` | Start an attempt / capture an authorization / cancel or void |
 | `POST /v1/payments/{id}/refunds` · `GET /v1/payments/{id}/refunds` · `GET /v1/refunds/{id}` | Refunds |
 | `POST /v1/checkout-sessions` · `GET/POST /checkout/{token}` | Hosted checkout session; the customer-facing page (HTML, no JavaScript) |
-| `POST /v1/webhooks/providers/{code}` | PSP webhooks (signature-authenticated) |
+| `POST /v1/webhooks/providers/{code}/{account_id}` · `POST /v1/webhooks/providers/{code}` | PSP webhooks for a merchant's own PSP account (can only affect that merchant) or with platform-level secrets |
 | `/admin/v1/merchants` · `/routing-rules` · `/providers/health` · `/webhook-deliveries` | Admin |
+| `PATCH /admin/v1/merchants/{id}` · `/suspend` · `/reactivate` · `/webhook-secret` · `/api-keys[/{key_id}/revoke]` | Merchant settings, suspension, webhook secret rotation (both secrets valid during a grace period), API key rotation and revocation |
+| `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` · `GET …/provider-accounts` · `POST …/{provider}/disable` | Merchant's own PSP accounts: encrypted credentials (shown masked), per-account webhook path |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/resolve` | Reconcile a merchant PSP account for a window; work the exception queue |
 | `/simulator/...` | Mock PSP hosted page, completion, outage simulation and settlement-report anomalies (local and test only) |
@@ -118,6 +120,7 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | 10 | Real PSP adapters (Razorpay, Cashfree sandboxes) + contract tests | Next |
 | 13 | Reconciliation + shadow double-entry ledger | Done |
 | — | API hardening: OpenAPI contract + drift test, per-merchant rate limits, minimal hosted checkout | Done |
+| — | Merchant management: settings, suspension, API key and webhook secret rotation, encrypted per-merchant PSP credentials, account-scoped PSP webhooks | Done |
 | 14 | Risk: external provider adapter, review queue | Planned |
 | 15 | Observability: dashboards, SLO alerts, OTel collector in compose | Planned |
 | 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |
