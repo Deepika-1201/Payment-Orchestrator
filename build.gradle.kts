@@ -21,6 +21,7 @@ val resilience4jVersion = "2.4.0"
 val embeddedPostgresVersion = "2.2.2"
 val embeddedPostgresBinariesVersion = "17.11.0"
 val archunitVersion = "1.5.1"
+val jsonSchemaValidatorVersion = "3.0.7"
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
@@ -43,6 +44,8 @@ dependencies {
     testImplementation("io.zonky.test.postgres:embedded-postgres-binaries-linux-amd64")
     testImplementation("io.zonky.test.postgres:embedded-postgres-binaries-linux-arm64v8")
     testImplementation("com.tngtech.archunit:archunit-junit5:$archunitVersion")
+    testImplementation("com.networknt:json-schema-validator:$jsonSchemaValidatorVersion")
+    testImplementation("tools.jackson.dataformat:jackson-dataformat-yaml")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

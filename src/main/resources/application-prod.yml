@@ -13,9 +13,15 @@ logging:
     format:
       console: ecs
 
+# Behind the ALB: take the client IP and scheme from X-Forwarded-* sent by internal (VPC) proxies only.
+server:
+  forward-headers-strategy: native
+
 pg:
   workers:
     enabled: ${PG_WORKERS_ENABLED:false}
   providers:
     mock:
       enabled: false
+  checkout:
+    public-base-url: ${PG_CHECKOUT_BASE_URL}

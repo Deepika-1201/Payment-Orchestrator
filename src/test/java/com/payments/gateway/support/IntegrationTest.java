@@ -69,7 +69,7 @@ public abstract class IntegrationTest {
         }
     }
 
-    public record Response(int status, Map<String, Object> body, HttpHeaders headers) {
+    public record Response(int status, Map<String, Object> body, HttpHeaders headers, String raw) {
     }
 
     public record TestMerchant(String id, String apiKey, String webhookSecret) {
@@ -108,7 +108,8 @@ public abstract class IntegrationTest {
                 TRUNCATE merchants, api_keys, merchant_provider_accounts, payments, payment_attempts, refunds,
                          payment_transitions, idempotency_records, provider_webhook_events, merchant_events,
                          webhook_deliveries, routing_rules, audit_log, ledger_entries, ledger_transactions,
-                         ledger_accounts, reconciliation_lines, reconciliation_exceptions, reconciliation_runs
+                         ledger_accounts, reconciliation_lines, reconciliation_exceptions, reconciliation_runs,
+                         checkout_sessions
                          RESTART IDENTITY CASCADE
                 """).update();
         clock.set(Instant.now());
@@ -138,7 +139,7 @@ public abstract class IntegrationTest {
             Map<String, Object> parsed = response.body() == null || response.body().isBlank() || !response.body().startsWith("{")
                     ? Map.of()
                     : json.read(response.body(), MAP);
-            return new Response(response.statusCode(), parsed, response.headers());
+            return new Response(response.statusCode(), parsed, response.headers(), response.body());
         } catch (IOException e) {
             throw new AssertionError("HTTP call failed: " + method + " " + path, e);
         } catch (InterruptedException e) {
@@ -162,6 +163,15 @@ public abstract class IntegrationTest {
 
     protected Response admin(String method, String path, Object body) {
         return send(method, path, Map.of("Authorization", "Bearer " + ADMIN_TOKEN), body);
+    }
+
+    /** Asserts that a request (if given) and its response match docs/openapi.yaml for the path template. */
+    protected Response assertContract(String method, String pathTemplate, Object requestBody, Response response) {
+        if (requestBody != null) {
+            OpenApiContract.get().assertRequest(method, pathTemplate, json.write(requestBody));
+        }
+        OpenApiContract.get().assertResponse(method, pathTemplate, response.status(), response.headers(), response.raw());
+        return response;
     }
 
     // ------------------------------------------------------------------ fixtures

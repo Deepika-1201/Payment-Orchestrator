@@ -26,7 +26,14 @@ class ArchitectureTest {
     static final ArchRule sharedKernelDependsOnNoBusinessModule = noClasses()
             .that().resideInAPackage("..shared..")
             .should().dependOnClassesThat().resideInAnyPackage("..payment..", "..merchant..", "..provider..", "..routing..",
-                    "..risk..", "..webhook..", "..idempotency..", "..platform..", "..ledger..", "..reconciliation..");
+                    "..risk..", "..webhook..", "..idempotency..", "..platform..", "..ledger..", "..reconciliation..",
+                    "..checkout..");
+
+    @ArchTest
+    static final ArchRule checkoutUsesOnlyPaymentApplicationApi = noClasses()
+            .that().resideInAPackage("..checkout..")
+            .should().dependOnClassesThat().resideInAnyPackage("..payment.domain..", "..payment.infrastructure..",
+                    "..payment.web..", "..provider..", "..routing..", "..ledger..", "..reconciliation..");
 
     @ArchTest
     static final ArchRule ledgerIsIndependentOfPaymentsAndProviders = noClasses()

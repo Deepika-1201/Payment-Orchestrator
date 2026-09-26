@@ -121,6 +121,7 @@ flowchart TB
 | `webhook` | Inbound PSP webhook inbox; outbound merchant events and deliveries | shared, payment (events + inbound port), merchant, provider (SPI) |
 | `ledger` | Double-entry shadow ledger, balances | shared (listens to `FundsMovement`) |
 | `reconciliation` | Settlement-report matching, auto-heal, exception queue | payment (application API), provider (SPI), ledger, merchant |
+| `checkout` | Hosted checkout sessions and server-rendered pages (ADR-013) | payment (application API), merchant, idempotency |
 
 Dependency rules are checked by ArchUnit tests: domain code has no framework or infrastructure imports, and modules only use each other's public packages.
 
@@ -338,7 +339,7 @@ flowchart LR
 | Timeouts + retries with exponential backoff and full jitter | PSP calls (same PSP, idempotent ops), deliveries, resolver | Bounded load during incidents |
 | Circuit breakers (Resilience4j) per provider | Adapter layer | Fail fast; routing avoids open circuits |
 | Bulkheads | Separate HTTP client pools per provider; worker concurrency limits | One slow PSP cannot exhaust shared resources |
-| Rate limiting | WAF rate rules (edge) + per-merchant token bucket (app, later phase) | Protects the platform from noisy clients |
+| Rate limiting | WAF rate rules (edge, including per-IP rules on `/checkout/*`) + per-merchant token buckets for reads and writes (app) | Protects the platform from noisy clients; a `429` never consumes an Idempotency-Key |
 | Backpressure | Workers claim bounded batches; Hikari pool limits; 503 + `Retry-After` when saturated | Graceful degradation |
 
 **CAP stance.** For money movement we choose **consistency over availability**: if the primary database is unavailable, mutating APIs fail fast (503) instead of accepting writes we cannot durably order. Reads can degrade to replicas. Merchant notifications are eventually consistent.

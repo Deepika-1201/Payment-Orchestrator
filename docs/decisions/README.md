@@ -16,3 +16,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-010](ADR-010-aws-deployment.md) | AWS: ECS Fargate + Aurora PostgreSQL, Mumbai / Hyderabad, Terraform | Accepted |
 | [ADR-011](ADR-011-no-redis-v1.md) | No Redis in V1 | Accepted |
 | [ADR-012](ADR-012-orchestrator-shadow-ledger.md) | Orchestrator money flow with a shadow double-entry ledger | Accepted |
+| [ADR-013](ADR-013-hosted-checkout.md) | Server-rendered hosted checkout with capability URLs | Accepted |

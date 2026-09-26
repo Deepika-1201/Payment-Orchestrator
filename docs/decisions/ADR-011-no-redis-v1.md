@@ -9,7 +9,7 @@ Typical uses of Redis in gateways: idempotency locks, rate limiting, caching mer
 No Redis in V1:
 - **Idempotency and locks:** PostgreSQL (the source of truth anyway).
 - **Routing health:** in-memory per instance.
-- **Rate limiting:** WAF rate-based rules at the edge; a per-instance token bucket in the app (later phase).
+- **Rate limiting:** WAF rate-based rules at the edge; a per-instance token bucket in the app (implemented: per merchant, separate read and write budgets, `pg.rate-limit.*`).
 - **Caching:** API-key and rule lookups are indexed point reads; an in-process cache comes if profiling shows a need.
 
 ## Alternatives

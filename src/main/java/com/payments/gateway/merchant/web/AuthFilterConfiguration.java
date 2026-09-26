@@ -3,6 +3,8 @@ package com.payments.gateway.merchant.web;
 import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.shared.config.SecurityProperties;
 import com.payments.gateway.shared.json.JsonCodec;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Clock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -20,6 +22,18 @@ public class AuthFilterConfiguration {
         FilterRegistrationBean<ApiKeyAuthFilter> registration = new FilterRegistrationBean<>(new ApiKeyAuthFilter(merchants, json));
         registration.addUrlPatterns("/v1/*");
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
+        return registration;
+    }
+
+    /** Runs after {@link ApiKeyAuthFilter}, so budgets are per authenticated merchant. */
+    @Bean
+    FilterRegistrationBean<RateLimitFilter> rateLimitFilter(RateLimitProperties properties, JsonCodec json, Clock clock,
+                                                            MeterRegistry meters) {
+        FilterRegistrationBean<RateLimitFilter> registration =
+                new FilterRegistrationBean<>(new RateLimitFilter(properties, json, clock, meters));
+        registration.addUrlPatterns("/v1/*");
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 30);
+        registration.setEnabled(properties.enabled());
         return registration;
     }
 

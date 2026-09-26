@@ -72,6 +72,18 @@ pg:
   idempotency:
     ttl: 7d
     lease: 30s
+  # Per merchant, per API instance (ADR-011): the effective global limit is roughly this x the instance count.
+  rate-limit:
+    enabled: true
+    read:
+      per-second: 200
+      burst: 400
+    write:
+      per-second: 100
+      burst: 200
+  checkout:
+    public-base-url: ${PG_CHECKOUT_BASE_URL:http://localhost:8080}
+    result-ttl: 1h
   workers:
     enabled: ${PG_WORKERS_ENABLED:true}
     batch-size: 50

@@ -564,6 +564,15 @@ Key constraints and indexes:
 
 Base path `/v1`. JSON uses snake_case; amounts are integers in minor units; timestamps are ISO-8601 UTC. Every mutating `POST` requires `Idempotency-Key`. Authentication is `Authorization: Bearer sk_test_…`.
 
+The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract-first). `ApiContractTest` checks three things:
+- **Endpoint parity:** every `/v1` handler is documented, and every documented operation exists.
+- **Real exchanges:** representative requests and responses match the documented status, media type, required headers and schema. For the test, object schemas are made strict (`additionalProperties: false`), so an undocumented response field fails the build. The published file stays lenient so that clients ignore unknown fields.
+- **Webhooks:** merchant webhook bodies match the `Event` schema.
+
+**Rate limits** (ADR-011) are per merchant and per API instance, with separate token buckets for reads (`GET`/`HEAD`) and writes. Defaults are 200/s with a burst of 400 for reads, and 100/s with a burst of 200 for writes; the effective global limit is about these values times the instance count.
+- The filter runs after API-key authentication and before idempotency. A `429 rate_limited` (with `Retry-After`) therefore never creates an idempotency record, and the same key can be retried.
+- PSP webhooks and unauthenticated requests are not counted.
+
 | Method & path | Purpose | Success |
 |---|---|---|
 | `POST /v1/payments` | Create payment | `201` payment |
@@ -574,6 +583,7 @@ Base path `/v1`. JSON uses snake_case; amounts are integers in minor units; time
 | `POST /v1/payments/{id}/refunds` | Create refund | `201` refund |
 | `GET /v1/payments/{id}/refunds` | List refunds of a payment | `200` list |
 | `GET /v1/refunds/{id}` | Retrieve refund | `200` refund |
+| `POST /v1/checkout-sessions` | Hosted checkout session for a `requires_payment_method` payment (§17) | `201` session with `url` |
 | `POST /v1/webhooks/providers/{code}` | PSP webhooks (signature-authenticated) | `200` |
 | `POST /admin/v1/merchants` | Create merchant (+ webhook secret, shown once) | `201` |
 | `POST /admin/v1/merchants/{id}/api-keys` | Issue an API key (shown once) | `201` |
@@ -648,6 +658,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `amount_exceeds_refundable` | 422 | No |
 | `capture_amount_mismatch` | 422 | No |
 | `unsupported_payment_method` | 422 | No |
+| `rate_limited` | 429 | Yes, same key, after `Retry-After` |
 | `no_provider_available` | 503 | Yes, with backoff |
 | `internal_error` | 500 | Yes, same key |
 
@@ -660,6 +671,11 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.payments.authorization-ttl` | `5d` | Uncaptured authorization lifetime |
 | `pg.payments.max-attempts` | `5` | Attempts per payment |
 | `pg.idempotency.ttl` / `.lease` | `7d` / `30s` | Idempotency retention / in-progress lease |
+| `pg.rate-limit.enabled` | `true` | Per-merchant API rate limiting |
+| `pg.rate-limit.read` / `.write` | `200/s, burst 400` / `100/s, burst 200` | Per instance: `per-second`, `burst` |
+| `pg.checkout.public-base-url` | `http://localhost:8080` (required in `prod`) | Customer-facing origin in checkout URLs (`PG_CHECKOUT_BASE_URL`) |
+| `pg.checkout.result-ttl` | `1h` | How long after the payment's expiry a checkout link still shows the result |
+| `pg.checkout.banks` | HDFC, ICIC, SBIN, UTIB, KKBK | Netbanking choices on the hosted page (`code`, `name`) |
 | `pg.workers.enabled` | `true` | Worker role on/off |
 | `pg.webhooks.outbound.allow-private-targets` | `false` | Only `true` for local/test |
 | `pg.security.admin-tokens` | — (required) | Admin bearer tokens |
@@ -670,7 +686,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 ## 14. Observability details
 
 - **MDC keys:** `request_id`, `merchant_id`, `payment_id`, `attempt_id`, `provider`.
-- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`.
+- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`.
 - **Log hygiene:** request and response bodies are never logged, and neither are PII values (VPA, email, phone). Risk decisions log reason codes such as `vpa_blocklisted`, never the value. API keys are never logged (only `key_…` ids).
 
 ## 15. Test matrix
@@ -682,6 +698,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Unit | Webhook signing and verification, SSRF guard | `webhook` |
 | Integration (embedded PostgreSQL) | End-to-end flows over HTTP: UPI intent via simulator webhook, card manual capture, cancel/void, timeout → resolver, never-submitted, failover on outage, duplicate webhooks, idempotency replay/conflict/reuse, refunds (partial, multiple, over-refund, concurrent), late success auto-refund, merchant webhook delivery and retry, auth failures | `*IntegrationTest` |
 | Integration | Ledger: balanced postings, late-success netting, idempotency, DB-level balance and immutability. Reconciliation: clean day nets to zero, auto-heal, missing internally/at provider, amount mismatch, duplicate, short payout, auto-resolution, idempotent reruns | `LedgerIntegrationTest`, `ReconciliationIntegrationTest` |
+| Contract | Endpoint parity with `docs/openapi.yaml`; requests, responses (statuses, media types, required headers, strict schemas) and webhook events validated against it | `ApiContractTest` |
+| Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt. Hosted checkout: session rules, escaping, CSP hash, UPI collect, card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |
@@ -734,3 +752,48 @@ Further properties:
 - **Windows** must not overlap between runs (daily windows are consecutive), because a PSP settles each item exactly once.
 
 **Mock PSP support.** The mock PSP produces one settlement per merchant and window with a 2% fee. `POST /simulator/{provider}/report-anomalies` injects discrepancies for tests and demos: `drop`, `duplicate`, `amount_override`, `orphan_capture`, `settlement_shortfall`, `clear`.
+
+## 17. Hosted checkout (ADR-013)
+
+The `checkout_sessions` table was added in `V3__checkout_sessions.sql`:
+- Columns: `id`, `merchant_id`, `payment_id`, `token_hash` (unique), `return_url`, `expires_at` and `created_at`.
+- The token is 32 random bytes in URL-safe base64 (43 chars). Only its SHA-256 is stored.
+- `expires_at` is the payment's `expires_at` plus `pg.checkout.result-ttl`.
+- The worker deletes sessions 7 days after they expire.
+
+```mermaid
+sequenceDiagram
+    participant M as Merchant server
+    participant G as Gateway
+    participant C as Customer browser
+    participant P as PSP page
+    M->>G: POST /v1/payments, then POST /v1/checkout-sessions {payment_id, return_url}
+    G-->>M: 201 {url: /checkout/{token}}
+    M-->>C: redirect to url
+    C->>G: GET /checkout/{token}
+    G-->>C: method choices (only methods routing can serve)
+    C->>G: POST /checkout/{token} (form: method, vpa or bank)
+    G->>G: PaymentCheckoutService.confirm (normal domain rules, return_url = checkout page)
+    G-->>C: 303 → GET /checkout/{token}
+    alt card or netbanking
+        C->>P: "Continue" link (next_action.url)
+        P-->>C: back to /checkout/{token}
+    else UPI collect or intent
+        C->>C: approve in the UPI app; the page meta-refreshes
+    end
+    C->>G: GET /checkout/{token} → final status + "Return to merchant" (return_url)
+```
+
+| Payment status | Page |
+|---|---|
+| `requires_payment_method` | Method forms (UPI ID, UPI app, card, netbanking) for routable methods only; a fixed notice after a failed attempt or invalid input |
+| `requires_action` | `redirect` → "Continue" link to the PSP page; `upi_intent` → "Open UPI app" (`upi://` only); `await_approval` → approve in the app. Auto-refresh every 5 s |
+| `processing` | Waiting message, auto-refresh every 3 s |
+| `succeeded` / `authorized` / `failed` / `cancelled` / `expired` | Outcome, plus a "Return to merchant" link when `return_url` is set |
+
+Rules:
+- **Invalid links:** unknown, malformed or expired tokens, and links of suspended merchants, all return the same `404` page.
+- **Checked inputs:** the VPA must match the API's pattern, and the bank must be in `pg.checkout.banks`. Invalid input redirects back with `?error=<code>`, which selects one of a fixed set of messages.
+- **Failed confirms:** they never surface internals. `payment_invalid_state` (a double submit, or the payment changed) simply re-renders the current state. `unsupported_payment_method` and `no_provider_available` show "method unavailable". Anything else shows "try again" and is logged with the session id.
+- **Response headers:** every `/checkout/*` response, including errors, carries `Content-Security-Policy: default-src 'none'; style-src 'sha256-…'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, together with `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
+- **Risk inputs:** the customer's IP (`request.getRemoteAddr()`, via ALB forwarded headers in `prod`) and User-Agent are passed to risk checks.

@@ -1,0 +1,715 @@
+openapi: 3.1.0
+info:
+  title: Payment Gateway Merchant API
+  version: 1.0.0
+  description: |
+    Server-to-server API for merchants. Create a payment, confirm it with a payment method, and follow
+    `next_action` until the payment reaches a final status. Alternatively, create a checkout session and
+    redirect the customer to its hosted page.
+
+    - **Authentication**: `Authorization: Bearer sk_...`. The key is a server-side secret; never ship it to a
+      browser or an app.
+    - **Idempotency**: every `POST` requires an `Idempotency-Key` (1-255 visible ASCII characters). A retry with
+      the same key and body returns the original response with `Idempotent-Replayed: true`. The same key with a
+      different body is rejected with `422 idempotency_key_reuse`. Keys are kept for 7 days.
+    - **Format**: JSON in snake_case. Amounts are integers in minor units (paise for INR). Timestamps are RFC 3339
+      in UTC. Fields without a value are omitted rather than sent as `null`. Clients must ignore unknown fields.
+    - **Errors**: RFC 9457 problem details (`application/problem+json`) with a stable machine-readable `code`.
+    - **Rate limits**: separate per-merchant budgets for reads (`GET`) and writes. Over budget you get
+      `429 rate_limited` with `Retry-After`; the request was not processed and did not consume its
+      `Idempotency-Key`, so retry it unchanged.
+    - **Outcomes are asynchronous**: a `200` from `confirm` means the attempt started, not that money moved. Rely
+      on webhooks (see `webhooks`) or `GET /v1/payments/{payment_id}` for the final status.
+
+    This document is the contract: `ApiContractTest` fails the build if the implementation drifts from it.
+servers:
+  - url: http://localhost:8080
+    description: Local development (`./gradlew bootTestRun`)
+security:
+  - apiKey: []
+tags:
+  - name: Payments
+  - name: Refunds
+  - name: Checkout
+    description: Hosted checkout sessions. The customer-facing pages under `/checkout/` are HTML and not part of this API.
+
+paths:
+  /v1/payments:
+    post:
+      tags: [Payments]
+      operationId: createPayment
+      summary: Create a payment
+      description: Creates a payment in `requires_payment_method`. It expires after `expires_in_seconds` (default 15 minutes) unless confirmed.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            example:
+              amount: 49900
+              currency: INR
+              merchant_order_id: order_1001
+              customer: {reference: cust_42, email: buyer@example.com}
+      responses:
+        '201':
+          description: Payment created (or the original response replayed).
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Payment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/payments/{payment_id}:
+    get:
+      tags: [Payments]
+      operationId: getPayment
+      summary: Retrieve a payment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The payment.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Payment'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/payments/{payment_id}/confirm:
+    post:
+      tags: [Payments]
+      operationId: confirmPayment
+      summary: Confirm a payment with a payment method
+      description: |
+        Starts an attempt on a PSP chosen by routing. The response usually has status `requires_action` with a
+        `next_action` for the customer (`redirect`, `upi_intent`, `display_qr` or `await_approval`). A payment
+        can be confirmed again after an attempt fails, up to the attempt limit.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfirmPaymentRequest'}
+            example:
+              payment_method: {type: upi, upi: {flow: intent}}
+              return_url: https://merchant.example/orders/1001
+              client: {ip: 203.0.113.7, user_agent: Mozilla/5.0}
+      responses:
+        '200':
+          description: The attempt was started (or the original response replayed).
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Payment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/payments/{payment_id}/capture:
+    post:
+      tags: [Payments]
+      operationId: capturePayment
+      summary: Capture an authorized payment
+      description: For `capture_method=manual`. Partial capture is not supported; `amount`, if sent, must equal the payment amount.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapturePaymentRequest'}
+      responses:
+        '200':
+          description: The payment after the capture request.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Payment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/payments/{payment_id}/cancel:
+    post:
+      tags: [Payments]
+      operationId: cancelPayment
+      summary: Cancel a payment or void an authorization
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CancelPaymentRequest'}
+      responses:
+        '200':
+          description: The cancelled payment.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Payment'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/payments/{payment_id}/refunds:
+    post:
+      tags: [Refunds]
+      operationId: createRefund
+      summary: Refund a succeeded payment
+      description: Omitting `amount` refunds the remaining refundable amount. Several partial refunds are allowed.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateRefundRequest'}
+      responses:
+        '201':
+          description: Refund created; its status moves asynchronously.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Refund'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+    get:
+      tags: [Refunds]
+      operationId: listRefunds
+      summary: List the refunds of a payment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Refunds, oldest first.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RefundList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/refunds/{refund_id}:
+    get:
+      tags: [Refunds]
+      operationId: getRefund
+      summary: Retrieve a refund
+      parameters:
+        - name: refund_id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^rfnd_'}
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The refund.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Refund'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/checkout-sessions:
+    post:
+      tags: [Checkout]
+      operationId: createCheckoutSession
+      summary: Create a hosted checkout session for a payment
+      description: |
+        Redirect the customer to `url`. The page lets them choose UPI (app or UPI ID), card or netbanking; card
+        details are entered only on the PSP's own page. The URL is a bearer credential for this one payment, so
+        send it only to the paying customer. It stops working at `expires_at`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateCheckoutSessionRequest'}
+            example:
+              payment_id: pay_01K5Z9V4J6Q2X8N3M7B1C0D4E5
+              return_url: https://merchant.example/orders/1001
+      responses:
+        '201':
+          description: Session created (or the original response replayed).
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CheckoutSession'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+webhooks:
+  merchantEvent:
+    post:
+      summary: Payment and refund events sent to the merchant's webhook URL
+      description: |
+        Delivered at least once, possibly out of order; deduplicate on `id` (also in `PG-Event-Id`) and re-read
+        the resource if ordering matters. Verify `PG-Signature: t=<unix seconds>,v1=<hex>` where
+        `v1 = HMAC-SHA256(webhook_secret, t + "." + raw_body)`, and reject timestamps older than 5 minutes.
+        Any 2xx acknowledges; otherwise delivery is retried with backoff for about 47 hours.
+      security: []
+      parameters:
+        - {name: PG-Signature, in: header, required: true, schema: {type: string}}
+        - {name: PG-Event-Id, in: header, required: true, schema: {type: string}}
+        - {name: PG-Event-Type, in: header, required: true, schema: {$ref: '#/components/schemas/EventType'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Event'}
+      responses:
+        '200':
+          description: Acknowledged (any 2xx).
+
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Secret API key (`sk_...`), issued per merchant.
+
+  parameters:
+    PaymentId:
+      name: payment_id
+      in: path
+      required: true
+      schema: {type: string, pattern: '^pay_'}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Unique per logical operation; reuse it only to retry the same request.
+      schema: {type: string, minLength: 1, maxLength: 255, pattern: '^[\x21-\x7E]+$'}
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Optional correlation id (1-64 of `A-Za-z0-9._-`); generated when absent and echoed back.
+      schema: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+
+  headers:
+    RequestId:
+      required: true
+      description: Correlation id of this request; quote it when contacting support.
+      schema: {type: string}
+    IdempotentReplayed:
+      required: true
+      description: '`true` when this is the stored response of an earlier request with the same key.'
+      schema: {type: string, enum: ['true', 'false']}
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: {type: integer, minimum: 1}
+    RetryAfterRequired:
+      required: true
+      description: Seconds to wait before retrying.
+      schema: {type: integer, minimum: 1}
+
+  responses:
+    BadRequest:
+      description: '`validation_error` (see `errors`), `malformed_request` or `idempotency_key_required`.'
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unauthorized:
+      description: '`authentication_required` or `invalid_api_key`.'
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    NotFound:
+      description: '`resource_not_found`: unknown id, or it belongs to another merchant.'
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Conflict:
+      description: |
+        `payment_invalid_state` (re-read the resource), `refund_already_exists`, or
+        `idempotency_request_in_progress` (retry with the same key after `Retry-After`).
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+        Retry-After: {$ref: '#/components/headers/RetryAfter'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unprocessable:
+      description: |
+        `idempotency_key_reuse`, `amount_exceeds_refundable`, `capture_amount_mismatch`,
+        `unsupported_payment_method` or `unsupported_currency`. Do not retry unchanged.
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    TooManyRequests:
+      description: '`rate_limited`. Not processed and the Idempotency-Key was not consumed: retry after `Retry-After`.'
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+        Retry-After: {$ref: '#/components/headers/RetryAfterRequired'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    ServiceUnavailable:
+      description: '`no_provider_available`: retry with the same Idempotency-Key and backoff.'
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+        Retry-After: {$ref: '#/components/headers/RetryAfter'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    UnexpectedError:
+      description: '`internal_error`: retry with the same Idempotency-Key and backoff.'
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+
+  schemas:
+    Amount:
+      type: integer
+      format: int64
+      description: Minor units of `currency` (paise for INR).
+    Timestamp:
+      type: string
+      format: date-time
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      examples: [INR]
+
+    PaymentStatus:
+      type: string
+      enum: [requires_payment_method, processing, requires_action, authorized, succeeded, failed, cancelled, expired]
+      description: |
+        `authorized` is only used with `capture_method=manual`. Final: `succeeded`, `failed`, `cancelled`, `expired`
+        (a late PSP success on a failed or expired payment is refunded or accepted per merchant policy).
+    AttemptStatus:
+      type: string
+      enum: [initiated, unknown, requires_action, pending, authorized, capture_pending, succeeded, failed, voided]
+    RefundStatus:
+      type: string
+      enum: [initiated, unknown, pending, succeeded, failed]
+    FailureCategory:
+      type: string
+      enum: [customer, issuer, provider, provider_unavailable, validation, risk, timeout, not_submitted]
+    EventType:
+      type: string
+      enum: [payment.authorized, payment.succeeded, payment.attempt_failed, payment.failed, payment.cancelled,
+             payment.expired, refund.succeeded, refund.failed]
+
+    Payment:
+      type: object
+      required: [id, object, merchant_order_id, amount, currency, status, capture_method, amount_captured,
+                 amount_refunded, attempt_count, expires_at, created_at, updated_at, version]
+      properties:
+        id: {type: string, pattern: '^pay_'}
+        object: {const: payment}
+        merchant_order_id: {type: string}
+        amount: {$ref: '#/components/schemas/Amount'}
+        currency: {$ref: '#/components/schemas/Currency'}
+        status: {$ref: '#/components/schemas/PaymentStatus'}
+        capture_method: {type: string, enum: [automatic, manual]}
+        description: {type: string}
+        customer: {$ref: '#/components/schemas/Customer'}
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        amount_captured: {$ref: '#/components/schemas/Amount'}
+        amount_refunded: {$ref: '#/components/schemas/Amount'}
+        next_action: {$ref: '#/components/schemas/NextAction'}
+        latest_attempt: {$ref: '#/components/schemas/Attempt'}
+        attempt_count: {type: integer, minimum: 0}
+        last_error: {$ref: '#/components/schemas/PaymentError'}
+        cancellation_reason: {type: string}
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When an unconfirmed payment expires.
+        authorization_expires_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When an uncaptured authorization is voided.
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        version: {type: integer, format: int64, description: Increases with every change.}
+    Customer:
+      type: object
+      properties:
+        reference: {type: string}
+        email: {type: string}
+        phone: {type: string}
+    NextAction:
+      type: object
+      description: Present only while the payment is `requires_action`.
+      required: [type]
+      properties:
+        type: {type: string, enum: [redirect, upi_intent, display_qr, await_approval]}
+        url: {type: string, description: '`redirect`: send the customer to this URL (a PSP-hosted page).'}
+        upi_uri: {type: string, description: '`upi_intent`: open this `upi://` URI on the customer''s phone.'}
+        qr_payload: {type: string, description: '`display_qr`: render this as a QR code.'}
+        expires_at: {$ref: '#/components/schemas/Timestamp'}
+    Attempt:
+      type: object
+      required: [id, attempt_number, status, method, provider, created_at]
+      properties:
+        id: {type: string, pattern: '^att_'}
+        attempt_number: {type: integer, minimum: 1}
+        status: {$ref: '#/components/schemas/AttemptStatus'}
+        method: {type: string, enum: [upi, card, netbanking]}
+        upi_flow: {type: string, enum: [intent, qr, collect]}
+        bank_code: {type: string}
+        provider: {type: string}
+        provider_reference: {type: string}
+        failure: {$ref: '#/components/schemas/PaymentError'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+    PaymentError:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string}
+        category: {$ref: '#/components/schemas/FailureCategory'}
+        message: {type: string}
+
+    Refund:
+      type: object
+      required: [id, object, payment_id, attempt_id, amount, currency, status, initiated_by, provider, created_at,
+                 updated_at, version]
+      properties:
+        id: {type: string, pattern: '^rfnd_'}
+        object: {const: refund}
+        payment_id: {type: string, pattern: '^pay_'}
+        attempt_id: {type: string, pattern: '^att_'}
+        amount: {$ref: '#/components/schemas/Amount'}
+        currency: {$ref: '#/components/schemas/Currency'}
+        status: {$ref: '#/components/schemas/RefundStatus'}
+        reason: {type: string}
+        merchant_refund_id: {type: string}
+        initiated_by:
+          type: string
+          enum: [merchant, system_late_success, system_duplicate_success]
+          description: System refunds return money from late or duplicate successes.
+        provider: {type: string}
+        provider_reference: {type: string}
+        failure: {$ref: '#/components/schemas/PaymentError'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        version: {type: integer, format: int64}
+    RefundList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Refund'}
+
+    CheckoutSession:
+      type: object
+      required: [id, object, payment_id, url, expires_at, created_at]
+      properties:
+        id: {type: string, pattern: '^cs_'}
+        object: {const: checkout_session}
+        payment_id: {type: string, pattern: '^pay_'}
+        url: {type: string, description: Hosted page for the customer. Only returned when the session is created.}
+        return_url: {type: string}
+        expires_at: {$ref: '#/components/schemas/Timestamp'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+
+    Event:
+      type: object
+      required: [id, type, created_at, data]
+      properties:
+        id: {type: string, pattern: '^evt_'}
+        type: {$ref: '#/components/schemas/EventType'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        data:
+          type: object
+          required: [object]
+          properties:
+            object:
+              description: The payment (`payment.*`) or refund (`refund.*`) as returned by the API.
+              oneOf:
+                - $ref: '#/components/schemas/Payment'
+                - $ref: '#/components/schemas/Refund'
+
+    Problem:
+      type: object
+      required: [title, status, code]
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        instance: {type: string}
+        code:
+          type: string
+          enum: [validation_error, malformed_request, idempotency_key_required, authentication_required,
+                 invalid_api_key, invalid_signature, resource_not_found, method_not_allowed, unsupported_media_type,
+                 payment_invalid_state, refund_already_exists, idempotency_request_in_progress,
+                 idempotency_key_reuse, amount_exceeds_refundable, capture_amount_mismatch,
+                 unsupported_payment_method, unsupported_currency, rate_limited, no_provider_available,
+                 internal_error]
+        request_id: {type: string}
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: {type: string}
+              message: {type: string}
+
+    CreatePaymentRequest:
+      type: object
+      required: [amount, currency, merchant_order_id]
+      properties:
+        amount: {type: integer, format: int64, minimum: 100, maximum: 100000000}
+        currency: {$ref: '#/components/schemas/Currency'}
+        merchant_order_id: {type: string, maxLength: 64, pattern: '^[A-Za-z0-9_\-:.]+$'}
+        capture_method: {type: string, enum: [automatic, manual], default: automatic}
+        description: {type: string, maxLength: 255}
+        customer:
+          type: object
+          properties:
+            reference: {type: string, maxLength: 64}
+            email: {type: string, format: email, maxLength: 254}
+            phone: {type: string, pattern: '^\+?[0-9]{8,15}$'}
+        metadata:
+          type: object
+          maxProperties: 20
+          propertyNames: {minLength: 1, maxLength: 40}
+          additionalProperties: {type: string, maxLength: 500}
+        expires_in_seconds: {type: integer, minimum: 60, maximum: 86400}
+    ConfirmPaymentRequest:
+      type: object
+      required: [payment_method]
+      properties:
+        payment_method: {$ref: '#/components/schemas/PaymentMethodInput'}
+        return_url:
+          type: string
+          maxLength: 2048
+          pattern: '^https?://\S+$'
+          description: Where the PSP page sends the customer back after `redirect` actions.
+        client:
+          type: object
+          description: The customer's device, used by risk checks.
+          properties:
+            ip: {type: string, maxLength: 45}
+            user_agent: {type: string, maxLength: 512}
+            device_id: {type: string, maxLength: 128}
+    PaymentMethodInput:
+      type: object
+      required: [type]
+      description: Card details are never sent here; card payments redirect to the PSP's page.
+      properties:
+        type: {type: string, enum: [upi, card, netbanking]}
+        upi:
+          type: object
+          required: [flow]
+          properties:
+            flow: {type: string, enum: [intent, qr, collect]}
+            vpa: {type: string, maxLength: 255, description: Required for `collect`.}
+        netbanking:
+          type: object
+          required: [bank_code]
+          properties:
+            bank_code: {type: string, pattern: '^[A-Z0-9_]{2,16}$'}
+      allOf:
+        - if: {properties: {type: {const: upi}}}
+          then: {required: [upi]}
+        - if: {properties: {type: {const: netbanking}}}
+          then: {required: [netbanking]}
+    CapturePaymentRequest:
+      type: object
+      properties:
+        amount: {type: integer, format: int64, minimum: 1}
+    CancelPaymentRequest:
+      type: object
+      properties:
+        reason: {type: string, enum: [requested_by_customer, abandoned, duplicate, fraudulent, other]}
+    CreateRefundRequest:
+      type: object
+      properties:
+        amount: {type: integer, format: int64, minimum: 1, description: Defaults to the remaining refundable amount.}
+        reason: {type: string, maxLength: 255}
+        merchant_refund_id: {type: string, maxLength: 64, pattern: '^[A-Za-z0-9_\-:.]+$'}
+    CreateCheckoutSessionRequest:
+      type: object
+      required: [payment_id]
+      properties:
+        payment_id: {type: string, pattern: '^pay_'}
+        return_url:
+          type: string
+          maxLength: 2048
+          pattern: '^https?://\S+$'
+          description: Shown as "Return to merchant" once the payment is final.

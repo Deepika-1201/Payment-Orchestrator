@@ -20,6 +20,7 @@ public enum ErrorCode {
     CAPTURE_AMOUNT_MISMATCH(422, "Capture amount must equal the authorized amount"),
     UNSUPPORTED_PAYMENT_METHOD(422, "No linked provider supports this payment"),
     UNSUPPORTED_CURRENCY(422, "Currency is not supported"),
+    RATE_LIMITED(429, "Too many requests"),
     NO_PROVIDER_AVAILABLE(503, "No payment provider is currently available"),
     INTERNAL_ERROR(500, "Internal error");
 

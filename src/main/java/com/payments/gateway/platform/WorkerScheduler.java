@@ -1,5 +1,6 @@
 package com.payments.gateway.platform;
 
+import com.payments.gateway.checkout.CheckoutService;
 import com.payments.gateway.idempotency.IdempotencyService;
 import com.payments.gateway.payment.application.ExpiryJob;
 import com.payments.gateway.payment.application.StatusResolver;
@@ -27,16 +28,18 @@ public class WorkerScheduler {
     private final WebhookDeliveryWorker deliveries;
     private final IdempotencyService idempotency;
     private final ReconciliationService reconciliation;
+    private final CheckoutService checkout;
 
     public WorkerScheduler(StatusResolver statusResolver, ExpiryJob expiryJob, ProviderWebhookService inbox,
                            WebhookDeliveryWorker deliveries, IdempotencyService idempotency,
-                           ReconciliationService reconciliation) {
+                           ReconciliationService reconciliation, CheckoutService checkout) {
         this.statusResolver = statusResolver;
         this.expiryJob = expiryJob;
         this.inbox = inbox;
         this.deliveries = deliveries;
         this.idempotency = idempotency;
         this.reconciliation = reconciliation;
+        this.checkout = checkout;
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
@@ -65,6 +68,11 @@ public class WorkerScheduler {
     @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
     void purgeIdempotencyKeys() {
         run("idempotency-purge", () -> idempotency.purgeExpired(10_000));
+    }
+
+    @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
+    void purgeCheckoutSessions() {
+        run("checkout-session-purge", () -> checkout.purgeExpired(10_000));
     }
 
     @Scheduled(cron = "0 30 2 * * *", zone = "Asia/Kolkata")

@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: phases 1–9 and 13 are complete, plus core webhooks, status resolution, expiry and refunds. That includes the double-entry shadow ledger and PSP reconciliation. See the [Roadmap](#roadmap).
+> Status: phases 1–9 and 13 are complete, plus core webhooks, status resolution, expiry and refunds. That includes the double-entry shadow ledger and PSP reconciliation, as well as API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits and a minimal hosted checkout. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -11,7 +11,8 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/requirements.md](docs/requirements.md) | Scope decisions, functional and non-functional requirements, compliance constraints |
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-012 |
+| [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-013 |
 
 ## Quick start
 
@@ -48,6 +49,10 @@ curl -X POST localhost:8080/v1/payments -H "Authorization: Bearer $KEY" -H 'Idem
   -H 'Content-Type: application/json' -d '{"amount":49900,"currency":"INR","merchant_order_id":"order_1"}'
 curl -X POST localhost:8080/v1/payments/{id}/confirm -H "Authorization: Bearer $KEY" -H 'Idempotency-Key: k2' \
   -H 'Content-Type: application/json' -d '{"payment_method":{"type":"upi","upi":{"flow":"intent"}}}'
+
+# Or let the hosted checkout collect the method: open the returned "url" in a browser
+curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY" -H 'Idempotency-Key: k3' \
+  -H 'Content-Type: application/json' -d '{"payment_id":"{id}","return_url":"https://merchant.example/orders/1"}'
 ```
 
 | Endpoint | Purpose |
@@ -55,11 +60,14 @@ curl -X POST localhost:8080/v1/payments/{id}/confirm -H "Authorization: Bearer $
 | `POST /v1/payments` · `GET /v1/payments/{id}` | Create / retrieve |
 | `POST /v1/payments/{id}/confirm` · `/capture` · `/cancel` | Start an attempt / capture an authorization / cancel or void |
 | `POST /v1/payments/{id}/refunds` · `GET /v1/payments/{id}/refunds` · `GET /v1/refunds/{id}` | Refunds |
+| `POST /v1/checkout-sessions` · `GET/POST /checkout/{token}` | Hosted checkout session; the customer-facing page (HTML, no JavaScript) |
 | `POST /v1/webhooks/providers/{code}` | PSP webhooks (signature-authenticated) |
 | `/admin/v1/merchants` · `/routing-rules` · `/providers/health` · `/webhook-deliveries` | Admin |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/resolve` | Reconcile a merchant PSP account for a window; work the exception queue |
 | `/simulator/...` | Mock PSP hosted page, completion, outage simulation and settlement-report anomalies (local and test only) |
+
+Merchant endpoints have per-merchant rate limits, with separate budgets for reads and writes. When a limit is hit, the API answers `429` with `Retry-After`. The request was not processed and its Idempotency-Key was not used up, so it can be retried unchanged.
 
 Mock PSP test scenarios are selected by the last two digits of the amount:
 
@@ -81,7 +89,7 @@ Mock PSP test scenarios are selected by the last two digits of the amount:
 ```
 src/main/java/com/payments/gateway/
   shared/        money, ids, errors, crypto, JSON, request-id + problem-details handling, SSRF guard
-  merchant/      merchants, API keys, auth filters, admin API
+  merchant/      merchants, API keys, auth + rate-limit filters, admin API
   idempotency/   Idempotency-Key storage and replay
   provider/      SPI (spi/), registry, circuit-breaking client, health tracker, mock PSPs (mock/)
   routing/       rules (DB), strategies, routing engine, admin API
@@ -91,6 +99,7 @@ src/main/java/com/payments/gateway/
   webhook/       inbound PSP inbox, outbound merchant outbox + delivery worker
   ledger/        double-entry shadow ledger (postings on capture/refund/fee/settlement), admin API
   reconciliation/ settlement-report matching, auto-heal, exception queue, admin API
+  checkout/      hosted checkout sessions and server-rendered pages
   platform/      worker scheduler (incl. daily T+1 reconciliation at 02:30 IST)
 src/main/resources/db/migration/   Flyway schema
 src/test/java/...                  unit, integration and ArchUnit tests + LocalDevApplication
@@ -108,6 +117,7 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | 11–12 | Webhooks (inbound inbox, outbound outbox), refunds, status resolver, expiry | Done (core) |
 | 10 | Real PSP adapters (Razorpay, Cashfree sandboxes) + contract tests | Next |
 | 13 | Reconciliation + shadow double-entry ledger | Done |
+| — | API hardening: OpenAPI contract + drift test, per-merchant rate limits, minimal hosted checkout | Done |
 | 14 | Risk: external provider adapter, review queue | Planned |
 | 15 | Observability: dashboards, SLO alerts, OTel collector in compose | Planned |
 | 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |

@@ -22,7 +22,7 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 |---|---|---|
 | Q1 | Intent | Reference implementation, built to commercial standards |
 | Q2 | Money flow | **Orchestrator** — merchants hold their own PSP accounts, funds flow PSP → merchant, the platform never holds funds. Payment-Aggregator mode (escrow, settlement, merchant balances) is a designed-for extension |
-| Q3 | Surfaces | Server-to-server REST API returning `next_action`; minimal hosted checkout for demos (later phase); RBAC-protected admin APIs instead of dashboards |
+| Q3 | Surfaces | Server-to-server REST API returning `next_action`, specified in [openapi.yaml](openapi.yaml); minimal hosted checkout (server-rendered, no JavaScript; [ADR-013](decisions/ADR-013-hosted-checkout.md)); RBAC-protected admin APIs instead of dashboards |
 | Q4 | V1 methods | UPI (Intent, QR; Collect optional), cards (one-time, 3DS via PSP, auth/capture/void), netbanking. Wallets, EMI, BNPL, bank transfer/virtual accounts, international: designed for, not built |
 | Q5 | Recurring | Modeled in the domain, built after V1 |
 | Q6 | Lifecycle | No partial capture; multiple partial refunds; disputes = ingest + track + ledger impact |
