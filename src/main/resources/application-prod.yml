@@ -1,0 +1,21 @@
+management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.05}
+    export:
+      otlp:
+        enabled: ${OTLP_TRACING_ENABLED:true}
+  server:
+    port: ${MANAGEMENT_PORT:8081}
+
+logging:
+  structured:
+    format:
+      console: ecs
+
+pg:
+  workers:
+    enabled: ${PG_WORKERS_ENABLED:false}
+  providers:
+    mock:
+      enabled: false

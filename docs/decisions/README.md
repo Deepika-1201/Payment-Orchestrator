@@ -1,0 +1,18 @@
+# Architecture Decision Records
+
+Format: Context → Decision → Alternatives and trade-offs → Consequences. Status values: Proposed, Accepted, Superseded.
+
+| ADR | Decision | Status |
+|---|---|---|
+| [ADR-001](ADR-001-modular-monolith.md) | Modular monolith with `api` and `worker` roles | Accepted |
+| [ADR-002](ADR-002-java-spring-boot.md) | Java 25 LTS + Spring Boot 4.1 (MVC on virtual threads) | Accepted |
+| [ADR-003](ADR-003-postgresql-jdbc.md) | PostgreSQL as system of record, plain JDBC | Accepted |
+| [ADR-004](ADR-004-no-broker-v1.md) | No message broker in V1; outbox/inbox tables + DB-driven workers | Accepted |
+| [ADR-005](ADR-005-provider-adapter-spi.md) | Capability-based provider SPI with failure classification | Accepted |
+| [ADR-006](ADR-006-idempotency.md) | Layered idempotency (API keys, domain, PSP) | Accepted |
+| [ADR-007](ADR-007-state-machines.md) | Separate Payment / Attempt / Refund state machines, row-locked aggregate | Accepted |
+| [ADR-008](ADR-008-card-data-scope.md) | PAN never enters V1; CDE boundary reserved | Accepted |
+| [ADR-009](ADR-009-routing.md) | DB-stored declarative routing rules + health scoring | Accepted |
+| [ADR-010](ADR-010-aws-deployment.md) | AWS: ECS Fargate + Aurora PostgreSQL, Mumbai / Hyderabad, Terraform | Accepted |
+| [ADR-011](ADR-011-no-redis-v1.md) | No Redis in V1 | Accepted |
+| [ADR-012](ADR-012-orchestrator-shadow-ledger.md) | Orchestrator money flow with a shadow double-entry ledger | Accepted |

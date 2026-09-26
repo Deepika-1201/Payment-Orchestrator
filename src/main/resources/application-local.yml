@@ -1,0 +1,24 @@
+# Local development profile: insecure defaults, never use outside a developer machine.
+spring:
+  datasource:
+    password: ${DB_PASSWORD:payments}
+
+pg:
+  security:
+    admin-tokens: ${PG_ADMIN_TOKENS:local-admin-token}
+    # Well-known 32-byte dev key; production keys come from Secrets Manager/KMS.
+    data-encryption-key: ${PG_DATA_ENCRYPTION_KEY:bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=}
+  webhooks:
+    outbound:
+      allow-private-targets: true
+      require-https: false
+  providers:
+    mock:
+      enabled: true
+      latency: 50ms
+      webhook-secret: local-mock-webhook-secret
+      public-base-url: ${PG_PUBLIC_BASE_URL:http://localhost:8080}
+
+logging:
+  level:
+    com.payments.gateway: DEBUG

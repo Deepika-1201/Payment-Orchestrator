@@ -1,0 +1,103 @@
+spring:
+  application:
+    name: payment-gateway
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/payments}
+    username: ${DB_USER:payments}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      connection-timeout: 3000
+      validation-timeout: 1000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+  error:
+    include-stacktrace: never
+    include-message: never
+  tomcat:
+    max-swallow-size: 1MB
+    max-http-form-post-size: 256KB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
+    export:
+      otlp:
+        enabled: ${OTLP_TRACING_ENABLED:false}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  observations:
+    key-values:
+      application: payment-gateway
+
+pg:
+  payments:
+    default-expiry: 15m
+    processing-grace: 30m
+    authorization-ttl: 5d
+    max-attempts: 5
+    supported-currencies: [INR]
+  idempotency:
+    ttl: 7d
+    lease: 30s
+  workers:
+    enabled: ${PG_WORKERS_ENABLED:true}
+    batch-size: 50
+  webhooks:
+    outbound:
+      connect-timeout: 2s
+      read-timeout: 5s
+      allow-private-targets: false
+      require-https: true
+    inbound:
+      max-attempts: 10
+  security:
+    admin-tokens: ${PG_ADMIN_TOKENS:}
+    data-encryption-key: ${PG_DATA_ENCRYPTION_KEY:}
+  providers:
+    http:
+      connect-timeout: 2s
+      read-timeout: 10s
+    mock:
+      enabled: false
+  risk:
+    review-threshold: 20000000
+    block-threshold: 100000000
+    velocity-window: 10m
+    max-attempts-per-customer: 10
+    blocked-vpas: []
+    blocked-ips: []
+    blocked-emails: []
+    blocked-customer-references: []

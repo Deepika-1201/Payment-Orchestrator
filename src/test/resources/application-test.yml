@@ -1,0 +1,30 @@
+spring:
+  datasource:
+    username: postgres
+    password: postgres
+    hikari:
+      maximum-pool-size: 20
+
+pg:
+  workers:
+    enabled: false
+  security:
+    admin-tokens: test-admin-token
+    data-encryption-key: bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=
+  webhooks:
+    outbound:
+      allow-private-targets: true
+      require-https: false
+      read-timeout: 2s
+  providers:
+    mock:
+      enabled: true
+      latency: 0s
+      webhook-secret: test-mock-webhook-secret
+      public-base-url: http://localhost
+  risk:
+    blocked-vpas: [fraud@okbank]
+
+logging:
+  level:
+    com.payments.gateway: INFO

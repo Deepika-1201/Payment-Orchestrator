@@ -1,0 +1,35 @@
+name: payment-gateway
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      DB_URL: jdbc:postgresql://postgres:5432/payments
+      DB_USER: payments
+      DB_PASSWORD: payments
+      PG_PUBLIC_BASE_URL: http://localhost:8080
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
