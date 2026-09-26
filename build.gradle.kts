@@ -22,6 +22,7 @@ val embeddedPostgresVersion = "2.2.2"
 val embeddedPostgresBinariesVersion = "17.11.0"
 val archunitVersion = "1.5.1"
 val jsonSchemaValidatorVersion = "3.0.7"
+val zxingVersion = "3.5.4"
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
@@ -32,6 +33,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-opentelemetry")
     implementation("org.flywaydb:flyway-database-postgresql")
     implementation("io.github.resilience4j:resilience4j-circuitbreaker:$resilience4jVersion")
+    implementation("com.google.zxing:core:$zxingVersion")
     runtimeOnly("org.postgresql:postgresql")
     runtimeOnly("io.micrometer:micrometer-registry-prometheus")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")

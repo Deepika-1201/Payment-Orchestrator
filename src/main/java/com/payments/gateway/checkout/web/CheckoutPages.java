@@ -28,7 +28,7 @@ final class CheckoutPages {
             + "button,.button{display:block;width:100%;box-sizing:border-box;padding:12px;border:0;border-radius:8px;"
             + "background:#1f5eff;color:#fff;font-size:1rem;text-align:center;text-decoration:none;cursor:pointer;"
             + "margin-top:8px}.notice{background:#fdecec;color:#8a1c1c;padding:10px;border-radius:8px;margin:12px 0}"
-            + ".ok{color:#11633a}.bad{color:#8a1c1c}";
+            + ".ok{color:#11633a}.bad{color:#8a1c1c}.qr{text-align:center;margin:16px 0}";
 
     static final String CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'sha256-"
             + Base64.getEncoder().encodeToString(Hashing.sha256(CSS)) + "'; form-action 'self'; frame-ancestors 'none'; "
@@ -125,6 +125,9 @@ final class CheckoutPages {
                 case UPI_INTENT -> html
                         .append("<label>UPI app</label>")
                         .append("<button type=\"submit\">Pay with a UPI app on this phone</button>");
+                case UPI_QR -> html
+                        .append("<label>UPI QR</label>")
+                        .append("<button type=\"submit\">Show a QR code to scan with your phone</button>");
                 case CARD -> html
                         .append("<label>Card</label>")
                         .append("<button type=\"submit\">Pay by card</button>")
@@ -168,6 +171,17 @@ final class CheckoutPages {
             }
             case "await_approval" -> body.append(paragraph("Open your UPI app and approve the payment request."))
                     .append("<p class=\"muted\">This page updates automatically.</p>");
+            case "display_qr" -> {
+                String qr = action.qrPayload() != null && action.qrPayload().startsWith("upi://")
+                        ? QrSvg.render(action.qrPayload(), "UPI QR code for this payment").orElse(null)
+                        : null;
+                if (qr == null) {
+                    body.append(paragraph("Complete the payment in your UPI app. This page updates automatically."));
+                } else {
+                    body.append(paragraph("Scan this code with any UPI app to pay.")).append("<div class=\"qr\">")
+                            .append(qr).append("</div><p class=\"muted\">This page updates automatically once you have paid.</p>");
+                }
+            }
             default -> body.append(paragraph("Complete the payment in your UPI app. This page updates automatically."));
         }
         return 5;

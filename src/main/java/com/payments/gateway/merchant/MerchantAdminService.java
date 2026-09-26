@@ -159,6 +159,33 @@ public class MerchantAdminService {
     }
 
     /** Takes effect on the next request: keys are checked against the database on every call. */
+    public MerchantRepository.RateLimitOverrides rateLimits(String merchantId) {
+        return repository.findRateLimits(merchantId).orElseThrow(() -> GatewayException.notFound("Merchant", merchantId));
+    }
+
+    /** Null limits fall back to the platform defaults (ADR-020). Takes effect on the merchant's next request. */
+    public MerchantRepository.RateLimitOverrides updateRateLimits(String merchantId,
+                                                                 MerchantRepository.RateLimitOverrides limits,
+                                                                 String actor) {
+        Instant now = clock.instant();
+        return tx.execute(status -> {
+            repository.lockById(merchantId).orElseThrow(() -> GatewayException.notFound("Merchant", merchantId));
+            MerchantRepository.RateLimitOverrides before = repository.findRateLimits(merchantId).orElseThrow();
+            if (!before.equals(limits)) {
+                repository.updateRateLimits(merchantId, limits, now);
+                Map<String, Object> details = new java.util.HashMap<>();
+                details.put("read", describe(limits.read()));
+                details.put("write", describe(limits.write()));
+                audit.record("ADMIN", actor, "merchant.rate_limits_updated", "merchant", merchantId, details);
+            }
+            return limits;
+        });
+    }
+
+    private static String describe(RateLimit limit) {
+        return limit == null ? "default" : limit.perSecond() + "/s burst " + limit.burst();
+    }
+
     public MerchantRepository.ApiKeyRow revokeApiKey(String merchantId, String keyId, String actor) {
         Instant now = clock.instant();
         return tx.execute(status -> {

@@ -324,7 +324,7 @@ paths:
       operationId: createCheckoutSession
       summary: Create a hosted checkout session for a payment
       description: |
-        Redirect the customer to `url`. The page lets them choose UPI (app or UPI ID), card or netbanking; card
+        Redirect the customer to `url`. The page lets them choose UPI (app, UPI ID or QR code), card or netbanking; card
         details are entered only on the PSP's own page. The URL is a bearer credential for this one payment, so
         send it only to the paying customer. It stops working at `expires_at`.
       parameters:

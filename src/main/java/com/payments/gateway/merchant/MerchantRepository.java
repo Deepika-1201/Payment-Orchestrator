@@ -128,14 +128,50 @@ public class MerchantRepository {
 
     public Optional<ApiKeyMatch> findPrincipalByKeyHash(byte[] keyHash) {
         return jdbc.sql("""
-                SELECT k.id AS key_id, k.merchant_id, k.last_used_at
+                SELECT k.id AS key_id, k.merchant_id, k.last_used_at, m.rate_limit_read_per_second,
+                       m.rate_limit_read_burst, m.rate_limit_write_per_second, m.rate_limit_write_burst
                   FROM api_keys k JOIN merchants m ON m.id = k.merchant_id
                  WHERE k.key_hash = :hash AND k.status = 'ACTIVE' AND m.status = 'ACTIVE'
                 """)
                 .param("hash", keyHash)
-                .query((rs, n) -> new ApiKeyMatch(new MerchantPrincipal(rs.getString("merchant_id"), rs.getString("key_id")),
-                        Sql.instant(rs, "last_used_at")))
+                .query((rs, n) -> new ApiKeyMatch(new MerchantPrincipal(rs.getString("merchant_id"), rs.getString("key_id"),
+                        limit(rs, "read"), limit(rs, "write")), Sql.instant(rs, "last_used_at")))
                 .optional();
+    }
+
+    public record RateLimitOverrides(RateLimit read, RateLimit write) {
+    }
+
+    public Optional<RateLimitOverrides> findRateLimits(String merchantId) {
+        return jdbc.sql("""
+                SELECT rate_limit_read_per_second, rate_limit_read_burst, rate_limit_write_per_second,
+                       rate_limit_write_burst
+                  FROM merchants WHERE id = :id
+                """)
+                .param("id", merchantId)
+                .query((rs, n) -> new RateLimitOverrides(limit(rs, "read"), limit(rs, "write")))
+                .optional();
+    }
+
+    public void updateRateLimits(String merchantId, RateLimitOverrides limits, Instant now) {
+        jdbc.sql("""
+                UPDATE merchants SET rate_limit_read_per_second = :readRate, rate_limit_read_burst = :readBurst,
+                                     rate_limit_write_per_second = :writeRate, rate_limit_write_burst = :writeBurst,
+                                     updated_at = :now
+                 WHERE id = :id
+                """)
+                .param("id", merchantId)
+                .param("readRate", limits.read() == null ? null : limits.read().perSecond())
+                .param("readBurst", limits.read() == null ? null : limits.read().burst())
+                .param("writeRate", limits.write() == null ? null : limits.write().perSecond())
+                .param("writeBurst", limits.write() == null ? null : limits.write().burst())
+                .param("now", Sql.ts(now))
+                .update();
+    }
+
+    private static RateLimit limit(java.sql.ResultSet rs, String operation) throws java.sql.SQLException {
+        double perSecond = rs.getDouble("rate_limit_" + operation + "_per_second");
+        return rs.wasNull() ? null : new RateLimit(perSecond, rs.getInt("rate_limit_" + operation + "_burst"));
     }
 
     public void touchApiKey(String keyId, Instant now) {

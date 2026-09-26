@@ -646,6 +646,7 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `GET /admin/v1/merchants/{id}/provider-accounts` | Accounts with masked credentials and `webhook_path` | `200` |
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` | Link or re-enable `{credentials}` (validated against the adapter's fields; replaces stored ones) | `200` |
 | `POST /admin/v1/merchants/{id}/provider-accounts/{provider}/disable` | No new payments; in-flight work and reconciliation continue | `200` |
+| `GET/PUT /admin/v1/merchants/{id}/rate-limits` | Per-merchant `read`/`write` budget overrides (`per_second`, `burst`; omit = default), audited (ADR-020) | `200` |
 | `GET/POST/PUT /admin/v1/routing-rules` | Manage routing rules | `200/201` |
 | `GET /admin/v1/providers/health` | Circuit states + scores | `200` |
 | `POST /admin/v1/webhook-deliveries/{id}/replay` | Re-queue a delivery | `202` |
@@ -744,7 +745,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.payments.max-attempts` | `5` | Attempts per payment |
 | `pg.idempotency.ttl` / `.lease` | `7d` / `30s` | Idempotency retention / in-progress lease |
 | `pg.rate-limit.enabled` | `true` | Per-merchant API rate limiting |
-| `pg.rate-limit.read` / `.write` | `200/s, burst 400` / `100/s, burst 200` | Per instance: `per-second`, `burst` |
+| `pg.rate-limit.read` / `.write` | `200/s, burst 400` / `100/s, burst 200` | Per instance: `per-second`, `burst`. Per-merchant overrides via `PUT /admin/v1/merchants/{id}/rate-limits` (ADR-020) |
 | `pg.checkout.public-base-url` | `http://localhost:8080` (required in `prod`) | Customer-facing origin in checkout URLs (`PG_CHECKOUT_BASE_URL`) |
 | `pg.checkout.result-ttl` | `1h` | How long after the payment's expiry a checkout link still shows the result |
 | `pg.checkout.banks` | HDFC, ICIC, SBIN, UTIB, KKBK | Netbanking choices on the hosted page (`code`, `name`) |
@@ -779,7 +780,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Ledger: balanced postings, late-success netting, idempotency, DB-level balance and immutability. Reconciliation: clean day nets to zero, auto-heal, missing internally/at provider, amount mismatch, duplicate, short payout, auto-resolution, idempotent reruns | `LedgerIntegrationTest`, `ReconciliationIntegrationTest` |
 | Contract | Endpoint parity with `docs/openapi.yaml`; requests, responses (statuses, media types, required headers, strict schemas) and webhook events validated against it | `ApiContractTest` |
 | Integration | Merchant lifecycle: settings and audit, suspension (keys and checkout blocked, in-flight payments finish), key rotation and immediate revocation, webhook secret rotation with dual signatures. PSP accounts: encrypted and masked credentials, per-account webhook secret, rejected credentials fail over without opening the shared circuit, disabled accounts finish in-flight work, cross-tenant webhook forgery and event-id squatting | `MerchantAdminIntegrationTest`, `ProviderAccountIntegrationTest` |
-| Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt. Hosted checkout: session rules, escaping, CSP hash, UPI collect, card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
+| Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt, per-merchant override and its removal. Hosted checkout: session rules, escaping, CSP hash, UPI collect, UPI QR (rendered SVG decodes to the PSP payload), card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
 | Integration | Review queue: amount mismatch, refund contradicted by the PSP, 72 h unresolved, risk review (and across failover); audited acknowledge-only resolution. External risk vendor: signed request, block with sanitized reasons, timeout / error / unknown answer → review | `ReviewQueueIntegrationTest`, `ExternalRiskIntegrationTest` |
 | Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
 | Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
@@ -872,16 +873,16 @@ sequenceDiagram
     alt card or netbanking
         C->>P: "Continue" link (next_action.url)
         P-->>C: back to /checkout/{token}
-    else UPI collect or intent
-        C->>C: approve in the UPI app; the page meta-refreshes
+    else UPI collect, intent or QR
+        C->>C: approve in the UPI app, or scan the QR shown on the page; the page meta-refreshes
     end
     C->>G: GET /checkout/{token} → final status + "Return to merchant" (return_url)
 ```
 
 | Payment status | Page |
 |---|---|
-| `requires_payment_method` | Method forms (UPI ID, UPI app, card, netbanking) for routable methods only; a fixed notice after a failed attempt or invalid input |
-| `requires_action` | `redirect` → "Continue" link to the PSP page; `upi_intent` → "Open UPI app" (`upi://` only); `await_approval` → approve in the app. Auto-refresh every 5 s |
+| `requires_payment_method` | Method forms (UPI ID, UPI app, UPI QR, card, netbanking) for routable methods only; a fixed notice after a failed attempt or invalid input |
+| `requires_action` | `redirect` → "Continue" link to the PSP page; `upi_intent` → "Open UPI app" (`upi://` only); `display_qr` → the PSP's `upi://` payload as a server-rendered inline SVG QR (ADR-021); `await_approval` → approve in the app. Auto-refresh every 5 s |
 | `processing` | Waiting message, auto-refresh every 3 s |
 | `succeeded` / `authorized` / `failed` / `cancelled` / `expired` | Outcome, plus a "Return to merchant" link when `return_url` is set |
 

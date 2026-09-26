@@ -23,3 +23,5 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-017](ADR-017-reconciliation-sla-and-report.md) | Reconciliation exceptions get an owner and an SLA; daily report computed on request | Accepted |
 | [ADR-018](ADR-018-disputes.md) | Disputes as their own aggregate from PSP webhooks and reports; chargeback ledger postings; refund guard | Accepted |
 | [ADR-019](ADR-019-admin-roles.md) | Admin roles: hashed named operator tokens, deny-by-default endpoint permissions | Accepted |
+| [ADR-020](ADR-020-merchant-rate-limit-overrides.md) | Per-merchant rate-limit overrides loaded with API-key authentication | Accepted |
+| [ADR-021](ADR-021-checkout-upi-qr.md) | UPI QR on the hosted checkout as server-rendered inline SVG (strict CSP unchanged) | Accepted |

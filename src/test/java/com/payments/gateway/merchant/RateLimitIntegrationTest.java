@@ -75,4 +75,35 @@ class RateLimitIntegrationTest extends IntegrationTest {
 
         assertThat(post(merchant, "/v1/payments", "w0", PAYMENT).status()).isEqualTo(201);
     }
+
+    @Test
+    void aMerchantOverrideReplacesTheDefaultBudgetUntilRemoved() {
+        TestMerchant big = createMerchant(ALPHA);
+        TestMerchant regular = createMerchant(ALPHA);
+        Response updated = admin("PUT", "/admin/v1/merchants/" + big.id() + "/rate-limits",
+                Map.of("write", Map.of("per_second", 50, "burst", 6)));
+        assertThat(updated.status()).as(updated.raw()).isEqualTo(200);
+        assertThat(updated.body()).doesNotContainKey("read");
+        assertThat(str(updated.body(), "defaults.write.burst")).isEqualTo("3");
+
+        for (int i = 0; i < 6; i++) {
+            assertThat(post(big, "/v1/payments", "big" + i, PAYMENT).status()).isEqualTo(201);
+        }
+        assertThat(post(big, "/v1/payments", "big6", PAYMENT).status()).isEqualTo(429);
+        for (int i = 0; i < 3; i++) {
+            post(regular, "/v1/payments", "reg" + i, PAYMENT);
+        }
+        assertThat(post(regular, "/v1/payments", "reg3", PAYMENT).status()).as("others keep the default").isEqualTo(429);
+        assertThat(jdbc.sql("SELECT details->>'write' FROM audit_log WHERE action = 'merchant.rate_limits_updated'")
+                .query(String.class).single()).isEqualTo("50.0/s burst 6");
+
+        assertThat(admin("PUT", "/admin/v1/merchants/" + big.id() + "/rate-limits", Map.of()).status()).isEqualTo(200);
+        clock.advance(Duration.ofSeconds(10));
+        for (int i = 0; i < 3; i++) {
+            assertThat(post(big, "/v1/payments", "back" + i, PAYMENT).status()).isEqualTo(201);
+        }
+        assertThat(post(big, "/v1/payments", "back3", PAYMENT).status()).as("default again").isEqualTo(429);
+        assertThat(admin("PUT", "/admin/v1/merchants/" + big.id() + "/rate-limits",
+                Map.of("read", Map.of("per_second", 0, "burst", 1))).status()).isEqualTo(400);
+    }
 }

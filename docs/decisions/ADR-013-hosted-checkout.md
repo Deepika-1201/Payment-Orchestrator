@@ -12,7 +12,7 @@ Q3 asks for a minimal hosted checkout next to the server-to-server API. It is th
   - `Content-Security-Policy` is `default-src 'none'`. The one inline stylesheet is allowed by its hash, forms may only post back to this site (`form-action 'self'`), and the page cannot be framed (`frame-ancestors 'none'`).
   - Responses also send `Referrer-Policy: no-referrer`, so the token never leaks in a `Referer`, and `Cache-Control: no-store`.
 - **Post/redirect/get:** each form submission starts an attempt through the normal payment domain and is answered with `303` back to the page. The page renders from the payment's current state, so a double click or refresh cannot start a second attempt. Pages still waiting on the customer or PSP reload themselves with `<meta refresh>`.
-- **Methods:** the page offers UPI collect (UPI ID), UPI intent (opens the app), card and netbanking, limited to what routing can serve for that payment.
+- **Methods:** the page offers UPI collect (UPI ID), UPI intent (opens the app), UPI QR (added by [ADR-021](ADR-021-checkout-upi-qr.md)), card and netbanking, limited to what routing can serve for that payment.
   - Cards and netbanking go to the PSP's page through a plain link. A same-origin form cannot redirect straight to the PSP while `form-action 'self'` is in force, so this is one extra click.
   - The PSP returns the customer to the checkout page, which then offers the merchant's `return_url`.
   - UPI QR is not offered yet, because it needs image rendering.

@@ -5,13 +5,17 @@ import com.payments.gateway.merchant.MerchantAdminService;
 import com.payments.gateway.merchant.MerchantAdminService.CreatedMerchant;
 import com.payments.gateway.merchant.MerchantAdminService.IssuedApiKey;
 import com.payments.gateway.merchant.MerchantDirectory;
+import com.payments.gateway.merchant.MerchantRepository;
 import com.payments.gateway.merchant.MerchantRepository.ApiKeyRow;
 import com.payments.gateway.merchant.ProviderAccountService;
 import com.payments.gateway.merchant.ProviderAccountService.AccountView;
+import com.payments.gateway.merchant.RateLimit;
 import com.payments.gateway.shared.web.AdminPermission;
 import com.payments.gateway.shared.web.RequiresAdmin;
 import com.payments.gateway.shared.web.WireEnums;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -85,17 +89,33 @@ public class AdminMerchantController {
     public record ListResponse<T>(List<T> data) {
     }
 
+    public record LimitBody(@DecimalMin(value = "0", inclusive = false) @DecimalMax("100000") double perSecond,
+                            @Min(1) @Max(1_000_000) int burst) {
+    }
+
+    /** Omit {@code read} or {@code write} (or send null) to use the platform default. */
+    public record RateLimitsRequest(@Valid LimitBody read, @Valid LimitBody write) {
+    }
+
+    public record RateLimitsDefaults(LimitBody read, LimitBody write) {
+    }
+
+    public record RateLimitsResponse(LimitBody read, LimitBody write, RateLimitsDefaults defaults) {
+    }
+
     private static final Duration DEFAULT_SECRET_OVERLAP = Duration.ofHours(24);
 
     private final MerchantAdminService admin;
     private final ProviderAccountService providerAccounts;
     private final MerchantDirectory directory;
+    private final RateLimitProperties rateLimitDefaults;
 
     public AdminMerchantController(MerchantAdminService admin, ProviderAccountService providerAccounts,
-                                   MerchantDirectory directory) {
+                                   MerchantDirectory directory, RateLimitProperties rateLimitDefaults) {
         this.admin = admin;
         this.providerAccounts = providerAccounts;
         this.directory = directory;
+        this.rateLimitDefaults = rateLimitDefaults;
     }
 
     @PostMapping
@@ -200,6 +220,33 @@ public class AdminMerchantController {
     public ProviderAccountResponse disableProviderAccount(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                                           @PathVariable String id, @PathVariable String provider) {
         return toResponse(providerAccounts.disable(id, provider, actor));
+    }
+
+    /** The merchant's overrides ({@code null} = platform default) and the defaults they replace. */
+    @GetMapping("/{id}/rate-limits")
+    public RateLimitsResponse rateLimits(@PathVariable String id) {
+        return toResponse(admin.rateLimits(id));
+    }
+
+    @PutMapping("/{id}/rate-limits")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
+    public RateLimitsResponse updateRateLimits(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                               @PathVariable String id, @Valid @RequestBody RateLimitsRequest request) {
+        return toResponse(admin.updateRateLimits(id, new MerchantRepository.RateLimitOverrides(
+                toLimit(request.read()), toLimit(request.write())), actor));
+    }
+
+    private RateLimitsResponse toResponse(MerchantRepository.RateLimitOverrides overrides) {
+        return new RateLimitsResponse(toBody(overrides.read()), toBody(overrides.write()),
+                new RateLimitsDefaults(toBody(rateLimitDefaults.read()), toBody(rateLimitDefaults.write())));
+    }
+
+    private static RateLimit toLimit(LimitBody body) {
+        return body == null ? null : new RateLimit(body.perSecond(), body.burst());
+    }
+
+    private static LimitBody toBody(RateLimit limit) {
+        return limit == null ? null : new LimitBody(limit.perSecond(), limit.burst());
     }
 
     private MerchantResponse toResponse(Merchant merchant) {

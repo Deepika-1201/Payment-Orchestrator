@@ -79,6 +79,7 @@ public class HostedCheckoutController {
                 paymentMethod = PaymentMethod.upi(UpiFlow.COLLECT, candidate);
             }
             case UPI_INTENT -> paymentMethod = PaymentMethod.upi(UpiFlow.INTENT, null);
+            case UPI_QR -> paymentMethod = PaymentMethod.upi(UpiFlow.QR, null);
             case CARD -> paymentMethod = PaymentMethod.card();
             case NETBANKING -> {
                 if (!properties.isKnownBank(bank)) {

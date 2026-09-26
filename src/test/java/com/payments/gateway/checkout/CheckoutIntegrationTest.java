@@ -70,8 +70,8 @@ class CheckoutIntegrationTest extends IntegrationTest {
         assertThat(page.status()).isEqualTo(200);
         assertThat(page.headers().firstValue("Content-Type")).hasValueSatisfying(type -> assertThat(type).startsWith("text/html"));
         assertThat(page.html()).contains("&lt;script&gt;alert(1)&lt;/script&gt;").doesNotContain("<script>");
-        assertThat(page.html()).contains("\u20B9499.00", "value=\"upi_collect\"", "value=\"upi_intent\"", "value=\"card\"",
-                "value=\"netbanking\"", "<option value=\"HDFC\">HDFC Bank</option>");
+        assertThat(page.html()).contains("\u20B9499.00", "value=\"upi_collect\"", "value=\"upi_intent\"", "value=\"upi_qr\"",
+                "value=\"card\"", "value=\"netbanking\"", "<option value=\"HDFC\">HDFC Bank</option>");
         assertSecurityHeaders(page);
         Matcher style = Pattern.compile("<style>(.*?)</style>").matcher(page.html());
         assertThat(style.find()).isTrue();
@@ -99,6 +99,40 @@ class CheckoutIntegrationTest extends IntegrationTest {
         Page done = open(path);
         assertThat(done.html()).contains("Payment successful", "href=\"" + RETURN_URL + "\"").doesNotContain("http-equiv");
         assertThat(str(getPayment(merchant, paymentId), "status")).isEqualTo("succeeded");
+    }
+
+    @Test
+    void upiQrShowsAServerRenderedCodeOfThePspPayloadAndCompletes() throws Exception {
+        TestMerchant merchant = createMerchant(ALPHA);
+        String paymentId = str(createPayment(merchant, 49_900, "automatic"), "id");
+        String path = session(merchant, paymentId);
+
+        assertThat(submit(path, Map.of("method", "upi_qr")).status()).isEqualTo(303);
+        Page waiting = open(path);
+
+        assertThat(waiting.html()).contains("Scan this code", "aria-label=\"UPI QR code for this payment\"", "http-equiv=\"refresh\"")
+                .doesNotContain("<script").doesNotContain("<img");
+        assertSecurityHeaders(waiting);
+        Map<String, Object> payment = getPayment(merchant, paymentId);
+        assertThat(str(payment, "latest_attempt.upi_flow")).isEqualTo("qr");
+        assertThat(decodeQr(waiting.html())).as("the page shows exactly the PSP's QR payload")
+                .isEqualTo(str(payment, "next_action.qr_payload")).startsWith("upi://pay?");
+
+        simulate(ALPHA, str(payment, "latest_attempt.provider_reference"), "success", false);
+        assertThat(open(path).html()).contains("Payment successful").doesNotContain("<svg");
+    }
+
+    /** Rebuilds the module matrix from the SVG path and decodes it (quiet zone of 4 modules). */
+    private static String decodeQr(String html) throws Exception {
+        Matcher svg = Pattern.compile("viewBox=\"0 0 (\\d+) \\d+\".*?d=\"([^\"]+)\"").matcher(html);
+        assertThat(svg.find()).isTrue();
+        int size = Integer.parseInt(svg.group(1));
+        com.google.zxing.common.BitMatrix modules = new com.google.zxing.common.BitMatrix(size - 8);
+        Matcher move = Pattern.compile("M(\\d+),(\\d+)").matcher(svg.group(2));
+        while (move.find()) {
+            modules.set(Integer.parseInt(move.group(1)) - 4, Integer.parseInt(move.group(2)) - 4);
+        }
+        return new com.google.zxing.qrcode.decoder.Decoder().decode(modules).getText();
     }
 
     @Test

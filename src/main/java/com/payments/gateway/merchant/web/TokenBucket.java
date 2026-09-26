@@ -1,21 +1,29 @@
 package com.payments.gateway.merchant.web;
 
+import com.payments.gateway.merchant.RateLimit;
+
 /** Token bucket holding up to {@code burst} tokens, refilled continuously at {@code perSecond}. */
 final class TokenBucket {
 
     private static final long WARN_INTERVAL_MILLIS = 60_000;
 
+    private final RateLimit limit;
     private final double capacity;
     private final double tokensPerMilli;
     private double tokens;
     private long refilledAtMillis;
     private long warnedAtMillis = Long.MIN_VALUE;
 
-    TokenBucket(RateLimitProperties.Limit limit, long nowMillis) {
+    TokenBucket(RateLimit limit, long nowMillis) {
+        this.limit = limit;
         this.capacity = limit.burst();
         this.tokensPerMilli = limit.perSecond() / 1000.0;
         this.tokens = capacity;
         this.refilledAtMillis = nowMillis;
+    }
+
+    RateLimit limit() {
+        return limit;
     }
 
     /** Takes a token and returns 0, or returns the milliseconds until a token will be available. */

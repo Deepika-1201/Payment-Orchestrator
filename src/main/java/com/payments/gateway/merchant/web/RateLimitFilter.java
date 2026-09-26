@@ -1,6 +1,7 @@
 package com.payments.gateway.merchant.web;
 
 import com.payments.gateway.merchant.MerchantPrincipal;
+import com.payments.gateway.merchant.RateLimit;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.web.ProblemResponses;
@@ -51,8 +52,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
         boolean read = "GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod());
         String operation = read ? "read" : "write";
         long now = clock.millis();
-        TokenBucket bucket = buckets.computeIfAbsent(principal.merchantId() + ":" + operation,
-                key -> new TokenBucket(read ? properties.read() : properties.write(), now));
+        RateLimit override = read ? principal.readLimit() : principal.writeLimit();
+        RateLimit limit = override != null ? override : read ? properties.read() : properties.write();
+        // A changed limit (merchant override set or removed) starts a fresh bucket at the new budget.
+        TokenBucket bucket = buckets.compute(principal.merchantId() + ":" + operation,
+                (key, existing) -> existing != null && existing.limit().equals(limit) ? existing : new TokenBucket(limit, now));
         long waitMillis = bucket.tryTake(now);
         if (waitMillis == 0) {
             chain.doFilter(request, response);

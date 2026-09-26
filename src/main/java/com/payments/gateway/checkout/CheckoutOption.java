@@ -11,6 +11,7 @@ import java.util.Optional;
 public enum CheckoutOption {
     UPI_COLLECT(PaymentMethod.upi(UpiFlow.COLLECT, "routing@probe")),
     UPI_INTENT(PaymentMethod.upi(UpiFlow.INTENT, null)),
+    UPI_QR(PaymentMethod.upi(UpiFlow.QR, null)),
     CARD(PaymentMethod.card()),
     NETBANKING(PaymentMethod.netbanking("PROBE"));
 
