@@ -104,6 +104,10 @@ public class ProviderWebhookService {
         return new ReceiveResult(received, duplicates);
     }
 
+    public int purgeHandledBefore(Instant cutoff, int limit) {
+        return inbox.deleteHandledBefore(cutoff, limit);
+    }
+
     public int processDue() {
         Instant now = clock.instant();
         List<ProviderWebhookRepository.PendingEvent> due = inbox.claimDue(now, now.plus(LEASE), workers.batchSize());

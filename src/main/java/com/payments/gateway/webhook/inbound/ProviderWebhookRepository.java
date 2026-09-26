@@ -67,6 +67,18 @@ public class ProviderWebhookRepository {
                 .update();
     }
 
+    /** Deletes one batch of handled events received before {@code cutoff}; events still being retried are kept. */
+    public int deleteHandledBefore(Instant cutoff, int limit) {
+        return jdbc.sql("""
+                DELETE FROM provider_webhook_events WHERE id IN (
+                    SELECT id FROM provider_webhook_events
+                     WHERE received_at < :cutoff AND status <> 'RECEIVED' LIMIT :limit)
+                """)
+                .param("cutoff", Sql.ts(cutoff))
+                .param("limit", limit)
+                .update();
+    }
+
     public List<PendingEvent> claimDue(Instant now, Instant leaseUntil, int limit) {
         return jdbc.sql("""
                 UPDATE provider_webhook_events SET next_attempt_at = :leaseUntil

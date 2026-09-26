@@ -116,6 +116,31 @@ public class MerchantWebhookRepository {
                 .update() == 1;
     }
 
+    /** One batch of finished deliveries created before {@code cutoff}; pending ones are kept. */
+    public int deleteFinishedDeliveriesBefore(Instant cutoff, int limit) {
+        return jdbc.sql("""
+                DELETE FROM webhook_deliveries WHERE id IN (
+                    SELECT id FROM webhook_deliveries WHERE created_at < :cutoff AND status <> 'PENDING' LIMIT :limit)
+                """)
+                .param("cutoff", Sql.ts(cutoff))
+                .param("limit", limit)
+                .update();
+    }
+
+    /** One batch of events created before {@code cutoff} that no longer have any delivery. */
+    public int deleteUndeliveredEventsBefore(Instant cutoff, int limit) {
+        return jdbc.sql("""
+                DELETE FROM merchant_events WHERE id IN (
+                    SELECT e.id FROM merchant_events e
+                     WHERE e.created_at < :cutoff
+                       AND NOT EXISTS (SELECT 1 FROM webhook_deliveries d WHERE d.event_id = e.id)
+                     LIMIT :limit)
+                """)
+                .param("cutoff", Sql.ts(cutoff))
+                .param("limit", limit)
+                .update();
+    }
+
     public List<DeliveryView> findByResource(String resourceId) {
         return jdbc.sql("""
                 SELECT d.id, d.event_id, e.type, d.status, d.attempt_count, d.last_response_status, d.last_error, d.next_attempt_at

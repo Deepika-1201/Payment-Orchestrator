@@ -493,7 +493,7 @@ RETURNING id, payment_id, provider_code, status, …;
 | `ExpiryJob` | 5 s | Expire due payments (see FR-P7); for an authorized payment set `void_requested` |
 | `InboxRetryJob` | 5 s | Reprocess `RECEIVED` PSP webhooks |
 | `WebhookDeliveryWorker` | 1 s | Deliver merchant webhooks |
-| `IdempotencyPurgeJob` | 1 h | Delete expired idempotency records |
+| `RetentionJob` | 1 h | Batched deletes of expired idempotency records, checkout sessions, handled PSP webhooks and finished merchant deliveries (ADR-015) |
 
 Status-check backoff: 5 s, 10 s, 30 s, 1 m, 2 m, 5 m, 10 m, 30 m, 1 h, then every 2 h. After 72 h from creation the item is set `needs_review = true`, polling stops, and an alert metric fires.
 
@@ -577,7 +577,7 @@ Key constraints and indexes:
 
 **Isolation:** `READ COMMITTED` plus explicit `SELECT … FOR UPDATE` on the payment row serializes writers per payment; version checks are a second safety net. No `SERIALIZABLE` needed, because every invariant is checked under the row lock.
 
-**Retention:** `payments`, `payment_attempts`, `refunds`, `payment_transitions`, `audit_log` ≥ 8 years (archived to cold partitions / S3 in `ap-south-1` after 13 months); `provider_webhook_events` 180 days; `merchant_events` / `webhook_deliveries` 90 days; `idempotency_records` 7 days.
+**Retention (ADR-015):** `payments`, `payment_attempts`, `refunds`, `payment_transitions`, ledger, reconciliation and `audit_log` are kept ≥ 8 years (archived to cold partitions / S3 in `ap-south-1` after 13 months) and are never deleted by the application. `RetentionJob` purges `provider_webhook_events` after 180 days, `merchant_events` / `webhook_deliveries` after 90 days, and `idempotency_records` after 7 days.
 
 ## 12. REST API (V1)
 
@@ -704,6 +704,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.checkout.result-ttl` | `1h` | How long after the payment's expiry a checkout link still shows the result |
 | `pg.checkout.banks` | HDFC, ICIC, SBIN, UTIB, KKBK | Netbanking choices on the hosted page (`code`, `name`) |
 | `pg.workers.enabled` | `true` | Worker role on/off |
+| `pg.retention.provider-webhooks` / `.merchant-events` | `180d` / `90d` | Retention of handled PSP webhooks / finished merchant deliveries and their events (ADR-015) |
+| `pg.retention.batch-size` / `.max-batches-per-run` | `5000` / `200` | Rows per delete statement / batches per table per hourly run |
 | `pg.webhooks.outbound.allow-private-targets` | `false` | Only `true` for local/test |
 | `pg.security.admin-tokens` | — (required) | Admin bearer tokens |
 | `pg.security.data-encryption-key` | — (required) | Base64 AES-256 key for secrets at rest (from KMS/Secrets Manager in AWS) |

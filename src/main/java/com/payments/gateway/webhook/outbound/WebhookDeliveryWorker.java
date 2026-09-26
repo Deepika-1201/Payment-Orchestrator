@@ -61,6 +61,11 @@ public class WebhookDeliveryWorker {
                 .build();
     }
 
+    /** Retention: removes a batch of finished deliveries, then events left without deliveries; returns rows deleted. */
+    public int purgeBefore(Instant cutoff, int limit) {
+        return repository.deleteFinishedDeliveriesBefore(cutoff, limit) + repository.deleteUndeliveredEventsBefore(cutoff, limit);
+    }
+
     public int deliverDue() {
         Instant now = clock.instant();
         List<MerchantWebhookRepository.DueDelivery> due = repository.claimDue(now, now.plus(LEASE), workers.batchSize());

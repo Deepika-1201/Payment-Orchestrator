@@ -87,6 +87,11 @@ pg:
   workers:
     enabled: ${PG_WORKERS_ENABLED:true}
     batch-size: 50
+  retention:
+    provider-webhooks: 180d
+    merchant-events: 90d
+    batch-size: 5000
+    max-batches-per-run: 200
   webhooks:
     outbound:
       connect-timeout: 2s
