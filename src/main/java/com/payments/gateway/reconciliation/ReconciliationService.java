@@ -21,12 +21,12 @@ import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.Money;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -34,6 +34,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -57,7 +58,27 @@ public class ReconciliationService {
 
     public record ExceptionView(String id, String runId, String merchantId, String provider, String type,
                                 String reference, String entityId, Long expectedAmount, Long actualAmount,
-                                String details, String status, String resolution, Instant createdAt, Instant resolvedAt) {
+                                String details, String status, String resolution, Instant createdAt, Instant resolvedAt,
+                                Instant dueAt, boolean overdue, String assignee, Instant assignedAt) {
+    }
+
+    /** One business day's reconciliation across merchant PSP accounts (ADR-017). */
+    public record DailyReport(LocalDate date, String zone, Instant windowStart, Instant windowEnd,
+                              List<AccountResult> accounts, ExceptionSummary exceptions, Backlog backlog) {
+    }
+
+    /** {@code status} is the run's status, or {@code missing} when the account was due but has no run. */
+    public record AccountResult(String merchantId, String provider, String status, String runId, Integer linesTotal,
+                                Integer linesMatched, Integer linesAutoHealed, Integer exceptionsOpened,
+                                Long grossAmount, Long refundAmount, Long feeAmount, Long settledAmount, String error) {
+    }
+
+    /** Exceptions opened by the day's runs and where they stand now. */
+    public record ExceptionSummary(int opened, int resolved, int open, int overdue, Map<String, Integer> openedByType) {
+    }
+
+    /** All open exceptions, whatever day they came from. */
+    public record Backlog(long open, long overdue) {
     }
 
     private enum Result {
@@ -94,7 +115,7 @@ public class ReconciliationService {
 
         void open(String type, String reference, String entityId, Long expected, Long actual, String details) {
             if (repository.openException(Ids.newId("rex"), runId, merchantId, provider, type, reference, entityId,
-                    expected, actual, details, now)) {
+                    expected, actual, details, now, now.plus(properties.exceptionSla()))) {
                 exceptions++;
                 meters.counter("pg.reconciliation.exceptions", "provider", provider, "type", type.toLowerCase(Locale.ROOT)).increment();
             }
@@ -108,12 +129,14 @@ public class ReconciliationService {
     private final ProviderRegistry providers;
     private final MerchantDirectory merchants;
     private final AuditLogger audit;
+    private final ReconciliationProperties properties;
     private final Clock clock;
     private final MeterRegistry meters;
 
     public ReconciliationService(ReconciliationRepository repository, PaymentReconciliationService payments,
                                  LedgerService ledger, ProviderClient providerClient, ProviderRegistry providers,
-                                 MerchantDirectory merchants, AuditLogger audit, Clock clock, MeterRegistry meters) {
+                                 MerchantDirectory merchants, AuditLogger audit, ReconciliationProperties properties,
+                                 Clock clock, MeterRegistry meters) {
         this.repository = repository;
         this.payments = payments;
         this.ledger = ledger;
@@ -121,8 +144,13 @@ public class ReconciliationService {
         this.providers = providers;
         this.merchants = merchants;
         this.audit = audit;
+        this.properties = properties;
         this.clock = clock;
         this.meters = meters;
+        Gauge.builder("pg.reconciliation.exceptions.open", repository, r -> r.countOpenExceptions(null))
+                .description("Open reconciliation exceptions").register(meters);
+        Gauge.builder("pg.reconciliation.exceptions.overdue", repository, r -> r.countOverdueExceptions(null, clock.instant()))
+                .description("Open reconciliation exceptions past their SLA").register(meters);
     }
 
     public RunSummary run(String merchantId, String providerCode, Instant from, Instant to) {
@@ -168,18 +196,12 @@ public class ReconciliationService {
      * Daily T+1 job: reconciles the previous local day for every merchant PSP account, including suspended merchants
      * and accounts disabled within the last week, whose earlier payments still settle.
      */
-    public int runForPreviousDay(ZoneId zone) {
-        LocalDate today = LocalDate.ofInstant(clock.instant(), zone);
-        Instant to = today.atStartOfDay(zone).toInstant();
-        Instant from = today.minusDays(1).atStartOfDay(zone).toInstant();
+    public int runForPreviousDay() {
+        Window window = window(LocalDate.ofInstant(clock.instant(), properties.zone()).minusDays(1));
         int runs = 0;
-        for (MerchantDirectory.ProviderAccount account : merchants.providerAccountsToReconcile(from.minus(Duration.ofDays(7)))) {
-            boolean supported = providers.find(account.providerCode()).map(p -> p.capabilities().settlementReports()).orElse(false);
-            if (!supported) {
-                continue;
-            }
+        for (MerchantDirectory.ProviderAccount account : accountsToReconcile(window, null)) {
             try {
-                run(account.merchantId(), account.providerCode(), from, to);
+                run(account.merchantId(), account.providerCode(), window.from(), window.to());
                 runs++;
             } catch (RuntimeException e) {
                 log.warn("Daily reconciliation failed for {}/{}", account.merchantId(), account.providerCode(), e);
@@ -188,21 +210,96 @@ public class ReconciliationService {
         return runs;
     }
 
+    /**
+     * The reconciliation of one local business day: each due account's latest run for that day (or {@code missing}),
+     * what happened to the exceptions those runs opened, and the overall open backlog.
+     */
+    public DailyReport dailyReport(LocalDate date, String merchantId) {
+        Instant now = clock.instant();
+        if (date.isAfter(LocalDate.ofInstant(now, properties.zone()))) {
+            throw GatewayException.validation("date", "must not be in the future");
+        }
+        Window window = window(date);
+        Map<String, AccountResult> accounts = new TreeMap<>();
+        for (MerchantDirectory.ProviderAccount account : accountsToReconcile(window, merchantId)) {
+            accounts.put(account.merchantId() + "/" + account.providerCode(), new AccountResult(account.merchantId(),
+                    account.providerCode(), "missing", null, null, null, null, null, null, null, null, null, null));
+        }
+        for (RunRow run : repository.latestRunsForWindow(window.from(), window.to(), merchantId)) {
+            accounts.put(run.merchantId() + "/" + run.providerCode(), new AccountResult(run.merchantId(),
+                    run.providerCode(), run.status().toLowerCase(Locale.ROOT), run.id(), run.linesTotal(),
+                    run.linesMatched(), run.linesAutoHealed(), run.exceptionsOpened(), run.grossAmount(),
+                    run.refundAmount(), run.feeAmount(), run.settledAmount(), run.error()));
+        }
+        int opened = 0;
+        int resolved = 0;
+        int open = 0;
+        int overdue = 0;
+        Map<String, Integer> byType = new TreeMap<>();
+        for (ReconciliationRepository.ExceptionTally tally : repository.tallyExceptionsForWindow(window.from(), window.to(),
+                merchantId, now)) {
+            opened += tally.count();
+            byType.merge(tally.type().toLowerCase(Locale.ROOT), tally.count(), Integer::sum);
+            if ("OPEN".equals(tally.status())) {
+                open += tally.count();
+                overdue += tally.overdue() ? tally.count() : 0;
+            } else {
+                resolved += tally.count();
+            }
+        }
+        return new DailyReport(date, properties.zone().getId(), window.from(), window.to(), List.copyOf(accounts.values()),
+                new ExceptionSummary(opened, resolved, open, overdue, byType),
+                new Backlog(repository.countOpenExceptions(merchantId), repository.countOverdueExceptions(merchantId, now)));
+    }
+
+    private record Window(Instant from, Instant to) {
+    }
+
+    private Window window(LocalDate day) {
+        return new Window(day.atStartOfDay(properties.zone()).toInstant(),
+                day.plusDays(1).atStartOfDay(properties.zone()).toInstant());
+    }
+
+    /** Accounts the daily job reconciles for this window: settlement-report capable, active or recently disabled. */
+    private List<MerchantDirectory.ProviderAccount> accountsToReconcile(Window window, String merchantId) {
+        return merchants.providerAccountsToReconcile(window.from().minus(Duration.ofDays(7))).stream()
+                .filter(account -> merchantId == null || merchantId.equals(account.merchantId()))
+                .filter(account -> providers.find(account.providerCode())
+                        .map(p -> p.capabilities().settlementReports()).orElse(false))
+                .toList();
+    }
+
     public RunSummary get(String runId) {
         RunRow row = repository.findRun(runId).orElseThrow(() -> GatewayException.notFound("Reconciliation run", runId));
+        Instant now = clock.instant();
         return new RunSummary(row.id(), row.merchantId(), row.providerCode(), row.windowStart(), row.windowEnd(),
                 row.status().toLowerCase(Locale.ROOT), row.linesTotal(), row.linesMatched(), row.linesAutoHealed(),
                 row.exceptionsOpened(), row.grossAmount(), row.refundAmount(), row.feeAmount(), row.settledAmount(),
                 row.error(), row.startedAt(), row.completedAt(),
-                repository.exceptionsForRun(runId).stream().map(ReconciliationService::toView).toList());
+                repository.exceptionsForRun(runId).stream().map(e -> toView(e, now)).toList());
     }
 
-    public List<ExceptionView> exceptions(String status, String merchantId) {
+    public List<ExceptionView> exceptions(String status, String merchantId, String assignee, boolean overdueOnly) {
         String normalized = status == null ? null : status.toUpperCase(Locale.ROOT);
         if (normalized != null && !normalized.equals("OPEN") && !normalized.equals("RESOLVED")) {
             throw GatewayException.validation("status", "must be open or resolved");
         }
-        return repository.exceptions(normalized, merchantId, 500).stream().map(ReconciliationService::toView).toList();
+        Instant now = clock.instant();
+        var filter = new ReconciliationRepository.ExceptionFilter(normalized, merchantId, assignee, overdueOnly ? now : null);
+        return repository.exceptions(filter, 500).stream().map(e -> toView(e, now)).toList();
+    }
+
+    public ExceptionView assign(String exceptionId, String assignee, String actor) {
+        ExceptionRow row = repository.findException(exceptionId)
+                .orElseThrow(() -> GatewayException.notFound("Reconciliation exception", exceptionId));
+        if (!repository.assignException(exceptionId, assignee, clock.instant())) {
+            throw GatewayException.invalidState("Exception " + exceptionId + " is already " + row.status().toLowerCase(Locale.ROOT));
+        }
+        Map<String, Object> details = new HashMap<>();
+        details.put("assignee", assignee);
+        details.put("previous_assignee", row.assignee());
+        audit.record("ADMIN", actor, "reconciliation_exception.assigned", "reconciliation_exception", exceptionId, details);
+        return toView(repository.findException(exceptionId).orElseThrow(), clock.instant());
     }
 
     public ExceptionView resolve(String exceptionId, String resolution, String actor) {
@@ -213,7 +310,7 @@ public class ReconciliationService {
         }
         audit.record("ADMIN", actor, "reconciliation_exception.resolved", "reconciliation_exception", exceptionId,
                 Map.of("type", row.type(), "reference", row.reference(), "resolution", resolution));
-        return toView(repository.findException(exceptionId).orElseThrow());
+        return toView(repository.findException(exceptionId).orElseThrow(), clock.instant());
     }
 
     // ------------------------------------------------------------------ reconciliation steps
@@ -353,10 +450,11 @@ public class ReconciliationService {
         }
     }
 
-    private static ExceptionView toView(ExceptionRow row) {
+    private static ExceptionView toView(ExceptionRow row, Instant now) {
+        boolean overdue = "OPEN".equals(row.status()) && row.dueAt().isBefore(now);
         return new ExceptionView(row.id(), row.runId(), row.merchantId(), row.providerCode(),
                 row.type().toLowerCase(Locale.ROOT), row.reference(), row.entityId(), row.expectedAmount(),
                 row.actualAmount(), row.details(), row.status().toLowerCase(Locale.ROOT), row.resolution(),
-                row.createdAt(), row.resolvedAt());
+                row.createdAt(), row.resolvedAt(), row.dueAt(), overdue, row.assignee(), row.assignedAt());
     }
 }

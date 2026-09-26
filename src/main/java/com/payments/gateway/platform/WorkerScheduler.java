@@ -5,7 +5,6 @@ import com.payments.gateway.payment.application.StatusResolver;
 import com.payments.gateway.reconciliation.ReconciliationService;
 import com.payments.gateway.webhook.inbound.ProviderWebhookService;
 import com.payments.gateway.webhook.outbound.WebhookDeliveryWorker;
-import java.time.ZoneId;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,9 +65,9 @@ public class WorkerScheduler {
         run("retention", retention::run);
     }
 
-    @Scheduled(cron = "0 30 2 * * *", zone = "Asia/Kolkata")
+    @Scheduled(cron = "0 30 2 * * *", zone = "${pg.reconciliation.zone:Asia/Kolkata}")
     void dailyReconciliation() {
-        run("reconciliation", () -> reconciliation.runForPreviousDay(ZoneId.of("Asia/Kolkata")));
+        run("reconciliation", reconciliation::runForPreviousDay);
     }
 
     private static void run(String job, Runnable action) {

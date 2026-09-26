@@ -640,6 +640,8 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `GET /admin/v1/reconciliation/runs/{id}` | Run summary with its exceptions | `200` |
 | `GET /admin/v1/reconciliation/exceptions?status=&merchant_id=` | Exception queue | `200` |
 | `POST /admin/v1/reconciliation/exceptions/{id}/resolve` | Resolve with a note (audited) | `200` |
+| `POST /admin/v1/reconciliation/exceptions/{id}/assign` | Assign `{assignee}` (audited; reassign allowed) | `200` / `409` if resolved |
+| `GET /admin/v1/reconciliation/reports/daily?date=&merchant_id=` | Daily reconciliation report for a business day | `200` |
 | `GET /admin/v1/reviews?kind=&merchant_id=&limit=` | Open manual reviews (attempts and refunds), oldest first, with reasons | `200` |
 | `POST /admin/v1/reviews/attempts/{id}/resolve` · `/refunds/{id}/resolve` | Acknowledge `{note}` (audited; no money movement) | `200` / `409` if not open |
 
@@ -731,11 +733,13 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
 | `pg.risk.external.url` / `.secret` / `.timeout` | unset / — / `800ms` | Optional fraud vendor; secret required when the URL is set (ADR-016) |
+| `pg.reconciliation.exception-sla` | `48h` | Time until an open reconciliation exception is overdue (ADR-017) |
+| `pg.reconciliation.zone` | `Asia/Kolkata` | Business day for the daily run and report |
 
 ## 14. Observability details
 
 - **MDC keys:** `request_id`, `merchant_id`, `payment_id`, `attempt_id`, `provider`.
-- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`, `pg.risk.decisions{outcome}`, `pg.risk.rule_errors{rule}`, `pg.risk.external{result}` (timer), `pg.reviews.open{kind}` (gauge).
+- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`, `pg.risk.decisions{outcome}`, `pg.risk.rule_errors{rule}`, `pg.risk.external{result}` (timer), `pg.reviews.open{kind}` (gauge), `pg.reconciliation.exceptions.open` / `.overdue` (gauges).
 - **Log hygiene:** request and response bodies are never logged, and neither are PII values (VPA, email, phone). Risk decisions log reason codes such as `vpa_blocklisted`, never the value. API keys are never logged (only `key_…` ids).
 
 ## 15. Test matrix
@@ -751,6 +755,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Merchant lifecycle: settings and audit, suspension (keys and checkout blocked, in-flight payments finish), key rotation and immediate revocation, webhook secret rotation with dual signatures. PSP accounts: encrypted and masked credentials, per-account webhook secret, rejected credentials fail over without opening the shared circuit, disabled accounts finish in-flight work, cross-tenant webhook forgery and event-id squatting | `MerchantAdminIntegrationTest`, `ProviderAccountIntegrationTest` |
 | Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt. Hosted checkout: session rules, escaping, CSP hash, UPI collect, card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
 | Integration | Review queue: amount mismatch, refund contradicted by the PSP, 72 h unresolved, risk review (and across failover); audited acknowledge-only resolution. External risk vendor: signed request, block with sanitized reasons, timeout / error / unknown answer → review | `ReviewQueueIntegrationTest`, `ExternalRiskIntegrationTest` |
+| Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |
@@ -799,8 +804,13 @@ run(merchant, provider, [from, to)):
 Further properties:
 - **Idempotent reruns:** lines are stored per run, postings are idempotent, and an open exception is unique per (merchant, provider, type, reference).
 - **Auto-heal path:** it goes through the normal domain rules. A PSP-settled capture on an expired payment therefore follows the merchant's late-success policy.
-- **Schedule:** the worker runs the previous IST day at 02:30 IST (T+1) for every active merchant PSP account whose provider supports reports.
+- **Schedule:** the worker runs the previous local day (`pg.reconciliation.zone`, IST) at 02:30 (T+1) for every active merchant PSP account whose provider supports reports.
 - **Windows** must not overlap between runs (daily windows are consecutive), because a PSP settles each item exactly once.
+- **Exception queue (ADR-017):** each exception gets `due_at = created_at + pg.reconciliation.exception-sla` (48 h). It can be assigned to an operator (audited), and is `overdue` while open past `due_at`. Filters: `status`, `merchant_id`, `assignee`, `overdue`.
+- **Daily report:** `GET /admin/v1/reconciliation/reports/daily?date=YYYY-MM-DD[&merchant_id=]`:
+  - every due account with its latest run for that day, or `missing`;
+  - the exceptions those runs opened (by type; resolved, open or overdue);
+  - the open and overdue backlog.
 
 **Mock PSP support.** The mock PSP produces one settlement per merchant and window with a 2% fee. `POST /simulator/{provider}/report-anomalies` injects discrepancies for tests and demos: `drop`, `duplicate`, `amount_override`, `orphan_capture`, `settlement_shortfall`, `clear`.
 

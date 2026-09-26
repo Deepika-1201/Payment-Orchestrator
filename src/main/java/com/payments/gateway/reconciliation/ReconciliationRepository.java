@@ -24,7 +24,15 @@ public class ReconciliationRepository {
     public record ExceptionRow(String id, String runId, String merchantId, String providerCode, String type,
                                String reference, String entityId, Long expectedAmount, Long actualAmount,
                                String details, String status, String resolution, Instant createdAt,
-                               Instant resolvedAt) {
+                               Instant resolvedAt, Instant dueAt, String assignee, Instant assignedAt) {
+    }
+
+    /** Filters for the exception queue; null fields do not filter. */
+    public record ExceptionFilter(String status, String merchantId, String assignee, Instant overdueAt) {
+    }
+
+    /** Exceptions opened by the runs of one window, by type and current state. */
+    public record ExceptionTally(String type, String status, boolean overdue, int count) {
     }
 
     public record Totals(int linesTotal, int linesMatched, int linesAutoHealed, int exceptionsOpened, long grossAmount,
@@ -85,13 +93,33 @@ public class ReconciliationRepository {
     public Optional<RunRow> findRun(String id) {
         return jdbc.sql("SELECT * FROM reconciliation_runs WHERE id = :id")
                 .param("id", id)
-                .query((rs, n) -> new RunRow(rs.getString("id"), rs.getString("merchant_id"), rs.getString("provider_code"),
-                        Sql.instant(rs, "window_start"), Sql.instant(rs, "window_end"), rs.getString("status"),
-                        rs.getInt("lines_total"), rs.getInt("lines_matched"), rs.getInt("lines_auto_healed"),
-                        rs.getInt("exceptions_opened"), rs.getLong("gross_amount"), rs.getLong("refund_amount"),
-                        rs.getLong("fee_amount"), rs.getLong("settled_amount"), rs.getString("error"),
-                        Sql.instant(rs, "started_at"), Sql.instant(rs, "completed_at")))
+                .query(ReconciliationRepository::mapRun)
                 .optional();
+    }
+
+    /** The latest run per merchant PSP account for exactly this window (reruns replace earlier results). */
+    public List<RunRow> latestRunsForWindow(Instant from, Instant to, String merchantId) {
+        return jdbc.sql("""
+                SELECT DISTINCT ON (merchant_id, provider_code) *
+                  FROM reconciliation_runs
+                 WHERE window_start = :from AND window_end = :to
+                   AND (CAST(:merchantId AS text) IS NULL OR merchant_id = :merchantId)
+                 ORDER BY merchant_id, provider_code, started_at DESC, id DESC
+                """)
+                .param("from", Sql.ts(from))
+                .param("to", Sql.ts(to))
+                .param("merchantId", merchantId)
+                .query(ReconciliationRepository::mapRun)
+                .list();
+    }
+
+    private static RunRow mapRun(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new RunRow(rs.getString("id"), rs.getString("merchant_id"), rs.getString("provider_code"),
+                Sql.instant(rs, "window_start"), Sql.instant(rs, "window_end"), rs.getString("status"),
+                rs.getInt("lines_total"), rs.getInt("lines_matched"), rs.getInt("lines_auto_healed"),
+                rs.getInt("exceptions_opened"), rs.getLong("gross_amount"), rs.getLong("refund_amount"),
+                rs.getLong("fee_amount"), rs.getLong("settled_amount"), rs.getString("error"),
+                Sql.instant(rs, "started_at"), Sql.instant(rs, "completed_at"));
     }
 
     public void insertLine(String runId, String providerCode, SettlementReport.Line line, String result, String entityId) {
@@ -122,12 +150,12 @@ public class ReconciliationRepository {
     /** Returns true when a new exception was opened (an identical open exception is not duplicated). */
     public boolean openException(String id, String runId, String merchantId, String providerCode, String type,
                                  String reference, String entityId, Long expectedAmount, Long actualAmount,
-                                 String details, Instant now) {
+                                 String details, Instant now, Instant dueAt) {
         return jdbc.sql("""
                 INSERT INTO reconciliation_exceptions (id, run_id, merchant_id, provider_code, type, reference, entity_id,
-                                                       expected_amount, actual_amount, details, status, created_at)
+                                                       expected_amount, actual_amount, details, status, created_at, due_at)
                 VALUES (:id, :runId, :merchantId, :provider, :type, :reference, :entityId, :expected, :actual, :details,
-                        'OPEN', :now)
+                        'OPEN', :now, :dueAt)
                 ON CONFLICT (merchant_id, provider_code, type, reference) WHERE status = 'OPEN' DO NOTHING
                 """)
                 .param("id", id)
@@ -141,6 +169,7 @@ public class ReconciliationRepository {
                 .param("actual", actualAmount)
                 .param("details", details)
                 .param("now", Sql.ts(now))
+                .param("dueAt", Sql.ts(dueAt))
                 .update() == 1;
     }
 
@@ -175,6 +204,58 @@ public class ReconciliationRepository {
                 .query(ReconciliationRepository::mapException).optional();
     }
 
+    /** Assigns an open exception; returns false when it is not open. */
+    public boolean assignException(String id, String assignee, Instant now) {
+        return jdbc.sql("""
+                UPDATE reconciliation_exceptions SET assignee = :assignee, assigned_at = :now
+                 WHERE id = :id AND status = 'OPEN'
+                """)
+                .param("id", id)
+                .param("assignee", assignee)
+                .param("now", Sql.ts(now))
+                .update() == 1;
+    }
+
+    public long countOpenExceptions(String merchantId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM reconciliation_exceptions
+                 WHERE status = 'OPEN' AND (CAST(:merchantId AS text) IS NULL OR merchant_id = :merchantId)
+                """)
+                .param("merchantId", merchantId)
+                .query(Long.class)
+                .single();
+    }
+
+    public long countOverdueExceptions(String merchantId, Instant now) {
+        return jdbc.sql("""
+                SELECT count(*) FROM reconciliation_exceptions
+                 WHERE status = 'OPEN' AND due_at < :now
+                   AND (CAST(:merchantId AS text) IS NULL OR merchant_id = :merchantId)
+                """)
+                .param("merchantId", merchantId)
+                .param("now", Sql.ts(now))
+                .query(Long.class)
+                .single();
+    }
+
+    /** Exceptions opened by any run of this window, grouped by type, current status and whether overdue. */
+    public List<ExceptionTally> tallyExceptionsForWindow(Instant from, Instant to, String merchantId, Instant now) {
+        return jdbc.sql("""
+                SELECT e.type, e.status, (e.status = 'OPEN' AND e.due_at < :now) AS overdue, count(*) AS n
+                  FROM reconciliation_exceptions e JOIN reconciliation_runs r ON r.id = e.run_id
+                 WHERE r.window_start = :from AND r.window_end = :to
+                   AND (CAST(:merchantId AS text) IS NULL OR r.merchant_id = :merchantId)
+                 GROUP BY 1, 2, 3
+                """)
+                .param("from", Sql.ts(from))
+                .param("to", Sql.ts(to))
+                .param("merchantId", merchantId)
+                .param("now", Sql.ts(now))
+                .query((rs, n) -> new ExceptionTally(rs.getString("type"), rs.getString("status"), rs.getBoolean("overdue"),
+                        rs.getInt("n")))
+                .list();
+    }
+
     public List<ExceptionRow> exceptionsForRun(String runId) {
         return jdbc.sql("SELECT * FROM reconciliation_exceptions WHERE run_id = :runId ORDER BY created_at, id")
                 .param("runId", runId)
@@ -182,17 +263,25 @@ public class ReconciliationRepository {
                 .list();
     }
 
-    public List<ExceptionRow> exceptions(String status, String merchantId, int limit) {
+    public List<ExceptionRow> exceptions(ExceptionFilter filter, int limit) {
         String sql = "SELECT * FROM reconciliation_exceptions WHERE 1 = 1"
-                + (status == null ? "" : " AND status = :status")
-                + (merchantId == null ? "" : " AND merchant_id = :merchantId")
+                + (filter.status() == null ? "" : " AND status = :status")
+                + (filter.merchantId() == null ? "" : " AND merchant_id = :merchantId")
+                + (filter.assignee() == null ? "" : " AND assignee = :assignee")
+                + (filter.overdueAt() == null ? "" : " AND status = 'OPEN' AND due_at < :overdueAt")
                 + " ORDER BY created_at DESC, id LIMIT :limit";
         var statement = jdbc.sql(sql).param("limit", limit);
-        if (status != null) {
-            statement = statement.param("status", status);
+        if (filter.status() != null) {
+            statement = statement.param("status", filter.status());
         }
-        if (merchantId != null) {
-            statement = statement.param("merchantId", merchantId);
+        if (filter.merchantId() != null) {
+            statement = statement.param("merchantId", filter.merchantId());
+        }
+        if (filter.assignee() != null) {
+            statement = statement.param("assignee", filter.assignee());
+        }
+        if (filter.overdueAt() != null) {
+            statement = statement.param("overdueAt", Sql.ts(filter.overdueAt()));
         }
         return statement.query(ReconciliationRepository::mapException).list();
     }
@@ -221,6 +310,7 @@ public class ReconciliationRepository {
                 rs.getString("provider_code"), rs.getString("type"), rs.getString("reference"), rs.getString("entity_id"),
                 Sql.nullableLong(rs, "expected_amount"), Sql.nullableLong(rs, "actual_amount"), rs.getString("details"),
                 rs.getString("status"), rs.getString("resolution"), Sql.instant(rs, "created_at"),
-                Sql.instant(rs, "resolved_at"));
+                Sql.instant(rs, "resolved_at"), Sql.instant(rs, "due_at"), rs.getString("assignee"),
+                Sql.instant(rs, "assigned_at"));
     }
 }

@@ -92,6 +92,9 @@ pg:
     merchant-events: 90d
     batch-size: 5000
     max-batches-per-run: 200
+  reconciliation:
+    exception-sla: 48h
+    zone: Asia/Kolkata
   webhooks:
     outbound:
       connect-timeout: 2s

@@ -20,3 +20,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-014](ADR-014-merchant-psp-accounts.md) | Merchant-owned PSP accounts: encrypted credentials and account-scoped webhooks | Accepted |
 | [ADR-015](ADR-015-data-retention.md) | Data retention by batched deletes; financial records never deleted by the application | Accepted |
 | [ADR-016](ADR-016-review-queue-and-risk.md) | Manual review queue with reasoned flags; risk outside the row lock, external vendor fails open to review | Accepted |
+| [ADR-017](ADR-017-reconciliation-sla-and-report.md) | Reconciliation exceptions get an owner and an SLA; daily report computed on request | Accepted |
