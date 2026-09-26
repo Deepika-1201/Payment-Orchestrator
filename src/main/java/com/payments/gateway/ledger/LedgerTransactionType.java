@@ -6,5 +6,6 @@ public enum LedgerTransactionType {
     PSP_FEE,
     SETTLEMENT,
     CHARGEBACK,
-    REVERSAL
+    REVERSAL,
+    ADJUSTMENT
 }

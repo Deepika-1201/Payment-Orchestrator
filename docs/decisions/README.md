@@ -27,3 +27,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-021](ADR-021-checkout-upi-qr.md) | UPI QR on the hosted checkout as server-rendered inline SVG (strict CSP unchanged) | Accepted |
 | [ADR-022](ADR-022-application-security-hardening.md) | Application security hardening: API headers and HSTS, body limits, webhook source allowlists, log redaction, production guard | Accepted |
 | [ADR-023](ADR-023-admin-sso.md) | Admin single sign-on: OIDC JWT access tokens verified against the IdP's JWKS, roles from a claim | Accepted |
+| [ADR-024](ADR-024-ledger-adjustments-maker-checker.md) | Manual ledger adjustments with maker-checker (second operator approves; enforced in the database too) | Accepted |

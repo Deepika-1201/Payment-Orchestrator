@@ -653,6 +653,8 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `GET /admin/v1/webhook-deliveries?resource_id=` | Delivery status for a payment or refund | `200` |
 | `GET /admin/v1/ledger/balances?merchant_id=&provider=` | Ledger balances per account | `200` |
 | `GET /admin/v1/ledger/transactions?reference_id=` | Postings for an attempt, refund, report line or settlement | `200` |
+| `POST /admin/v1/ledger/adjustments` · `GET` (`?status=&merchant_id=`) · `GET /{id}` | Request a manual adjustment (pending, expires in 7 days) / list / read | `201` / `200` |
+| `POST /admin/v1/ledger/adjustments/{id}/approve` · `/reject` | Approve (posts; a different operator than the requester) or reject `{note}` | `200` / `403` self-approval / `409` not pending |
 | `POST /admin/v1/reconciliation/runs` | Reconcile `{merchant_id, provider, from, to}` | `201` run summary |
 | `GET /admin/v1/reconciliation/runs/{id}` | Run summary with its exceptions | `200` |
 | `GET /admin/v1/reconciliation/exceptions?status=&merchant_id=` | Exception queue | `200` |
@@ -667,7 +669,7 @@ Admin permissions (ADR-019): every `GET` needs `read`. The write permissions are
 - `merchants_suspend`: suspend and reactivate;
 - `routing_write`: routing rules;
 - `operations_write`: webhook replay and review resolution;
-- `finance_write`: reconciliation runs and exception assignment and resolution.
+- `finance_write`: reconciliation runs, exception assignment and resolution, and ledger adjustment requests and decisions.
 
 The roles grant them as follows: `admin` has all of them; `ops` has `read`, `merchants_suspend` and `operations_write`; `finance` has `read` and `finance_write`; `read_only` has only `read`. Missing permission → `403 forbidden`.
 
@@ -791,6 +793,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
 | Integration | Admin roles: each role limited to its permissions, operator name as audit actor, unknown token 401; every admin write endpoint declares a permission (deny by default) | `AdminRolesIntegrationTest` |
 | Integration | Admin SSO: IdP roles and name applied; token without roles 403; expired, wrong audience or issuer, unpublished key, `alg: none`, HS256 key confusion and tampered tokens 401 | `AdminSsoIntegrationTest` |
+| Integration | Ledger adjustments: pending until approved, self-approval refused (service and DB check), OPS cannot approve, approval posts and clears a short payout, reject and expiry never post | `LedgerAdjustmentIntegrationTest` |
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
@@ -815,6 +818,7 @@ The database enforces the invariants itself:
 | Refund → `SUCCEEDED` (merchant or system) | `FundsMovement` listener, same tx | `REFUNDS` | `PSP_RECEIVABLE` |
 | Dispute opened (`CHARGEBACK`, reference `DISPUTE`) | `FundsMovement` listener, same tx as the dispute | `CHARGEBACKS` | `PSP_RECEIVABLE` |
 | Dispute won (`REVERSAL`) | `FundsMovement` listener, same tx | `PSP_RECEIVABLE` | `CHARGEBACKS` |
+| Approved manual adjustment (`ADJUSTMENT`, reference `ADJUSTMENT`) | `LedgerAdjustmentService` after a second operator approves (ADR-024) | as requested | as requested |
 | Matched report line with a fee | Reconciliation (`REPORT_LINE`) | `PSP_FEES` | `PSP_RECEIVABLE` |
 | Settlement payout (net > 0; reversed legs if < 0) | Reconciliation (`SETTLEMENT`) | `BANK_SETTLEMENTS` | `PSP_RECEIVABLE` |
 
