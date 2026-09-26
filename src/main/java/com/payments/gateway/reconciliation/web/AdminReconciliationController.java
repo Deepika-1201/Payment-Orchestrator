@@ -6,6 +6,8 @@ import com.payments.gateway.reconciliation.ReconciliationService.DailyReport;
 import com.payments.gateway.reconciliation.ReconciliationService.ExceptionView;
 import com.payments.gateway.reconciliation.ReconciliationService.RunSummary;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.web.AdminPermission;
+import com.payments.gateway.shared.web.RequiresAdmin;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -47,6 +49,7 @@ public class AdminReconciliationController {
     }
 
     @PostMapping("/runs")
+    @RequiresAdmin(AdminPermission.FINANCE_WRITE)
     @ResponseStatus(HttpStatus.CREATED)
     public RunSummary run(@Valid @RequestBody RunRequest request) {
         return reconciliation.run(request.merchantId(), request.provider(), request.from(), request.to());
@@ -66,12 +69,14 @@ public class AdminReconciliationController {
     }
 
     @PostMapping("/exceptions/{id}/assign")
+    @RequiresAdmin(AdminPermission.FINANCE_WRITE)
     public ExceptionView assign(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor, @PathVariable String id,
                                 @Valid @RequestBody AssignRequest request) {
         return reconciliation.assign(id, request.assignee().trim(), actor);
     }
 
     @PostMapping("/exceptions/{id}/resolve")
+    @RequiresAdmin(AdminPermission.FINANCE_WRITE)
     public ExceptionView resolve(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor, @PathVariable String id,
                                  @Valid @RequestBody ResolveRequest request) {
         return reconciliation.resolve(id, request.resolution(), actor);

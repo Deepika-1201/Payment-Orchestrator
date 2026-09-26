@@ -658,8 +658,17 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `POST /admin/v1/reconciliation/exceptions/{id}/resolve` | Resolve with a note (audited) | `200` |
 | `POST /admin/v1/reconciliation/exceptions/{id}/assign` | Assign `{assignee}` (audited; reassign allowed) | `200` / `409` if resolved |
 | `GET /admin/v1/reconciliation/reports/daily?date=&merchant_id=` | Daily reconciliation report for a business day | `200` |
-| `GET /admin/v1/reviews?kind=&merchant_id=&limit=` | Open manual reviews (attempts and refunds), oldest first, with reasons | `200` |
-| `POST /admin/v1/reviews/attempts/{id}/resolve` · `/refunds/{id}/resolve` | Acknowledge `{note}` (audited; no money movement) | `200` / `409` if not open |
+| `GET /admin/v1/reviews?kind=&merchant_id=&limit=` | Open manual reviews (attempts, refunds, disputes), oldest first, with reasons | `200` |
+| `POST /admin/v1/reviews/{attempts\|refunds\|disputes}/{id}/resolve` | Acknowledge `{note}` (audited; no money movement) | `200` / `409` if not open |
+
+Admin permissions (ADR-019): every `GET` needs `read`. The write permissions are:
+- `merchants_write`: merchant create and update, API keys, webhook secret and URL, PSP accounts;
+- `merchants_suspend`: suspend and reactivate;
+- `routing_write`: routing rules;
+- `operations_write`: webhook replay and review resolution;
+- `finance_write`: reconciliation runs and exception assignment and resolution.
+
+The roles grant them as follows: `admin` has all of them; `ops` has `read`, `merchants_suspend` and `operations_write`; `finance` has `read` and `finance_write`; `read_only` has only `read`. Missing permission → `403 forbidden`.
 
 Example — create and confirm UPI intent:
 
@@ -743,7 +752,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.retention.provider-webhooks` / `.merchant-events` | `180d` / `90d` | Retention of handled PSP webhooks / finished merchant deliveries and their events (ADR-015) |
 | `pg.retention.batch-size` / `.max-batches-per-run` | `5000` / `200` | Rows per delete statement / batches per table per hourly run |
 | `pg.webhooks.outbound.allow-private-targets` | `false` | Only `true` for local/test |
-| `pg.security.admin-tokens` | — (required) | Admin bearer tokens |
+| `pg.security.admin-users` | — | Named operators: `name` (audit actor), `token-sha256`, `roles` (`admin`, `ops`, `finance`, `read_only`); see ADR-019 |
+| `pg.security.admin-tokens` | — | Plaintext break-glass tokens with the `admin` role (local development; a warning is logged) |
 | `pg.security.data-encryption-key` | — (required) | Base64 AES-256 key for secrets at rest (from KMS/Secrets Manager in AWS) |
 | `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
@@ -773,6 +783,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Review queue: amount mismatch, refund contradicted by the PSP, 72 h unresolved, risk review (and across failover); audited acknowledge-only resolution. External risk vendor: signed request, block with sanitized reasons, timeout / error / unknown answer → review | `ReviewQueueIntegrationTest`, `ExternalRiskIntegrationTest` |
 | Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
 | Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
+| Integration | Admin roles: each role limited to its permissions, operator name as audit actor, unknown token 401; every admin write endpoint declares a permission (deny by default) | `AdminRolesIntegrationTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |

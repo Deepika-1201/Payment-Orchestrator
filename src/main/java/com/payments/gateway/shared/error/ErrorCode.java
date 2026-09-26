@@ -9,6 +9,7 @@ public enum ErrorCode {
     AUTHENTICATION_REQUIRED(401, "Authentication required"),
     INVALID_API_KEY(401, "Invalid API key"),
     INVALID_SIGNATURE(401, "Invalid signature"),
+    FORBIDDEN(403, "Insufficient permissions"),
     RESOURCE_NOT_FOUND(404, "Resource not found"),
     METHOD_NOT_ALLOWED(405, "Method not allowed"),
     UNSUPPORTED_MEDIA_TYPE(415, "Unsupported media type"),

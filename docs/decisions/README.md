@@ -22,3 +22,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-016](ADR-016-review-queue-and-risk.md) | Manual review queue with reasoned flags; risk outside the row lock, external vendor fails open to review | Accepted |
 | [ADR-017](ADR-017-reconciliation-sla-and-report.md) | Reconciliation exceptions get an owner and an SLA; daily report computed on request | Accepted |
 | [ADR-018](ADR-018-disputes.md) | Disputes as their own aggregate from PSP webhooks and reports; chargeback ledger postings; refund guard | Accepted |
+| [ADR-019](ADR-019-admin-roles.md) | Admin roles: hashed named operator tokens, deny-by-default endpoint permissions | Accepted |

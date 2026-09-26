@@ -12,7 +12,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-018 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-019 |
 
 ## Quick start
 
@@ -73,6 +73,8 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 
 Merchant endpoints have per-merchant rate limits, with separate budgets for reads and writes. When a limit is hit, the API answers `429` with `Retry-After`. The request was not processed and its Idempotency-Key was not used up, so it can be retried unchanged.
 
+Admin callers are named operators with roles (`admin`, `ops`, `finance`, `read_only`), configured by the SHA-256 of their token under `pg.security.admin-users`. Each admin endpoint requires one permission, and write endpoints without a declared permission are refused (ADR-019). The audit log records the operator's name.
+
 Mock PSP test scenarios are selected by the last two digits of the amount:
 
 | Suffix | Payment scenario |
@@ -125,6 +127,7 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | — | Merchant management: settings, suspension, API key and webhook secret rotation, encrypted per-merchant PSP credentials, account-scoped PSP webhooks | Done |
 | 14 | Risk: external provider connector, decisions stored per attempt, manual review queue (ADR-016) | Done |
 | — | Operations and disputes: reconciliation exception owner, SLA and daily report (ADR-017); chargebacks and UPI disputes with ledger impact and refund guard (ADR-018) | Done |
+| — | Admin roles: named operators, role permissions, deny-by-default enforcement (ADR-019) | Done |
 | 15 | Observability: dashboards, SLO alerts, OTel collector in compose | Planned |
 | 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |
 | 17 | Load tests (k6), production-readiness review | Planned |

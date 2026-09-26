@@ -10,6 +10,17 @@ pg:
     enabled: false
   security:
     admin-tokens: test-admin-token
+    # SHA-256 of test-ops-token, test-finance-token and test-readonly-token (ADR-019)
+    admin-users:
+      - name: ops-asha
+        token-sha256: f76377731404f399e8768eba44c29b90e7e2dd43faffd7cfb916d64e185997be
+        roles: [ops]
+      - name: finance-ravi
+        token-sha256: 726e4c961f241e038ba50af1f9481a1d5170c223598c4b8991647654e23476de
+        roles: [finance]
+      - name: auditor-meera
+        token-sha256: dd0d343c4c653512298dbbd6fe781aeb2faf35de119c891ed8f14ae2333196f1
+        roles: [read_only]
     data-encryption-key: bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=
   webhooks:
     outbound:

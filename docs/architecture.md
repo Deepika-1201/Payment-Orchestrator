@@ -371,7 +371,7 @@ flowchart LR
 - **Merchant auth:** secret API keys (`sk_test_…` in sandbox, `sk_live_…` in production), 256-bit random, stored as SHA-256 hashes and checked against the database on every request.
   - Rotation: issue a new key while the old one stays active, watch the old key's hourly `last_used_at`, then revoke it. Revocation takes effect immediately.
   - Suspending a merchant blocks all its keys and checkout links. Money already in flight still completes and reconciles.
-- **Admin auth:** V1 uses static admin tokens from Secrets Manager (constant-time compare). The target is OIDC SSO with roles `ADMIN`, `OPS`, `FINANCE`, `READ_ONLY`, and maker-checker for manual adjustments.
+- **Admin auth:** named operators with roles `ADMIN`, `OPS`, `FINANCE`, `READ_ONLY`, identified by the SHA-256 of their bearer token (from Secrets Manager). Every admin endpoint declares its permission, and undeclared write endpoints are denied ([ADR-019](decisions/ADR-019-admin-roles.md)). The target is OIDC SSO producing the same roles, plus maker-checker for manual money adjustments.
 - **PSP webhooks:** signature verification (HMAC or provider scheme), timestamp tolerance, event-id dedupe, and optional source-IP allowlists at the WAF.
   - Merchants own their PSP accounts, and so their signing secrets. Each account therefore has its own endpoint (`/v1/webhooks/providers/{code}/{account_id}`, ADR-014).
   - Its events can only change that merchant's payments and refunds, and deduplication is per account. One tenant can never forge or pre-empt another tenant's events.

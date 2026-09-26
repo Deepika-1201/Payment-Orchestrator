@@ -8,6 +8,8 @@ import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.merchant.MerchantRepository.ApiKeyRow;
 import com.payments.gateway.merchant.ProviderAccountService;
 import com.payments.gateway.merchant.ProviderAccountService.AccountView;
+import com.payments.gateway.shared.web.AdminPermission;
+import com.payments.gateway.shared.web.RequiresAdmin;
 import com.payments.gateway.shared.web.WireEnums;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -97,6 +99,7 @@ public class AdminMerchantController {
     }
 
     @PostMapping
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     @ResponseStatus(HttpStatus.CREATED)
     public MerchantResponse create(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                    @Valid @RequestBody CreateMerchantRequest request) {
@@ -115,6 +118,7 @@ public class AdminMerchantController {
     }
 
     @PatchMapping("/{id}")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     public MerchantResponse update(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                    @PathVariable String id, @Valid @RequestBody UpdateMerchantRequest request) {
         Merchant.LateSuccessPolicy policy = request.lateSuccessPolicy() == null ? null
@@ -125,12 +129,14 @@ public class AdminMerchantController {
     }
 
     @DeleteMapping("/{id}/webhook-url")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     public MerchantResponse removeWebhookUrl(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                              @PathVariable String id) {
         return toResponse(admin.removeWebhookUrl(id, actor));
     }
 
     @PostMapping("/{id}/webhook-secret")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     public WebhookSecretResponse rotateWebhookSecret(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                                      @PathVariable String id,
                                                      @Valid @RequestBody(required = false) RotateWebhookSecretRequest request) {
@@ -141,18 +147,21 @@ public class AdminMerchantController {
     }
 
     @PostMapping("/{id}/suspend")
+    @RequiresAdmin(AdminPermission.MERCHANTS_SUSPEND)
     public MerchantResponse suspend(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                     @PathVariable String id, @Valid @RequestBody SuspendRequest request) {
         return toResponse(admin.suspend(id, request.reason(), actor));
     }
 
     @PostMapping("/{id}/reactivate")
+    @RequiresAdmin(AdminPermission.MERCHANTS_SUSPEND)
     public MerchantResponse reactivate(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                        @PathVariable String id) {
         return toResponse(admin.reactivate(id, actor));
     }
 
     @PostMapping("/{id}/api-keys")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     @ResponseStatus(HttpStatus.CREATED)
     public ApiKeyResponse issueKey(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                    @PathVariable String id) {
@@ -166,6 +175,7 @@ public class AdminMerchantController {
     }
 
     @PostMapping("/{id}/api-keys/{keyId}/revoke")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     public ApiKeyResponse revokeKey(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                     @PathVariable String id, @PathVariable String keyId) {
         return toResponse(admin.revokeApiKey(id, keyId, actor));
@@ -178,6 +188,7 @@ public class AdminMerchantController {
 
     /** Links or re-enables the account; sent credentials replace the stored ones. */
     @PutMapping("/{id}/provider-accounts/{provider}")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     public ProviderAccountResponse linkProviderAccount(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                                        @PathVariable String id, @PathVariable String provider,
                                                        @Valid @RequestBody(required = false) LinkProviderAccountRequest request) {
@@ -185,6 +196,7 @@ public class AdminMerchantController {
     }
 
     @PostMapping("/{id}/provider-accounts/{provider}/disable")
+    @RequiresAdmin(AdminPermission.MERCHANTS_WRITE)
     public ProviderAccountResponse disableProviderAccount(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                                           @PathVariable String id, @PathVariable String provider) {
         return toResponse(providerAccounts.disable(id, provider, actor));

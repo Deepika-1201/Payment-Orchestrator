@@ -9,24 +9,35 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.HexFormat;
 import java.util.List;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Protects {@code /admin/**} with static bearer tokens (V1). Target state is OIDC SSO with RBAC (see architecture §8).
- * With no tokens configured, every admin request is rejected.
+ * Authenticates {@code /admin/**} callers by bearer token (ADR-019). Operators are matched by the SHA-256 of their
+ * token; what they may do is enforced per endpoint by {@link AdminPermissionInterceptor}. Target state is OIDC SSO
+ * with the same roles (architecture §8). With no credentials configured, every admin request is rejected.
  */
 public class AdminAuthFilter extends OncePerRequestFilter {
 
     public static final String ACTOR_ATTRIBUTE = "pg.adminActor";
+    public static final String PRINCIPAL_ATTRIBUTE = "pg.adminPrincipal";
     private static final String BEARER = "Bearer ";
 
-    private final List<String> tokens;
+    /** A configured admin credential: the principal it authenticates and the hex SHA-256 of its token. */
+    public record Credential(AdminPrincipal principal, String tokenSha256) {
+    }
+
+    private final List<Credential> credentials;
     private final JsonCodec json;
 
-    public AdminAuthFilter(List<String> tokens, JsonCodec json) {
-        this.tokens = List.copyOf(tokens);
+    public AdminAuthFilter(List<Credential> credentials, JsonCodec json) {
+        this.credentials = List.copyOf(credentials);
         this.json = json;
+    }
+
+    public static String sha256Hex(String token) {
+        return HexFormat.of().formatHex(Hashing.sha256(token));
     }
 
     @Override
@@ -39,17 +50,21 @@ public class AdminAuthFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         String header = request.getHeader("Authorization");
         String token = header != null && header.startsWith(BEARER) ? header.substring(BEARER.length()).trim() : null;
-        int match = -1;
-        for (int i = 0; i < tokens.size(); i++) {
-            if (Hashing.constantTimeEquals(tokens.get(i), token)) {
-                match = i;
+        AdminPrincipal principal = null;
+        if (token != null && !token.isEmpty()) {
+            String presented = sha256Hex(token);
+            for (Credential credential : credentials) {
+                if (Hashing.constantTimeEquals(credential.tokenSha256(), presented)) {
+                    principal = credential.principal();
+                }
             }
         }
-        if (match < 0) {
+        if (principal == null) {
             ProblemResponses.write(response, json, ErrorCode.AUTHENTICATION_REQUIRED, "Admin credentials required");
             return;
         }
-        request.setAttribute(ACTOR_ATTRIBUTE, "admin-token-" + match);
+        request.setAttribute(ACTOR_ATTRIBUTE, principal.name());
+        request.setAttribute(PRINCIPAL_ATTRIBUTE, principal);
         chain.doFilter(request, response);
     }
 }

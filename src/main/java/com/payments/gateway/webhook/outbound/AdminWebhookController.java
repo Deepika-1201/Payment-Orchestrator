@@ -3,6 +3,8 @@ package com.payments.gateway.webhook.outbound;
 import com.payments.gateway.merchant.web.AdminAuthFilter;
 import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.web.AdminPermission;
+import com.payments.gateway.shared.web.RequiresAdmin;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +38,7 @@ public class AdminWebhookController {
     }
 
     @PostMapping("/{id}/replay")
+    @RequiresAdmin(AdminPermission.OPERATIONS_WRITE)
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Map<String, String> replay(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor, @PathVariable String id) {
         if (repository.findStatus(id).isEmpty()) {

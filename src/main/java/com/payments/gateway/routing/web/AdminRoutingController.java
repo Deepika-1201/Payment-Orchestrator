@@ -14,6 +14,8 @@ import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.web.AdminPermission;
+import com.payments.gateway.shared.web.RequiresAdmin;
 import com.payments.gateway.shared.web.WireEnums;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -85,6 +87,7 @@ public class AdminRoutingController {
     }
 
     @PostMapping("/routing-rules")
+    @RequiresAdmin(AdminPermission.ROUTING_WRITE)
     @ResponseStatus(HttpStatus.CREATED)
     public RoutingRule create(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                               @Valid @RequestBody RuleRequest request) {
@@ -97,6 +100,7 @@ public class AdminRoutingController {
     }
 
     @PutMapping("/routing-rules/{id}")
+    @RequiresAdmin(AdminPermission.ROUTING_WRITE)
     public RoutingRule update(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor, @PathVariable String id,
                               @Valid @RequestBody RuleRequest request) {
         RoutingRule existing = repository.findById(id).orElseThrow(() -> GatewayException.notFound("Routing rule", id));

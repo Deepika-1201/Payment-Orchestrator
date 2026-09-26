@@ -4,6 +4,8 @@ import com.payments.gateway.merchant.web.AdminAuthFilter;
 import com.payments.gateway.payment.application.ReviewService;
 import com.payments.gateway.payment.application.ReviewService.ReviewItem;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.web.AdminPermission;
+import com.payments.gateway.shared.web.RequiresAdmin;
 import com.payments.gateway.shared.web.WireEnums;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -45,18 +47,21 @@ public class AdminReviewController {
     }
 
     @PostMapping("/attempts/{id}/resolve")
+    @RequiresAdmin(AdminPermission.OPERATIONS_WRITE)
     public ReviewItem resolveAttempt(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                      @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
         return reviews.resolveAttempt(id, request.note(), actor);
     }
 
     @PostMapping("/refunds/{id}/resolve")
+    @RequiresAdmin(AdminPermission.OPERATIONS_WRITE)
     public ReviewItem resolveRefund(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                     @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
         return reviews.resolveRefund(id, request.note(), actor);
     }
 
     @PostMapping("/disputes/{id}/resolve")
+    @RequiresAdmin(AdminPermission.OPERATIONS_WRITE)
     public ReviewItem resolveDispute(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
                                      @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
         return reviews.resolveDispute(id, request.note(), actor);
