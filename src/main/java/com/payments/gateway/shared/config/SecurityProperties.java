@@ -19,7 +19,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  */
 @ConfigurationProperties("pg.security")
 public record SecurityProperties(List<String> adminTokens, List<AdminUser> adminUsers, Oidc oidc, String dataEncryptionKey,
-                                 ApiKeyMode apiKeyMode) {
+                                 List<DataKey> dataEncryptionKeys, String primaryDataKeyId, ApiKeyMode apiKeyMode) {
+
+    /** A data key of the ring (ADR-025): base64 of 32 bytes, supplied from Secrets Manager (KMS-encrypted at rest). */
+    public record DataKey(String id, String key) {
+    }
 
     private static final Pattern NAME = Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
     private static final Pattern SHA256_HEX = Pattern.compile("[0-9a-f]{64}");
@@ -74,6 +78,7 @@ public record SecurityProperties(List<String> adminTokens, List<AdminUser> admin
         adminTokens = adminTokens == null ? List.of() : adminTokens.stream().filter(t -> t != null && !t.isBlank()).toList();
         adminUsers = adminUsers == null ? List.of() : List.copyOf(adminUsers);
         oidc = oidc == null ? new Oidc(null, null, null, null, null) : oidc;
+        dataEncryptionKeys = dataEncryptionKeys == null ? List.of() : List.copyOf(dataEncryptionKeys);
         Set<String> names = new HashSet<>();
         Set<String> hashes = new HashSet<>();
         for (AdminUser user : adminUsers) {

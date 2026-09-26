@@ -647,6 +647,7 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` | Link or re-enable `{credentials}` (validated against the adapter's fields; replaces stored ones) | `200` |
 | `POST /admin/v1/merchants/{id}/provider-accounts/{provider}/disable` | No new payments; in-flight work and reconciliation continue | `200` |
 | `GET/PUT /admin/v1/merchants/{id}/rate-limits` | Per-merchant `read`/`write` budget overrides (`per_second`, `burst`; omit = default), audited (ADR-020) | `200` |
+| `GET /admin/v1/security/data-keys` · `POST …/re-encrypt` | Stored secrets per data key; move them all to the primary key (`security_write`, admin only; ADR-025) | `200` |
 | `GET/POST/PUT /admin/v1/routing-rules` | Manage routing rules | `200/201` |
 | `GET /admin/v1/providers/health` | Circuit states + scores | `200` |
 | `POST /admin/v1/webhook-deliveries/{id}/replay` | Re-queue a delivery | `202` |
@@ -762,7 +763,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.security.admin-tokens` | — | Plaintext break-glass tokens with the `admin` role (local development; a warning is logged) |
 | `pg.security.oidc.issuer` / `.jwks-uri` / `.audience` | unset | Admin SSO: accept JWT access tokens from this identity provider (ADR-023) |
 | `pg.security.oidc.roles-claim` / `.name-claim` | `roles` / `preferred_username` | Claim with the admin roles / claim used as audit actor (falls back to `sub`) |
-| `pg.security.data-encryption-key` | — (required) | Base64 AES-256 key for secrets at rest (from KMS/Secrets Manager in AWS) |
+| `pg.security.data-encryption-key` | — | Base64 AES-256 key for secrets at rest; read as key id `legacy` |
+| `pg.security.data-encryption-keys` / `.primary-data-key-id` | — | Key ring `{id, key}` and the key that encrypts new data; re-encrypt with `POST /admin/v1/security/data-keys/re-encrypt` (ADR-025) |
 | `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
@@ -794,6 +796,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Admin roles: each role limited to its permissions, operator name as audit actor, unknown token 401; every admin write endpoint declares a permission (deny by default) | `AdminRolesIntegrationTest` |
 | Integration | Admin SSO: IdP roles and name applied; token without roles 403; expired, wrong audience or issuer, unpublished key, `alg: none`, HS256 key confusion and tampered tokens 401 | `AdminSsoIntegrationTest` |
 | Integration | Ledger adjustments: pending until approved, self-approval refused (service and DB check), OPS cannot approve, approval posts and clears a short payout, reject and expiry never post | `LedgerAdjustmentIntegrationTest` |
+| Unit / integration | Data keys: v1 ciphertexts readable, ring encrypts with the primary, AAD still enforced; re-encryption moves webhook secrets and credentials so the old key can be removed, idempotent, admin only | `SecretCipherTest`, `DataKeyRotationIntegrationTest` |
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |

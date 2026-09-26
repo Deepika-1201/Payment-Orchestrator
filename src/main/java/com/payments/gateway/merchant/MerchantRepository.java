@@ -110,6 +110,47 @@ public class MerchantRepository {
                 .update();
     }
 
+    // ---------------------------------------------------------------- data key rotation (ADR-025)
+
+    public record StoredCiphertext(String rowId, byte[] first, byte[] second) {
+    }
+
+    public List<StoredCiphertext> findWebhookSecretCiphertexts() {
+        return jdbc.sql("SELECT id, webhook_secret_enc, previous_webhook_secret_enc FROM merchants ORDER BY id")
+                .query((rs, n) -> new StoredCiphertext(rs.getString("id"), rs.getBytes("webhook_secret_enc"),
+                        rs.getBytes("previous_webhook_secret_enc")))
+                .list();
+    }
+
+    public List<StoredCiphertext> findCredentialCiphertexts() {
+        return jdbc.sql("SELECT id, credentials_enc FROM merchant_provider_accounts WHERE credentials_enc IS NOT NULL ORDER BY id")
+                .query((rs, n) -> new StoredCiphertext(rs.getString("id"), rs.getBytes("credentials_enc"), null))
+                .list();
+    }
+
+    /** Swaps ciphertexts only if they are still the ones that were re-encrypted, so a concurrent rotation of the secret wins. */
+    public boolean swapWebhookSecretCiphertexts(String merchantId, StoredCiphertext before, byte[] current, byte[] previous) {
+        return jdbc.sql("""
+                UPDATE merchants SET webhook_secret_enc = :current, previous_webhook_secret_enc = :previous
+                 WHERE id = :id AND webhook_secret_enc IS NOT DISTINCT FROM :beforeCurrent
+                   AND previous_webhook_secret_enc IS NOT DISTINCT FROM :beforePrevious
+                """)
+                .param("id", merchantId)
+                .param("current", current)
+                .param("previous", previous)
+                .param("beforeCurrent", before.first())
+                .param("beforePrevious", before.second())
+                .update() == 1;
+    }
+
+    public boolean swapCredentialCiphertext(String accountId, byte[] before, byte[] after) {
+        return jdbc.sql("UPDATE merchant_provider_accounts SET credentials_enc = :after WHERE id = :id AND credentials_enc = :before")
+                .param("id", accountId)
+                .param("after", after)
+                .param("before", before)
+                .update() == 1;
+    }
+
     // ---------------------------------------------------------------- API keys
 
     public void insertApiKey(String id, String merchantId, byte[] keyHash, String hint, String mode, Instant now) {

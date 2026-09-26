@@ -48,9 +48,13 @@ public class ProductionConfigurationGuard {
         if (!rateLimits.enabled()) {
             problems.add("pg.rate-limit.enabled must be true");
         }
-        String key = security.dataEncryptionKey();
-        if (key == null || key.isBlank() || PUBLIC_DEVELOPMENT_KEYS.contains(key.trim())) {
-            problems.add("pg.security.data-encryption-key must be a private key from Secrets Manager");
+        List<String> keys = new ArrayList<>();
+        if (security.dataEncryptionKey() != null && !security.dataEncryptionKey().isBlank()) {
+            keys.add(security.dataEncryptionKey().trim());
+        }
+        security.dataEncryptionKeys().forEach(key -> keys.add(key.key() == null ? "" : key.key().trim()));
+        if (keys.isEmpty() || keys.stream().anyMatch(key -> key.isBlank() || PUBLIC_DEVELOPMENT_KEYS.contains(key))) {
+            problems.add("pg.security data encryption keys must be private keys from Secrets Manager");
         }
         if (security.adminUsers().isEmpty() && security.adminTokens().isEmpty() && !security.oidc().enabled()) {
             problems.add("configure pg.security.admin-users or pg.security.oidc (ADR-019, ADR-023)");

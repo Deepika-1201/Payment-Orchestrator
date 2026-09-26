@@ -13,5 +13,7 @@ public enum AdminPermission {
     /** Replay webhook deliveries and acknowledge manual reviews. */
     OPERATIONS_WRITE,
     /** Run reconciliation and assign or resolve its exceptions. */
-    FINANCE_WRITE
+    FINANCE_WRITE,
+    /** Re-encrypt stored secrets under the primary data key. */
+    SECURITY_WRITE
 }

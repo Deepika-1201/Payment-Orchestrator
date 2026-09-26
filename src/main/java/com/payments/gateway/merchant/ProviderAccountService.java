@@ -178,7 +178,7 @@ public class ProviderAccountService implements MerchantAccountResolver {
         return value.length() >= 12 ? "\u2026" + value.substring(value.length() - 4) : "\u2026";
     }
 
-    private static String context(String accountId) {
+    static String context(String accountId) {
         return "merchant_provider_account:" + accountId;
     }
 }

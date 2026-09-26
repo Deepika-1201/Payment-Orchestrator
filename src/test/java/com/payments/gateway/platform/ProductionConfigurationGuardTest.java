@@ -18,7 +18,7 @@ class ProductionConfigurationGuardTest {
 
     private static final SecurityProperties SECURE = new SecurityProperties(List.of(),
             List.of(new SecurityProperties.AdminUser("ops-asha", "a".repeat(64), Set.of(AdminRole.OPS))), null,
-            "cHJvZHVjdGlvbi1rZXktZnJvbS1zZWNyZXRzLW1hbmFnZXI=", SecurityProperties.ApiKeyMode.LIVE);
+            "cHJvZHVjdGlvbi1rZXktZnJvbS1zZWNyZXRzLW1hbmFnZXI=", null, null, SecurityProperties.ApiKeyMode.LIVE);
 
     @Test
     void aProductionSetupPasses() {
@@ -30,7 +30,7 @@ class ProductionConfigurationGuardTest {
     @Test
     void developmentSettingsStopTheStart() {
         SecurityProperties devKey = new SecurityProperties(List.of(), List.of(), null, "bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=",
-                SecurityProperties.ApiKeyMode.LIVE);
+                null, null, SecurityProperties.ApiKeyMode.LIVE);
         MockEnvironment environment = new MockEnvironment().withProperty("pg.providers.mock.enabled", "true");
 
         assertThatThrownBy(() -> new ProductionConfigurationGuard(devKey, environment,
@@ -42,7 +42,7 @@ class ProductionConfigurationGuardTest {
                 .hasMessageContaining("allow-private-targets")
                 .hasMessageContaining("require-https")
                 .hasMessageContaining("pg.rate-limit.enabled")
-                .hasMessageContaining("data-encryption-key")
+                .hasMessageContaining("data encryption keys")
                 .hasMessageContaining("admin-users or pg.security.oidc")
                 .hasMessageContaining("public-base-url");
     }

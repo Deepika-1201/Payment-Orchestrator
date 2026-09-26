@@ -377,7 +377,8 @@ flowchart LR
   - Its events can only change that merchant's payments and refunds, and deduplication is per account. One tenant can never forge or pre-empt another tenant's events.
 - **Merchant webhooks:** `PG-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>`. Merchants verify with a 5 min tolerance. During a secret rotation, the header carries one `v1` per valid secret.
 - **SSRF:** merchant webhook URLs must be HTTPS and are resolved and checked against private, loopback, link-local, and metadata ranges on every delivery.
-- **Secrets & keys:** AWS Secrets Manager for credentials; KMS envelope encryption for merchant webhook secrets and PSP credentials (V1 code uses AES-256-GCM with a data key from configuration, which KMS supplies in AWS).
+- **Secrets & keys:** AWS Secrets Manager for credentials. KMS envelope encryption for merchant webhook secrets and PSP credentials: AES-256-GCM data keys held in Secrets Manager under a customer-managed KMS key.
+  - Ciphertexts carry their key id, so data keys rotate without downtime. Add a key, make it primary, re-encrypt, then retire the old key ([ADR-025](decisions/ADR-025-data-key-rotation.md)).
   - PSP credentials are bound to their account row as authenticated data, so ciphertexts cannot be swapped between merchants.
   - They are validated against the adapter's declared fields and never returned; the admin API shows only the last 4 characters.
 - **Data:** encryption at rest (Aurora + KMS) and in transit (TLS to the DB). No PAN or CVV anywhere; PII minimized. Structured logs pass through a redactor that masks keys, secrets, tokens, card numbers, emails and VPAs. The `prod` profile refuses to start with development settings (ADR-022).
