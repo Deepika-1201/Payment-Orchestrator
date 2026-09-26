@@ -12,6 +12,8 @@ logging:
   structured:
     format:
       console: ecs
+    json:
+      customizer: com.payments.gateway.shared.logging.RedactingJsonMembersCustomizer
 
 # Behind the ALB: take the client IP and scheme from X-Forwarded-* sent by internal (VPC) proxies only.
 server:

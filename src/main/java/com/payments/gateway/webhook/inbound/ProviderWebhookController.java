@@ -1,12 +1,16 @@
 package com.payments.gateway.webhook.inbound;
 
+import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -18,12 +22,19 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class ProviderWebhookController {
 
+    private static final Logger log = LoggerFactory.getLogger(ProviderWebhookController.class);
+
     private static final int MAX_BODY_BYTES = 256 * 1024;
 
     private final ProviderWebhookService service;
+    private final InboundWebhookProperties properties;
+    private final MeterRegistry meters;
 
-    public ProviderWebhookController(ProviderWebhookService service) {
+    public ProviderWebhookController(ProviderWebhookService service, InboundWebhookProperties properties,
+                                     MeterRegistry meters) {
         this.service = service;
+        this.properties = properties;
+        this.meters = meters;
     }
 
     @PostMapping("/v1/webhooks/providers/{provider}")
@@ -38,6 +49,11 @@ public class ProviderWebhookController {
     }
 
     private Map<String, Object> receive(String provider, String account, HttpServletRequest request) throws IOException {
+        if (!properties.permits(provider, request.getRemoteAddr())) {
+            meters.counter("pg.webhooks.inbound", "provider", provider, "result", "source_rejected").increment();
+            log.warn("Rejected {} webhook from non-allowlisted source {}", provider, request.getRemoteAddr());
+            throw new GatewayException(ErrorCode.FORBIDDEN, "Webhook source is not allowed for this provider");
+        }
         byte[] bytes = request.getInputStream().readNBytes(MAX_BODY_BYTES + 1);
         if (bytes.length > MAX_BODY_BYTES) {
             throw GatewayException.validation("body", "must not exceed 256 KB");

@@ -12,6 +12,7 @@ public enum ErrorCode {
     FORBIDDEN(403, "Insufficient permissions"),
     RESOURCE_NOT_FOUND(404, "Resource not found"),
     METHOD_NOT_ALLOWED(405, "Method not allowed"),
+    PAYLOAD_TOO_LARGE(413, "Request body is too large"),
     UNSUPPORTED_MEDIA_TYPE(415, "Unsupported media type"),
     PAYMENT_INVALID_STATE(409, "Payment is not in a valid state for this operation"),
     REFUND_ALREADY_EXISTS(409, "A refund with this merchant_refund_id already exists"),

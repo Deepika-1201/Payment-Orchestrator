@@ -61,8 +61,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException ex,
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ApiSecurityFilter.PayloadTooLargeException tooLarge) {
+                return handlePayloadTooLarge(tooLarge);
+            }
+        }
         return respond(ErrorCode.MALFORMED_REQUEST, new HttpHeaders(),
                 problem(ErrorCode.MALFORMED_REQUEST, "Request body is missing or is not valid JSON for this endpoint"));
+    }
+
+    @ExceptionHandler(ApiSecurityFilter.PayloadTooLargeException.class)
+    public ResponseEntity<Object> handlePayloadTooLarge(ApiSecurityFilter.PayloadTooLargeException ex) {
+        return respond(ErrorCode.PAYLOAD_TOO_LARGE, new HttpHeaders(), problem(ErrorCode.PAYLOAD_TOO_LARGE, ex.getMessage()));
     }
 
     @Override

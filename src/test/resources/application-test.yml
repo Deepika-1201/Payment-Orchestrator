@@ -39,3 +39,7 @@ pg:
 logging:
   level:
     com.payments.gateway: INFO
+
+# As behind the ALB: X-Forwarded-* from the local test client (a trusted proxy address) set scheme and client IP.
+server:
+  forward-headers-strategy: native

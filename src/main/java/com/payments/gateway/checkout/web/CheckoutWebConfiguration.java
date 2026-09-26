@@ -1,5 +1,6 @@
 package com.payments.gateway.checkout.web;
 
+import com.payments.gateway.shared.web.ApiSecurityFilter;
 import jakarta.servlet.Filter;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -20,6 +21,9 @@ public class CheckoutWebConfiguration {
             http.setHeader("Referrer-Policy", "no-referrer");
             http.setHeader("Cache-Control", "no-store");
             http.setHeader("X-Robots-Tag", "noindex, nofollow");
+            if (request.isSecure()) {
+                http.setHeader("Strict-Transport-Security", ApiSecurityFilter.HSTS);
+            }
             chain.doFilter(request, response);
         };
         FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>(filter);

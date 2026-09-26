@@ -725,6 +725,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `idempotency_key_required` | 400 | No |
 | `authentication_required` / `invalid_api_key` | 401 | No |
 | `resource_not_found` | 404 | No |
+| `payload_too_large` | 413 | No — bodies are limited to 256 KB |
 | `payment_invalid_state` | 409 | No (re-read the payment) |
 | `idempotency_request_in_progress` | 409 | Yes, same key, after `Retry-After` |
 | `idempotency_key_reuse` | 422 | No — use a new key |
@@ -753,6 +754,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.retention.provider-webhooks` / `.merchant-events` | `180d` / `90d` | Retention of handled PSP webhooks / finished merchant deliveries and their events (ADR-015) |
 | `pg.retention.batch-size` / `.max-batches-per-run` | `5000` / `200` | Rows per delete statement / batches per table per hourly run |
 | `pg.webhooks.outbound.allow-private-targets` | `false` | Only `true` for local/test |
+| `pg.webhooks.inbound.allowed-sources.<PROVIDER>` | — | Optional source CIDRs for that PSP's webhooks; others get `403` (ADR-022) |
+| `pg.api.max-request-body` | `256KB` | Larger `/v1` and `/admin` bodies get `413 payload_too_large`, declared or chunked |
 | `pg.security.admin-users` | — | Named operators: `name` (audit actor), `token-sha256`, `roles` (`admin`, `ops`, `finance`, `read_only`); see ADR-019 |
 | `pg.security.admin-tokens` | — | Plaintext break-glass tokens with the `admin` role (local development; a warning is logged) |
 | `pg.security.data-encryption-key` | — (required) | Base64 AES-256 key for secrets at rest (from KMS/Secrets Manager in AWS) |
@@ -785,6 +788,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
 | Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
 | Integration | Admin roles: each role limited to its permissions, operator name as audit actor, unknown token 401; every admin write endpoint declares a permission (deny by default) | `AdminRolesIntegrationTest` |
+| Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |

@@ -367,12 +367,12 @@ flowchart LR
 
 ## 8. Security architecture
 
-- **Edge:** AWS WAF (managed rules, rate-based rules, geo rules) → ALB with TLS 1.2+ (TLS 1.3 policy); HSTS.
+- **Edge:** AWS WAF (managed rules, rate-based rules, geo rules) → ALB with TLS 1.2+ (TLS 1.3 policy). The application adds HSTS, `no-store`, `nosniff` and anti-framing headers to every API response, and caps request bodies at 256 KB ([ADR-022](decisions/ADR-022-application-security-hardening.md)).
 - **Merchant auth:** secret API keys (`sk_test_…` in sandbox, `sk_live_…` in production), 256-bit random, stored as SHA-256 hashes and checked against the database on every request.
   - Rotation: issue a new key while the old one stays active, watch the old key's hourly `last_used_at`, then revoke it. Revocation takes effect immediately.
   - Suspending a merchant blocks all its keys and checkout links. Money already in flight still completes and reconciles.
 - **Admin auth:** named operators with roles `ADMIN`, `OPS`, `FINANCE`, `READ_ONLY`, identified by the SHA-256 of their bearer token (from Secrets Manager). Every admin endpoint declares its permission, and undeclared write endpoints are denied ([ADR-019](decisions/ADR-019-admin-roles.md)). The target is OIDC SSO producing the same roles, plus maker-checker for manual money adjustments.
-- **PSP webhooks:** signature verification (HMAC or provider scheme), timestamp tolerance, event-id dedupe, and optional source-IP allowlists at the WAF.
+- **PSP webhooks:** signature verification (HMAC or provider scheme), timestamp tolerance, event-id dedupe, and source-IP allowlists: in the WAF, and per provider in the application (`pg.webhooks.inbound.allowed-sources`, ADR-022).
   - Merchants own their PSP accounts, and so their signing secrets. Each account therefore has its own endpoint (`/v1/webhooks/providers/{code}/{account_id}`, ADR-014).
   - Its events can only change that merchant's payments and refunds, and deduplication is per account. One tenant can never forge or pre-empt another tenant's events.
 - **Merchant webhooks:** `PG-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>`. Merchants verify with a 5 min tolerance. During a secret rotation, the header carries one `v1` per valid secret.
@@ -380,7 +380,7 @@ flowchart LR
 - **Secrets & keys:** AWS Secrets Manager for credentials; KMS envelope encryption for merchant webhook secrets and PSP credentials (V1 code uses AES-256-GCM with a data key from configuration, which KMS supplies in AWS).
   - PSP credentials are bound to their account row as authenticated data, so ciphertexts cannot be swapped between merchants.
   - They are validated against the adapter's declared fields and never returned; the admin API shows only the last 4 characters.
-- **Data:** encryption at rest (Aurora + KMS) and in transit (TLS to the DB). No PAN or CVV anywhere; PII minimized and masked in logs.
+- **Data:** encryption at rest (Aurora + KMS) and in transit (TLS to the DB). No PAN or CVV anywhere; PII minimized. Structured logs pass through a redactor that masks keys, secrets, tokens, card numbers, emails and VPAs. The `prod` profile refuses to start with development settings (ADR-022).
 - **Egress:** NAT gateways with Elastic IPs give static egress IPs for PSP allowlisting.
 - **Least privilege:** separate IAM task roles for API and worker; the DB app user has no DDL rights (migrations run as a separate migration role).
 

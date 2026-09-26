@@ -103,6 +103,10 @@ pg:
       require-https: true
     inbound:
       max-attempts: 10
+      # Optional per-provider source CIDRs (e.g. the PSP's published webhook IPs); unlisted providers accept any source.
+      allowed-sources: {}
+  api:
+    max-request-body: 256KB
   security:
     admin-tokens: ${PG_ADMIN_TOKENS:}
     data-encryption-key: ${PG_DATA_ENCRYPTION_KEY:}
