@@ -31,7 +31,7 @@ public class MockProvidersConfiguration {
                 MethodType.UPI, new MethodSupport(EnumSet.allOf(UpiFlow.class), 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, true),
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)),
-                Set.of("INR"), true, true);
+                Set.of("INR"), true, true, true);
         return new MockPaymentProvider(MOCK_ALPHA, capabilities, properties, json, clock);
     }
 
@@ -41,7 +41,7 @@ public class MockProvidersConfiguration {
         ProviderCapabilities capabilities = new ProviderCapabilities(Map.of(
                 MethodType.UPI, new MethodSupport(EnumSet.allOf(UpiFlow.class), 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, true)),
-                Set.of("INR"), true, true);
+                Set.of("INR"), true, true, true);
         return new MockPaymentProvider(MOCK_BETA, capabilities, properties, json, clock);
     }
 

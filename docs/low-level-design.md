@@ -581,6 +581,12 @@ Base path `/v1`. JSON uses snake_case; amounts are integers in minor units; time
 | `GET /admin/v1/providers/health` | Circuit states + scores | `200` |
 | `POST /admin/v1/webhook-deliveries/{id}/replay` | Re-queue a delivery | `202` |
 | `GET /admin/v1/webhook-deliveries?resource_id=` | Delivery status for a payment or refund | `200` |
+| `GET /admin/v1/ledger/balances?merchant_id=&provider=` | Ledger balances per account | `200` |
+| `GET /admin/v1/ledger/transactions?reference_id=` | Postings for an attempt, refund, report line or settlement | `200` |
+| `POST /admin/v1/reconciliation/runs` | Reconcile `{merchant_id, provider, from, to}` | `201` run summary |
+| `GET /admin/v1/reconciliation/runs/{id}` | Run summary with its exceptions | `200` |
+| `GET /admin/v1/reconciliation/exceptions?status=&merchant_id=` | Exception queue | `200` |
+| `POST /admin/v1/reconciliation/exceptions/{id}/resolve` | Resolve with a note (audited) | `200` |
 
 Example — create and confirm UPI intent:
 
@@ -675,6 +681,56 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Unit | Routing: capability filter, rule matching, strategies, circuit exclusion | `routing` |
 | Unit | Webhook signing and verification, SSRF guard | `webhook` |
 | Integration (embedded PostgreSQL) | End-to-end flows over HTTP: UPI intent via simulator webhook, card manual capture, cancel/void, timeout → resolver, never-submitted, failover on outage, duplicate webhooks, idempotency replay/conflict/reuse, refunds (partial, multiple, over-refund, concurrent), late success auto-refund, merchant webhook delivery and retry, auth failures | `*IntegrationTest` |
+| Integration | Ledger: balanced postings, late-success netting, idempotency, DB-level balance and immutability. Reconciliation: clean day nets to zero, auto-heal, missing internally/at provider, amount mismatch, duplicate, short payout, auto-resolution, idempotent reruns | `LedgerIntegrationTest`, `ReconciliationIntegrationTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |
+
+## 16. Ledger and reconciliation
+
+### 16.1 Shadow ledger
+
+Tables (`V2__ledger_and_reconciliation.sql`):
+- `ledger_accounts`: one per (merchant, provider, type, currency).
+- `ledger_transactions`: `UNIQUE (reference_type, reference_id, type)` makes every posting idempotent.
+- `ledger_entries`: debit or credit, amount > 0.
+
+The database enforces the invariants itself:
+- A **deferred constraint trigger** rejects, at commit, any transaction with fewer than two entries or with debits ≠ credits.
+- Transactions and entries are **append-only**; corrections are made by reversal postings.
+
+| Trigger | Posted by | Debit | Credit |
+|---|---|---|---|
+| Attempt → `SUCCEEDED` (any path, including late success) | `FundsMovement` listener, same tx as the state change | `PSP_RECEIVABLE` | `SALES_CLEARING` |
+| Refund → `SUCCEEDED` (merchant or system) | `FundsMovement` listener, same tx | `REFUNDS` | `PSP_RECEIVABLE` |
+| Matched report line with a fee | Reconciliation (`REPORT_LINE`) | `PSP_FEES` | `PSP_RECEIVABLE` |
+| Settlement payout (net > 0; reversed legs if < 0) | Reconciliation (`SETTLEMENT`) | `BANK_SETTLEMENTS` | `PSP_RECEIVABLE` |
+
+After a clean reconciliation, `PSP_RECEIVABLE` for the merchant PSP account is zero. Any residual equals the unexplained money.
+
+### 16.2 Reconciliation run
+
+```text
+run(merchant, provider, [from, to)):
+  require provider linked + capabilities.settlementReports; window ≤ 31 days
+  report = provider.fetchSettlementReport(merchant, from, to)        -- lines + payouts
+  for line in report.lines:
+     duplicate reference in this report       → DUPLICATE
+     internal record not found                 → MISSING_INTERNALLY
+     amount differs                            → AMOUNT_MISMATCH (never healed)
+     internal already SUCCEEDED                → MATCHED
+     otherwise apply SUCCEEDED via the domain (source RECONCILIATION)
+         → AUTO_HEALED, or STATUS_MISMATCH if the domain refuses (e.g. VOIDED)
+     matched/healed: post fee, auto-resolve open MISSING_AT_PROVIDER for the entity
+  for payout in report.settlements:
+     post settlement; if payout ≠ Σ(matched captures − fees − refunds) → SETTLEMENT_MISMATCH
+  internal successes in window never seen in any report of this account → MISSING_AT_PROVIDER
+```
+
+Further properties:
+- **Idempotent reruns:** lines are stored per run, postings are idempotent, and an open exception is unique per (merchant, provider, type, reference).
+- **Auto-heal path:** it goes through the normal domain rules. A PSP-settled capture on an expired payment therefore follows the merchant's late-success policy.
+- **Schedule:** the worker runs the previous IST day at 02:30 IST (T+1) for every active merchant PSP account whose provider supports reports.
+- **Windows** must not overlap between runs (daily windows are consecutive), because a PSP settles each item exactly once.
+
+**Mock PSP support.** The mock PSP produces one settlement per merchant and window with a 2% fee. `POST /simulator/{provider}/report-anomalies` injects discrepancies for tests and demos: `drop`, `duplicate`, `amount_override`, `orphan_capture`, `settlement_shortfall`, `clear`.

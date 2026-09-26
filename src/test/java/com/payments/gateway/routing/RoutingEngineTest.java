@@ -163,7 +163,7 @@ class RoutingEngineTest {
         public ProviderCapabilities capabilities() {
             Map<MethodType, MethodSupport> support = new java.util.EnumMap<>(MethodType.class);
             methods.forEach(m -> support.put(m, new MethodSupport(Set.of(UpiFlow.values()), 100, 10_000_000, true)));
-            return new ProviderCapabilities(support, Set.of("INR"), true, true);
+            return new ProviderCapabilities(support, Set.of("INR"), true, true, false);
         }
 
         @Override

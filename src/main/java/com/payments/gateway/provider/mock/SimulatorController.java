@@ -3,6 +3,8 @@ package com.payments.gateway.provider.mock;
 import com.payments.gateway.provider.mock.MockPsp.Txn;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.model.Money;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -28,16 +30,21 @@ public class SimulatorController {
 
     private final Map<String, MockPaymentProvider> providers;
     private final MockWebhookSender webhookSender;
+    private final Clock clock;
 
-    public SimulatorController(List<MockPaymentProvider> providers, MockWebhookSender webhookSender) {
+    public SimulatorController(List<MockPaymentProvider> providers, MockWebhookSender webhookSender, Clock clock) {
         this.providers = providers.stream().collect(java.util.stream.Collectors.toMap(MockPaymentProvider::code, p -> p));
         this.webhookSender = webhookSender;
+        this.clock = clock;
     }
 
     public record CompleteRequest(String outcome, Boolean duplicateWebhook) {
     }
 
     public record AvailabilityRequest(boolean available) {
+    }
+
+    public record AnomalyRequest(String type, String merchantId, String providerReference, Long amount) {
     }
 
     @PostMapping("/{provider}/payments/{reference}/complete")
@@ -53,6 +60,27 @@ public class SimulatorController {
     public Map<String, Object> availability(@PathVariable String provider, @RequestBody AvailabilityRequest request) {
         provider(provider).psp().setAvailable(request.available());
         return Map.of("provider", provider, "available", request.available());
+    }
+
+    /** Makes the next settlement report disagree with the gateway, to exercise reconciliation. */
+    @PostMapping("/{provider}/report-anomalies")
+    public Map<String, Object> reportAnomaly(@PathVariable String provider, @RequestBody AnomalyRequest request) {
+        MockPsp psp = provider(provider).psp();
+        String type = request.type() == null ? "" : request.type();
+        switch (type) {
+            case "drop" -> psp.dropFromReport(required(request.providerReference(), "provider_reference"));
+            case "duplicate" -> psp.duplicateInReport(required(request.providerReference(), "provider_reference"));
+            case "amount_override" -> psp.overrideReportedAmount(required(request.providerReference(), "provider_reference"),
+                    required(request.amount(), "amount"));
+            case "orphan_capture" -> psp.addOrphanCapture(required(request.merchantId(), "merchant_id"),
+                    Money.of(required(request.amount(), "amount"), "INR"), clock.instant());
+            case "settlement_shortfall" -> psp.shortSettlement(required(request.merchantId(), "merchant_id"),
+                    required(request.amount(), "amount"));
+            case "clear" -> psp.clearAnomalies();
+            default -> throw GatewayException.validation("type",
+                    "must be one of drop, duplicate, amount_override, orphan_capture, settlement_shortfall, clear");
+        }
+        return Map.of("provider", provider, "type", type);
     }
 
     @GetMapping(value = "/{provider}/checkout/{reference}", produces = MediaType.TEXT_HTML_VALUE)
@@ -84,7 +112,7 @@ public class SimulatorController {
     private Txn completeAndNotify(String provider, String reference, boolean success, int deliveries) {
         MockPaymentProvider mock = provider(provider);
         Txn txn = transaction(provider, reference);
-        if (!txn.complete(success)) {
+        if (!txn.complete(success, clock.instant())) {
             throw GatewayException.invalidState("Transaction " + reference + " is already " + txn.state());
         }
         String gatewayBaseUrl = ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
@@ -106,6 +134,13 @@ public class SimulatorController {
     private Txn transaction(String provider, String reference) {
         return provider(provider).psp().find(reference, null)
                 .orElseThrow(() -> GatewayException.notFound("Mock transaction", reference));
+    }
+
+    private static <T> T required(T value, String field) {
+        if (value == null) {
+            throw GatewayException.validation(field, "is required for this anomaly type");
+        }
+        return value;
     }
 
     private static String page(String title, String body) {

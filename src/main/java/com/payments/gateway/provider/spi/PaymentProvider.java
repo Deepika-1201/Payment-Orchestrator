@@ -4,6 +4,7 @@ import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.VoidRequest;
 import java.util.List;
 
@@ -33,4 +34,9 @@ public interface PaymentProvider {
 
     /** Verifies authenticity and normalizes the payload; throws {@link WebhookVerificationException} if invalid. */
     List<ProviderEvent> parseWebhook(InboundWebhook webhook);
+
+    /** Only called when {@link ProviderCapabilities#settlementReports()} is true. */
+    default SettlementReport fetchSettlementReport(SettlementReportQuery query) {
+        throw new UnsupportedOperationException(code() + " does not provide settlement reports");
+    }
 }

@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: phases 1–9 are complete, plus core webhooks, status resolution, expiry and refunds. See the [Roadmap](#roadmap).
+> Status: phases 1–9 and 13 are complete, plus core webhooks, status resolution, expiry and refunds. That includes the double-entry shadow ledger and PSP reconciliation. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -57,7 +57,9 @@ curl -X POST localhost:8080/v1/payments/{id}/confirm -H "Authorization: Bearer $
 | `POST /v1/payments/{id}/refunds` · `GET /v1/payments/{id}/refunds` · `GET /v1/refunds/{id}` | Refunds |
 | `POST /v1/webhooks/providers/{code}` | PSP webhooks (signature-authenticated) |
 | `/admin/v1/merchants` · `/routing-rules` · `/providers/health` · `/webhook-deliveries` | Admin |
-| `/simulator/...` | Mock PSP hosted page, completion and outage simulation (local and test only) |
+| `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
+| `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/resolve` | Reconcile a merchant PSP account for a window; work the exception queue |
+| `/simulator/...` | Mock PSP hosted page, completion, outage simulation and settlement-report anomalies (local and test only) |
 
 Mock PSP test scenarios are selected by the last two digits of the amount:
 
@@ -87,7 +89,9 @@ src/main/java/com/payments/gateway/
   payment/       domain (state machines), application (orchestration, outcomes, refunds, resolver, expiry),
                  infrastructure (JDBC), api (DTOs/mapper), web (controllers)
   webhook/       inbound PSP inbox, outbound merchant outbox + delivery worker
-  platform/      worker scheduler
+  ledger/        double-entry shadow ledger (postings on capture/refund/fee/settlement), admin API
+  reconciliation/ settlement-report matching, auto-heal, exception queue, admin API
+  platform/      worker scheduler (incl. daily T+1 reconciliation at 02:30 IST)
 src/main/resources/db/migration/   Flyway schema
 src/test/java/...                  unit, integration and ArchUnit tests + LocalDevApplication
 ```
@@ -103,7 +107,7 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | 9 | Routing engine (rules + health + circuit breakers) | Done |
 | 11–12 | Webhooks (inbound inbox, outbound outbox), refunds, status resolver, expiry | Done (core) |
 | 10 | Real PSP adapters (Razorpay, Cashfree sandboxes) + contract tests | Next |
-| 13 | Reconciliation + shadow double-entry ledger | Planned |
+| 13 | Reconciliation + shadow double-entry ledger | Done |
 | 14 | Risk: external provider adapter, review queue | Planned |
 | 15 | Observability: dashboards, SLO alerts, OTel collector in compose | Planned |
 | 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |

@@ -23,4 +23,8 @@ public final class ProviderRequests {
 
     public record RefundStatusQuery(String refundId, String providerRefundReference) {
     }
+
+    /** {@code merchantId} selects the merchant's PSP account (orchestrator mode); window is [from, to). */
+    public record SettlementReportQuery(String merchantId, java.time.Instant from, java.time.Instant to) {
+    }
 }

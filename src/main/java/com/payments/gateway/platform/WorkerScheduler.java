@@ -3,8 +3,10 @@ package com.payments.gateway.platform;
 import com.payments.gateway.idempotency.IdempotencyService;
 import com.payments.gateway.payment.application.ExpiryJob;
 import com.payments.gateway.payment.application.StatusResolver;
+import com.payments.gateway.reconciliation.ReconciliationService;
 import com.payments.gateway.webhook.inbound.ProviderWebhookService;
 import com.payments.gateway.webhook.outbound.WebhookDeliveryWorker;
+import java.time.ZoneId;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,14 +26,17 @@ public class WorkerScheduler {
     private final ProviderWebhookService inbox;
     private final WebhookDeliveryWorker deliveries;
     private final IdempotencyService idempotency;
+    private final ReconciliationService reconciliation;
 
     public WorkerScheduler(StatusResolver statusResolver, ExpiryJob expiryJob, ProviderWebhookService inbox,
-                           WebhookDeliveryWorker deliveries, IdempotencyService idempotency) {
+                           WebhookDeliveryWorker deliveries, IdempotencyService idempotency,
+                           ReconciliationService reconciliation) {
         this.statusResolver = statusResolver;
         this.expiryJob = expiryJob;
         this.inbox = inbox;
         this.deliveries = deliveries;
         this.idempotency = idempotency;
+        this.reconciliation = reconciliation;
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
@@ -60,6 +65,11 @@ public class WorkerScheduler {
     @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
     void purgeIdempotencyKeys() {
         run("idempotency-purge", () -> idempotency.purgeExpired(10_000));
+    }
+
+    @Scheduled(cron = "0 30 2 * * *", zone = "Asia/Kolkata")
+    void dailyReconciliation() {
+        run("reconciliation", () -> reconciliation.runForPreviousDay(ZoneId.of("Asia/Kolkata")));
     }
 
     private static void run(String job, Runnable action) {

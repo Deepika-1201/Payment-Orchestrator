@@ -89,6 +89,17 @@ public class MerchantRepository {
                 .list();
     }
 
+    public List<MerchantDirectory.ProviderAccount> findAllActiveProviderAccounts() {
+        return jdbc.sql("""
+                SELECT a.merchant_id, a.provider_code
+                  FROM merchant_provider_accounts a JOIN merchants m ON m.id = a.merchant_id
+                 WHERE a.status = 'ACTIVE' AND m.status = 'ACTIVE'
+                 ORDER BY a.merchant_id, a.provider_code
+                """)
+                .query((rs, n) -> new MerchantDirectory.ProviderAccount(rs.getString("merchant_id"), rs.getString("provider_code")))
+                .list();
+    }
+
     public Optional<byte[]> findWebhookSecret(String merchantId) {
         return jdbc.sql("SELECT webhook_secret_enc FROM merchants WHERE id = :id AND webhook_secret_enc IS NOT NULL")
                 .param("id", merchantId)

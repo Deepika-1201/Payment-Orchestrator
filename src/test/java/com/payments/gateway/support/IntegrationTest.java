@@ -107,12 +107,17 @@ public abstract class IntegrationTest {
         jdbc.sql("""
                 TRUNCATE merchants, api_keys, merchant_provider_accounts, payments, payment_attempts, refunds,
                          payment_transitions, idempotency_records, provider_webhook_events, merchant_events,
-                         webhook_deliveries, routing_rules, audit_log RESTART IDENTITY CASCADE
+                         webhook_deliveries, routing_rules, audit_log, ledger_entries, ledger_transactions,
+                         ledger_accounts, reconciliation_lines, reconciliation_exceptions, reconciliation_runs
+                         RESTART IDENTITY CASCADE
                 """).update();
         clock.set(Instant.now());
         providerClient.resetCircuits();
         health.reset();
-        mockProviders.forEach(provider -> provider.psp().setAvailable(true));
+        mockProviders.forEach(provider -> {
+            provider.psp().setAvailable(true);
+            provider.psp().clearAnomalies();
+        });
         routingRules.refresh();
     }
 
@@ -217,6 +222,28 @@ public abstract class IntegrationTest {
         Response response = get(merchant, "/v1/payments/" + paymentId);
         assertThat(response.status()).isEqualTo(200);
         return response.body();
+    }
+
+    /** Creates, confirms (UPI intent) and completes a payment through the simulator; returns the final payment. */
+    protected Map<String, Object> payAndSucceed(TestMerchant merchant, long amount) {
+        String paymentId = str(createPayment(merchant, amount, "automatic"), "id");
+        Response confirmed = confirm(merchant, paymentId, upi("intent"));
+        simulate(str(confirmed.body(), "latest_attempt.provider"), str(confirmed.body(), "latest_attempt.provider_reference"),
+                "success", false);
+        Map<String, Object> payment = getPayment(merchant, paymentId);
+        assertThat(str(payment, "status")).isEqualTo("succeeded");
+        return payment;
+    }
+
+    /** Ledger balances of a merchant keyed by account type (normal-side balance). */
+    protected Map<String, Long> ledgerBalances(TestMerchant merchant) {
+        Response response = admin("GET", "/admin/v1/ledger/balances?merchant_id=" + merchant.id(), null);
+        assertThat(response.status()).isEqualTo(200);
+        Map<String, Long> balances = new HashMap<>();
+        for (Map<String, Object> row : JsonPath.list(response.body(), "data")) {
+            balances.merge(str(row, "account"), JsonPath.num(row, "balance"), Long::sum);
+        }
+        return balances;
     }
 
     /** Moves time forward and runs the resolver until nothing is due (bounded). */

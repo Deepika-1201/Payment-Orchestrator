@@ -4,11 +4,13 @@ import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
 import com.payments.gateway.payment.domain.Refund;
+import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.StatusChange;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.payment.infrastructure.TransitionLog;
 import com.payments.gateway.provider.ProviderHealthTracker;
+import com.payments.gateway.shared.events.FundsMovement;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
 import java.util.Locale;
@@ -49,6 +51,7 @@ public class PaymentStore {
         List<PaymentEvent> paymentEvents = payment.pullEvents();
         payments.save(payment);
         transitions.append(payment.id(), payment.merchantId(), changes);
+        publishCaptures(payment, changes);
         if (refund != null) {
             saveRefund(payment, refund);
         }
@@ -63,6 +66,22 @@ public class PaymentStore {
         List<StatusChange> changes = refund.pullChanges();
         refunds.save(refund);
         transitions.append(payment.id(), payment.merchantId(), changes);
+        for (StatusChange change : changes) {
+            if (RefundStatus.SUCCEEDED.name().equals(change.toStatus())) {
+                events.publishFundsMovement(new FundsMovement(FundsMovement.Type.REFUND, refund.merchantId(),
+                        refund.providerCode(), refund.id(), payment.id(), refund.amount(), change.occurredAt()));
+            }
+        }
+    }
+
+    private void publishCaptures(Payment payment, List<StatusChange> changes) {
+        for (StatusChange change : changes) {
+            if (change.entity() == StatusChange.Entity.ATTEMPT && AttemptStatus.SUCCEEDED.name().equals(change.toStatus())) {
+                payment.attempt(change.entityId()).ifPresent(attempt -> events.publishFundsMovement(new FundsMovement(
+                        FundsMovement.Type.CAPTURE, payment.merchantId(), attempt.providerCode(), attempt.id(),
+                        payment.id(), attempt.amount(), change.occurredAt())));
+            }
+        }
     }
 
     private void recordAttemptOutcomes(Payment payment, List<StatusChange> changes) {

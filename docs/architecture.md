@@ -79,8 +79,8 @@ flowchart TB
         Risk["Risk engine"]
         Routing["Routing engine<br/>rules + health"]
         Merchant["Merchant & keys"]
-        Ledger["Shadow ledger (P13)"]
-        Recon["Reconciliation (P13)"]
+        Ledger["Shadow ledger"]
+        Recon["Reconciliation"]
     end
     subgraph providers["Provider adapter layer (SPI)"]
         Mock["Mock A / Mock B"]
@@ -119,7 +119,8 @@ flowchart TB
 | `routing` | Rules, candidate selection, health tracking | shared, provider (SPI) |
 | `risk` | Risk rules and decisions | shared |
 | `webhook` | Inbound PSP webhook inbox; outbound merchant events and deliveries | shared, payment (events + inbound port), merchant, provider (SPI) |
-| `ledger` / `reconciliation` | Phase 13 | payment events, provider reports |
+| `ledger` | Double-entry shadow ledger, balances | shared (listens to `FundsMovement`) |
+| `reconciliation` | Settlement-report matching, auto-heal, exception queue | payment (application API), provider (SPI), ledger, merchant |
 
 Dependency rules are checked by ArchUnit tests: domain code has no framework or infrastructure imports, and modules only use each other's public packages.
 
@@ -128,7 +129,7 @@ Dependency rules are checked by ArchUnit tests: domain code has no framework or 
 | Role | Enabled by | Does | Scales on |
 |---|---|---|---|
 | `api` | `pg.workers.enabled=false` | REST API, PSP webhook intake | CPU + request rate |
-| `worker` | `pg.workers.enabled=true` | Status resolver, expiry, webhook inbox retries, merchant webhook delivery, (P13) reconciliation | Backlog depth |
+| `worker` | `pg.workers.enabled=true` | Status resolver, expiry, webhook inbox retries, merchant webhook delivery, daily T+1 reconciliation | Backlog depth |
 
 Both roles use the same image and database. Workers claim work with `FOR UPDATE SKIP LOCKED` plus leases, so any number of replicas is safe.
 
@@ -302,7 +303,7 @@ sequenceDiagram
     RS-->>M: 201 refund
 ```
 
-### 4.9 Reconciliation (Phase 13 design)
+### 4.9 Reconciliation
 
 ```mermaid
 flowchart LR
@@ -320,7 +321,7 @@ flowchart LR
 
 - **PostgreSQL is the single source of truth** for payments, attempts, refunds, idempotency, the webhook inbox and outbox, routing rules, and audit logs. Strong consistency comes from row locks on the payment row plus database constraints (e.g. `amount_refunded <= amount_captured`).
 - **Shard-ready from day one:** every table carries `merchant_id`, no transaction spans merchants, and ids are globally unique and time-ordered (ULID-style). The first scaling step is vertical plus partitioning; the second is sharding by `merchant_id` (e.g. Citus) — see §10.
-- **Append-only records:** `payment_transitions` and `audit_log` reject `UPDATE`/`DELETE` via triggers. The ledger (Phase 13) will be the same.
+- **Append-only records:** `payment_transitions`, `audit_log`, `ledger_transactions` and `ledger_entries` reject `UPDATE`/`DELETE` via triggers. Ledger balance is also enforced by a deferred constraint trigger at commit.
 - **Partitioning plan** (when volume demands it, roughly 10× launch): monthly range partitions on the append-heavy tables (`payment_transitions`, `provider_webhook_events`, `merchant_events`, `webhook_deliveries`, `idempotency_records`), managed with pg_partman; retention is enforced by dropping partitions.
 - **Read path:** reporting and analytics go to a read replica (Aurora reader), never the writer.
 

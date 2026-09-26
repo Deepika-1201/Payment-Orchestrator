@@ -8,9 +8,11 @@ import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.VoidRequest;
 import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
+import com.payments.gateway.provider.spi.SettlementReport;
 import com.payments.gateway.shared.web.Mdc;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
@@ -73,6 +75,10 @@ public class ProviderClient {
 
     public ProviderRefundResult fetchRefundStatus(String providerCode, RefundStatusQuery query) {
         return call(providerCode, "refund_status", provider -> provider.fetchRefundStatus(query));
+    }
+
+    public SettlementReport fetchSettlementReport(String providerCode, SettlementReportQuery query) {
+        return call(providerCode, "settlement_report", provider -> provider.fetchSettlementReport(query));
     }
 
     public boolean isAvailable(String providerCode) {

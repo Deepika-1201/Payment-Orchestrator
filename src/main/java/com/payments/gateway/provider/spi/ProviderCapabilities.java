@@ -10,7 +10,7 @@ import java.util.Set;
 
 /** Declares what a provider supports; routing and the orchestrator consult this instead of type checks. */
 public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies,
-                                   boolean voidSupported, boolean partialRefunds) {
+                                   boolean voidSupported, boolean partialRefunds, boolean settlementReports) {
 
     public ProviderCapabilities {
         methods = Map.copyOf(methods);

@@ -4,6 +4,7 @@ import com.payments.gateway.payment.api.PaymentMapper;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
 import com.payments.gateway.payment.domain.Refund;
+import com.payments.gateway.shared.events.FundsMovement;
 import com.payments.gateway.shared.events.MerchantEventRequested;
 import java.time.Clock;
 import java.util.List;
@@ -44,5 +45,9 @@ public class PaymentEventPublisher {
             publisher.publishEvent(new MerchantEventRequested(refund.merchantId(), event.type().wireName(),
                     refund.id(), payload, clock.instant()));
         }
+    }
+
+    public void publishFundsMovement(FundsMovement movement) {
+        publisher.publishEvent(movement);
     }
 }

@@ -12,9 +12,11 @@ import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.VoidRequest;
 import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
+import com.payments.gateway.provider.spi.SettlementReport;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
 import com.payments.gateway.provider.mock.MockPsp.RefundState;
 import com.payments.gateway.provider.mock.MockPsp.RefundTxn;
@@ -32,6 +34,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -44,10 +47,11 @@ public class MockPaymentProvider implements PaymentProvider {
 
     public static final String SIGNATURE_HEADER = "X-Mock-Signature";
     private static final long SIGNATURE_TOLERANCE_SECONDS = 300;
+    private static final long FEE_BASIS_POINTS = 200;
 
     private final String code;
     private final ProviderCapabilities capabilities;
-    private final MockPsp psp = new MockPsp();
+    private final MockPsp psp;
     private final MockProviderProperties properties;
     private final JsonCodec json;
     private final Clock clock;
@@ -56,6 +60,7 @@ public class MockPaymentProvider implements PaymentProvider {
                                JsonCodec json, Clock clock) {
         this.code = code;
         this.capabilities = capabilities;
+        this.psp = new MockPsp(code);
         this.properties = properties;
         this.json = json;
         this.clock = clock;
@@ -93,7 +98,7 @@ public class MockPaymentProvider implements PaymentProvider {
             }
             case 3 -> {
                 Txn txn = create(reference, request, TxnState.FAILED);
-                txn.moveTo(TxnState.FAILED, "transaction_declined");
+                txn.moveTo(TxnState.FAILED, "transaction_declined", clock.instant());
                 return toResult(txn);
             }
             case 4 -> {
@@ -130,7 +135,7 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         synchronized (txn) {
             if (txn.state() == TxnState.AUTHORIZED) {
-                txn.moveTo(TxnState.CAPTURED, null);
+                txn.moveTo(TxnState.CAPTURED, null, clock.instant());
             }
         }
         if (txn.state() == TxnState.CAPTURED) {
@@ -150,7 +155,7 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         synchronized (txn) {
             if (txn.state() == TxnState.AUTHORIZED) {
-                txn.moveTo(TxnState.VOIDED, null);
+                txn.moveTo(TxnState.VOIDED, null, clock.instant());
             }
         }
         if (txn.state() == TxnState.VOIDED) {
@@ -179,7 +184,8 @@ public class MockPaymentProvider implements PaymentProvider {
                             FailureCategory.VALIDATION));
         }
         String reference = Ids.newId(code.toLowerCase(Locale.ROOT) + "_rfnd");
-        RefundTxn refund = psp.saveRefund(new RefundTxn(reference, request.refundId(), txn.reference(), request.amount(), state));
+        RefundTxn refund = psp.saveRefund(new RefundTxn(reference, request.refundId(), txn.reference(), request.amount(),
+                state, clock.instant()));
         return switch (scenario) {
             case 7 -> ProviderRefundResult.pending(refund.reference(), refund.amount());
             case 8 -> throw new ProviderTimeoutException(code, "simulated refund timeout (request was processed)");
@@ -279,9 +285,47 @@ public class MockPaymentProvider implements PaymentProvider {
         }
     }
 
+    /** One settlement per merchant and window; the PSP keeps a 2% fee on each capture. */
+    @Override
+    public SettlementReport fetchSettlementReport(SettlementReportQuery query) {
+        simulateNetwork();
+        String settlementId = "setl_" + code.toLowerCase(Locale.ROOT) + "_" + query.merchantId() + "_" + query.from().getEpochSecond();
+        List<SettlementReport.Line> lines = new ArrayList<>();
+        long net = 0;
+        String currency = "INR";
+        for (Txn txn : psp.capturedBetween(query.merchantId(), query.from(), query.to())) {
+            if (psp.isDroppedFromReport(txn.reference())) {
+                continue;
+            }
+            currency = txn.amount().currency();
+            Money gross = Money.of(psp.reportedAmount(txn), currency);
+            Money fee = Money.of(gross.amount() * FEE_BASIS_POINTS / 10_000, currency);
+            int copies = psp.isDuplicatedInReport(txn.reference()) ? 2 : 1;
+            for (int copy = 0; copy < copies; copy++) {
+                lines.add(new SettlementReport.Line("line_" + txn.reference() + (copy == 0 ? "" : "_" + copy),
+                        SettlementReport.LineType.PAYMENT, txn.reference(), txn.merchantReference(), gross, fee,
+                        settlementId, txn.capturedAt()));
+                net += gross.amount() - fee.amount();
+            }
+        }
+        for (RefundTxn refund : psp.refundsBetween(query.merchantId(), query.from(), query.to())) {
+            currency = refund.amount().currency();
+            lines.add(new SettlementReport.Line("line_" + refund.reference(), SettlementReport.LineType.REFUND,
+                    refund.reference(), refund.merchantReference(), refund.amount(), Money.of(0, currency), settlementId,
+                    refund.createdAt()));
+            net -= refund.amount().amount();
+        }
+        if (lines.isEmpty()) {
+            return new SettlementReport(List.of(), List.of());
+        }
+        net -= psp.settlementShortfall(query.merchantId());
+        return new SettlementReport(lines, List.of(new SettlementReport.Settlement(settlementId, net, currency,
+                "UTR" + query.from().getEpochSecond(), query.to())));
+    }
+
     private Txn create(String reference, InitiatePaymentRequest request, TxnState state) {
-        return psp.create(reference, request.attemptId(), request.amount(), request.method(),
-                request.captureMethod() == CaptureMethod.MANUAL, request.returnUrl(), state);
+        return psp.create(reference, request.merchantId(), request.attemptId(), request.amount(), request.method(),
+                request.captureMethod() == CaptureMethod.MANUAL, request.returnUrl(), state, clock.instant());
     }
 
     private NextAction nextAction(Txn txn) {
