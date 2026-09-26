@@ -29,10 +29,13 @@ public class AdminAuthFilter extends OncePerRequestFilter {
     }
 
     private final List<Credential> credentials;
+    private final OidcAdminAuthenticator sso;
     private final JsonCodec json;
 
-    public AdminAuthFilter(List<Credential> credentials, JsonCodec json) {
+    /** {@code sso} is null when admin single sign-on is not configured. */
+    public AdminAuthFilter(List<Credential> credentials, OidcAdminAuthenticator sso, JsonCodec json) {
         this.credentials = List.copyOf(credentials);
+        this.sso = sso;
         this.json = json;
     }
 
@@ -51,7 +54,9 @@ public class AdminAuthFilter extends OncePerRequestFilter {
         String header = request.getHeader("Authorization");
         String token = header != null && header.startsWith(BEARER) ? header.substring(BEARER.length()).trim() : null;
         AdminPrincipal principal = null;
-        if (token != null && !token.isEmpty()) {
+        if (token != null && !token.isEmpty() && sso != null && OidcAdminAuthenticator.looksLikeJwt(token)) {
+            principal = sso.authenticate(token).orElse(null);
+        } else if (token != null && !token.isEmpty()) {
             String presented = sha256Hex(token);
             for (Credential credential : credentials) {
                 if (Hashing.constantTimeEquals(credential.tokenSha256(), presented)) {

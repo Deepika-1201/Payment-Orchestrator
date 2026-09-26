@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProductionConfigurationGuardTest {
 
     private static final SecurityProperties SECURE = new SecurityProperties(List.of(),
-            List.of(new SecurityProperties.AdminUser("ops-asha", "a".repeat(64), Set.of(AdminRole.OPS))),
+            List.of(new SecurityProperties.AdminUser("ops-asha", "a".repeat(64), Set.of(AdminRole.OPS))), null,
             "cHJvZHVjdGlvbi1rZXktZnJvbS1zZWNyZXRzLW1hbmFnZXI=", SecurityProperties.ApiKeyMode.LIVE);
 
     @Test
@@ -29,7 +29,7 @@ class ProductionConfigurationGuardTest {
 
     @Test
     void developmentSettingsStopTheStart() {
-        SecurityProperties devKey = new SecurityProperties(List.of(), List.of(), "bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=",
+        SecurityProperties devKey = new SecurityProperties(List.of(), List.of(), null, "bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=",
                 SecurityProperties.ApiKeyMode.LIVE);
         MockEnvironment environment = new MockEnvironment().withProperty("pg.providers.mock.enabled", "true");
 
@@ -43,7 +43,7 @@ class ProductionConfigurationGuardTest {
                 .hasMessageContaining("require-https")
                 .hasMessageContaining("pg.rate-limit.enabled")
                 .hasMessageContaining("data-encryption-key")
-                .hasMessageContaining("admin-users")
+                .hasMessageContaining("admin-users or pg.security.oidc")
                 .hasMessageContaining("public-base-url");
     }
 }

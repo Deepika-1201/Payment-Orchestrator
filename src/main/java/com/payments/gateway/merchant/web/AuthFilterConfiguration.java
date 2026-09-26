@@ -53,14 +53,19 @@ public class AuthFilterConfiguration {
             credentials.add(new AdminAuthFilter.Credential(new AdminPrincipal("admin-token-" + i, Set.of(AdminRole.ADMIN)),
                     AdminAuthFilter.sha256Hex(security.adminTokens().get(i))));
         }
-        if (credentials.isEmpty()) {
-            log.warn("No pg.security.admin-users or admin-tokens configured: admin API is disabled");
+        OidcAdminAuthenticator sso = null;
+        if (security.oidc().enabled()) {
+            sso = new OidcAdminAuthenticator(security.oidc());
+            log.info("Admin single sign-on enabled for issuer {} (ADR-023)", security.oidc().issuer());
+        }
+        if (credentials.isEmpty() && sso == null) {
+            log.warn("No pg.security.admin-users, admin-tokens or oidc configured: admin API is disabled");
         } else if (!security.adminTokens().isEmpty()) {
             log.warn("{} plaintext pg.security.admin-tokens configured with the ADMIN role; use admin-users with roles "
                     + "outside local development (ADR-019)", security.adminTokens().size());
         }
         FilterRegistrationBean<AdminAuthFilter> registration =
-                new FilterRegistrationBean<>(new AdminAuthFilter(credentials, json));
+                new FilterRegistrationBean<>(new AdminAuthFilter(credentials, sso, json));
         registration.addUrlPatterns("/admin/*");
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
         return registration;

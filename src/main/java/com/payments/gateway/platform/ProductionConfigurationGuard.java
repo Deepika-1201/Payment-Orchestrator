@@ -52,8 +52,8 @@ public class ProductionConfigurationGuard {
         if (key == null || key.isBlank() || PUBLIC_DEVELOPMENT_KEYS.contains(key.trim())) {
             problems.add("pg.security.data-encryption-key must be a private key from Secrets Manager");
         }
-        if (security.adminUsers().isEmpty() && security.adminTokens().isEmpty()) {
-            problems.add("configure pg.security.admin-users (ADR-019)");
+        if (security.adminUsers().isEmpty() && security.adminTokens().isEmpty() && !security.oidc().enabled()) {
+            problems.add("configure pg.security.admin-users or pg.security.oidc (ADR-019, ADR-023)");
         }
         if (checkout.publicBaseUrl() == null || !checkout.publicBaseUrl().startsWith("https://")) {
             problems.add("pg.checkout.public-base-url must be an https:// URL");

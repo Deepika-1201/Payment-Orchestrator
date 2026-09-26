@@ -758,6 +758,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.api.max-request-body` | `256KB` | Larger `/v1` and `/admin` bodies get `413 payload_too_large`, declared or chunked |
 | `pg.security.admin-users` | — | Named operators: `name` (audit actor), `token-sha256`, `roles` (`admin`, `ops`, `finance`, `read_only`); see ADR-019 |
 | `pg.security.admin-tokens` | — | Plaintext break-glass tokens with the `admin` role (local development; a warning is logged) |
+| `pg.security.oidc.issuer` / `.jwks-uri` / `.audience` | unset | Admin SSO: accept JWT access tokens from this identity provider (ADR-023) |
+| `pg.security.oidc.roles-claim` / `.name-claim` | `roles` / `preferred_username` | Claim with the admin roles / claim used as audit actor (falls back to `sub`) |
 | `pg.security.data-encryption-key` | — (required) | Base64 AES-256 key for secrets at rest (from KMS/Secrets Manager in AWS) |
 | `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
@@ -788,6 +790,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
 | Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
 | Integration | Admin roles: each role limited to its permissions, operator name as audit actor, unknown token 401; every admin write endpoint declares a permission (deny by default) | `AdminRolesIntegrationTest` |
+| Integration | Admin SSO: IdP roles and name applied; token without roles 403; expired, wrong audience or issuer, unpublished key, `alg: none`, HS256 key confusion and tampered tokens 401 | `AdminSsoIntegrationTest` |
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |

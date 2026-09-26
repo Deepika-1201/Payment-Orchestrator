@@ -1,6 +1,7 @@
 package com.payments.gateway.shared.config;
 
 import com.payments.gateway.shared.web.AdminRole;
+import java.net.URI;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -17,7 +18,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * with the {@code ADMIN} role, meant for local development.
  */
 @ConfigurationProperties("pg.security")
-public record SecurityProperties(List<String> adminTokens, List<AdminUser> adminUsers, String dataEncryptionKey,
+public record SecurityProperties(List<String> adminTokens, List<AdminUser> adminUsers, Oidc oidc, String dataEncryptionKey,
                                  ApiKeyMode apiKeyMode) {
 
     private static final Pattern NAME = Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
@@ -50,9 +51,29 @@ public record SecurityProperties(List<String> adminTokens, List<AdminUser> admin
         }
     }
 
+    /**
+     * Admin single sign-on (ADR-023): bearer JWTs issued by {@code issuer} for {@code audience}, verified against
+     * {@code jwksUri}. {@code rolesClaim} lists admin roles; {@code nameClaim} becomes the audit actor.
+     */
+    public record Oidc(URI issuer, URI jwksUri, String audience, String rolesClaim, String nameClaim) {
+
+        public Oidc {
+            if (issuer != null && (jwksUri == null || audience == null || audience.isBlank())) {
+                throw new IllegalArgumentException("pg.security.oidc needs jwks-uri and audience when issuer is set");
+            }
+            rolesClaim = rolesClaim == null ? "roles" : rolesClaim;
+            nameClaim = nameClaim == null ? "preferred_username" : nameClaim;
+        }
+
+        public boolean enabled() {
+            return issuer != null;
+        }
+    }
+
     public SecurityProperties {
         adminTokens = adminTokens == null ? List.of() : adminTokens.stream().filter(t -> t != null && !t.isBlank()).toList();
         adminUsers = adminUsers == null ? List.of() : List.copyOf(adminUsers);
+        oidc = oidc == null ? new Oidc(null, null, null, null, null) : oidc;
         Set<String> names = new HashSet<>();
         Set<String> hashes = new HashSet<>();
         for (AdminUser user : adminUsers) {

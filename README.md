@@ -19,7 +19,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-022 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-023 |
 
 ## Quick start
 
@@ -80,7 +80,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 
 Merchant endpoints have per-merchant rate limits, with separate budgets for reads and writes. When a limit is hit, the API answers `429` with `Retry-After`. The request was not processed and its Idempotency-Key was not used up, so it can be retried unchanged. Operators can raise or lower one merchant's budgets with `PUT /admin/v1/merchants/{id}/rate-limits`, and the change applies from that merchant's next request (ADR-020).
 
-Admin callers are named operators with roles (`admin`, `ops`, `finance`, `read_only`), configured by the SHA-256 of their token under `pg.security.admin-users`. Each admin endpoint requires one permission, and write endpoints without a declared permission are refused (ADR-019). The audit log records the operator's name.
+Admin callers are named operators with roles (`admin`, `ops`, `finance`, `read_only`). They sign in through the company identity provider (OIDC access tokens whose `roles` claim carries the gateway role, ADR-023) or use tokens configured by SHA-256 under `pg.security.admin-users`. Each admin endpoint requires one permission, and write endpoints without a declared permission are refused (ADR-019). The audit log records the operator's name.
 
 Mock PSP test scenarios are selected by the last two digits of the amount:
 
