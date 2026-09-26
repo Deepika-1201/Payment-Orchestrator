@@ -4,6 +4,7 @@ import com.payments.gateway.shared.crypto.SecretCipher;
 import com.payments.gateway.shared.net.UrlSafetyValidator;
 import com.payments.gateway.shared.web.RequestIdFilter;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Base64;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -17,9 +18,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 @EnableScheduling
 public class CoreConfiguration {
 
+    /** Microsecond ticks match PostgreSQL timestamptz; Linux clocks are nanosecond-precise and would not round-trip. */
     @Bean
     Clock clock() {
-        return Clock.systemUTC();
+        return Clock.tick(Clock.systemUTC(), Duration.ofNanos(1_000));
     }
 
     @Bean
