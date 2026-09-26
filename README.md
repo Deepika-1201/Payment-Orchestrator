@@ -2,7 +2,14 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: phases 1–9, 13 and 14 are complete, plus core webhooks, status resolution, expiry and refunds. That includes the double-entry shadow ledger and PSP reconciliation, the risk engine with an external fraud connector and a manual review queue, as well as API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits and a minimal hosted checkout. See the [Roadmap](#roadmap).
+> Status: phases 1–9, 13 and 14 are complete, plus core webhooks, status resolution, expiry and refunds. That includes:
+> - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
+> - chargebacks and UPI disputes;
+> - the risk engine, with an external fraud connector and a manual review queue;
+> - admin roles;
+> - API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits (with overrides) and a hosted checkout with UPI QR.
+>
+> Remaining: real PSP adapters (phase 10, needs sandbox credentials), dashboards and alerts, Terraform, and load tests. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -95,17 +102,18 @@ Mock PSP test scenarios are selected by the last two digits of the amount:
 ```
 src/main/java/com/payments/gateway/
   shared/        money, ids, errors, crypto, JSON, request-id + problem-details handling, SSRF guard
-  merchant/      merchants, API keys, auth + rate-limit filters, admin API
+  merchant/      merchants, API keys, auth + rate-limit filters (per-merchant overrides), admin roles, admin API
   idempotency/   Idempotency-Key storage and replay
   provider/      SPI (spi/), registry, circuit-breaking client, health tracker, mock PSPs (mock/)
   routing/       rules (DB), strategies, routing engine, admin API
   risk/          risk engine, rules and the optional external fraud connector
-  payment/       domain (state machines), application (orchestration, outcomes, refunds, resolver, expiry, review queue),
-                 infrastructure (JDBC), api (DTOs/mapper), web (controllers)
+  payment/       domain (state machines, refunds, disputes), application (orchestration, outcomes, refunds, disputes,
+                 resolver, expiry, review queue), infrastructure (JDBC), api (DTOs/mapper), web (controllers)
   webhook/       inbound PSP inbox, outbound merchant outbox + delivery worker
-  ledger/        double-entry shadow ledger (postings on capture/refund/fee/settlement), admin API
-  reconciliation/ settlement-report matching, auto-heal, exception queue, admin API
-  checkout/      hosted checkout sessions and server-rendered pages
+  ledger/        double-entry shadow ledger (postings on capture/refund/fee/chargeback/settlement), admin API
+  reconciliation/ settlement-report matching (incl. chargebacks), auto-heal, exception queue with owner and SLA,
+                 daily report, admin API
+  checkout/      hosted checkout sessions and server-rendered pages (UPI QR as inline SVG)
   platform/      worker scheduler (incl. daily T+1 reconciliation at 02:30 IST)
 src/main/resources/db/migration/   Flyway schema
 src/test/java/...                  unit, integration and ArchUnit tests + LocalDevApplication
