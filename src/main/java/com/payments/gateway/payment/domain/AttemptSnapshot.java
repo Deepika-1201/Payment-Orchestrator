@@ -11,6 +11,6 @@ public record AttemptSnapshot(String id, String paymentId, String merchantId, in
                               PaymentMethod method, Money amount, AttemptStatus status, String providerReference,
                               NextAction nextAction, Failure failure, CardDetails card, String routingRuleId,
                               Instant authorizedAt, Instant capturedAt, boolean voidRequested, Instant nextStatusCheckAt,
-                              int statusCheckCount, boolean needsReview, long version, Instant createdAt,
+                              int statusCheckCount, Review review, RiskAssessment risk, long version, Instant createdAt,
                               Instant updatedAt) {
 }

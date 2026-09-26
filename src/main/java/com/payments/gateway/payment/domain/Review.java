@@ -1,0 +1,37 @@
+package com.payments.gateway.payment.domain;
+
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.List;
+
+/**
+ * Why an attempt or refund needs a human look (FR-W3, FR-RK1). Reasons accumulate while the review is open;
+ * resolving only acknowledges it, it never moves money (ADR-016).
+ */
+public record Review(boolean open, String reasons, Instant flaggedAt) {
+
+    public static final String STATUS_UNRESOLVED = "status_unresolved";
+    public static final String PROVIDER_CONFLICT = "provider_conflict";
+    public static final String AMOUNT_MISMATCH = "amount_mismatch";
+    public static final String RISK_REVIEW = "risk_review";
+
+    public static final Review NONE = new Review(false, null, null);
+
+    public Review flag(String reason, Instant now) {
+        if (!open) {
+            return new Review(true, reason, now);
+        }
+        if (reasonList().contains(reason)) {
+            return this;
+        }
+        return new Review(true, reasons == null ? reason : reasons + "," + reason, flaggedAt);
+    }
+
+    public Review resolve() {
+        return new Review(false, reasons, flaggedAt);
+    }
+
+    public List<String> reasonList() {
+        return reasons == null ? List.of() : Arrays.asList(reasons.split(","));
+    }
+}

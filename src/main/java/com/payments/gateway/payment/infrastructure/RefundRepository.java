@@ -5,6 +5,7 @@ import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundInitiator;
 import com.payments.gateway.payment.domain.RefundSnapshot;
 import com.payments.gateway.payment.domain.RefundStatus;
+import com.payments.gateway.payment.domain.Review;
 import com.payments.gateway.shared.jdbc.Sql;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.Money;
@@ -38,7 +39,9 @@ public class RefundRepository {
         params.put("failureMessage", s.failure() == null ? null : s.failure().message());
         params.put("nextStatusCheckAt", Sql.ts(s.nextStatusCheckAt()));
         params.put("statusCheckCount", s.statusCheckCount());
-        params.put("needsReview", s.needsReview());
+        params.put("needsReview", s.review().open());
+        params.put("reviewReason", s.review().reasons());
+        params.put("flaggedAt", Sql.ts(s.review().flaggedAt()));
         params.put("updatedAt", Sql.ts(s.updatedAt()));
         if (refund.isNew()) {
             params.put("paymentId", s.paymentId());
@@ -55,10 +58,11 @@ public class RefundRepository {
                     INSERT INTO refunds (id, payment_id, attempt_id, merchant_id, provider_code, amount, currency, status,
                                          reason, merchant_refund_id, initiated_by, provider_reference, failure_code,
                                          failure_message, next_status_check_at, status_check_count, needs_review,
-                                         version, created_at, updated_at)
+                                         review_reason, flagged_at, version, created_at, updated_at)
                     VALUES (:id, :paymentId, :attemptId, :merchantId, :providerCode, :amount, :currency, :status, :reason,
                             :merchantRefundId, :initiatedBy, :providerReference, :failureCode, :failureMessage,
-                            :nextStatusCheckAt, :statusCheckCount, :needsReview, 0, :createdAt, :updatedAt)
+                            :nextStatusCheckAt, :statusCheckCount, :needsReview, :reviewReason, :flaggedAt, 0,
+                            :createdAt, :updatedAt)
                     """)
                     .params(params)
                     .update();
@@ -69,6 +73,7 @@ public class RefundRepository {
                        SET status = :status, provider_reference = :providerReference, failure_code = :failureCode,
                            failure_message = :failureMessage, next_status_check_at = :nextStatusCheckAt,
                            status_check_count = :statusCheckCount, needs_review = :needsReview,
+                           review_reason = :reviewReason, flagged_at = :flaggedAt,
                            version = version + 1, updated_at = :updatedAt
                      WHERE id = :id AND version = :version
                     """)
@@ -159,7 +164,7 @@ public class RefundRepository {
                 failure,
                 Sql.instant(rs, "next_status_check_at"),
                 rs.getInt("status_check_count"),
-                rs.getBoolean("needs_review"),
+                new Review(rs.getBoolean("needs_review"), rs.getString("review_reason"), Sql.instant(rs, "flagged_at")),
                 rs.getLong("version"),
                 Sql.instant(rs, "created_at"),
                 Sql.instant(rs, "updated_at")));

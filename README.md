@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: phases 1–9 and 13 are complete, plus core webhooks, status resolution, expiry and refunds. That includes the double-entry shadow ledger and PSP reconciliation, as well as API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits and a minimal hosted checkout. See the [Roadmap](#roadmap).
+> Status: phases 1–9, 13 and 14 are complete, plus core webhooks, status resolution, expiry and refunds. That includes the double-entry shadow ledger and PSP reconciliation, the risk engine with an external fraud connector and a manual review queue, as well as API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits and a minimal hosted checkout. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -12,7 +12,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-015 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-016 |
 
 ## Quick start
 
@@ -67,6 +67,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` · `GET …/provider-accounts` · `POST …/{provider}/disable` | Merchant's own PSP accounts: encrypted credentials (shown masked), per-account webhook path |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/resolve` | Reconcile a merchant PSP account for a window; work the exception queue |
+| `GET /admin/v1/reviews` · `POST /admin/v1/reviews/{attempts\|refunds}/{id}/resolve` | Manual review queue (amount mismatch, PSP conflict, unresolved after 72 h, risk review); audited acknowledgement |
 | `/simulator/...` | Mock PSP hosted page, completion, outage simulation and settlement-report anomalies (local and test only) |
 
 Merchant endpoints have per-merchant rate limits, with separate budgets for reads and writes. When a limit is hit, the API answers `429` with `Retry-After`. The request was not processed and its Idempotency-Key was not used up, so it can be retried unchanged.
@@ -95,8 +96,8 @@ src/main/java/com/payments/gateway/
   idempotency/   Idempotency-Key storage and replay
   provider/      SPI (spi/), registry, circuit-breaking client, health tracker, mock PSPs (mock/)
   routing/       rules (DB), strategies, routing engine, admin API
-  risk/          risk engine and rules
-  payment/       domain (state machines), application (orchestration, outcomes, refunds, resolver, expiry),
+  risk/          risk engine, rules and the optional external fraud connector
+  payment/       domain (state machines), application (orchestration, outcomes, refunds, resolver, expiry, review queue),
                  infrastructure (JDBC), api (DTOs/mapper), web (controllers)
   webhook/       inbound PSP inbox, outbound merchant outbox + delivery worker
   ledger/        double-entry shadow ledger (postings on capture/refund/fee/settlement), admin API
@@ -121,7 +122,7 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | 13 | Reconciliation + shadow double-entry ledger | Done |
 | — | API hardening: OpenAPI contract + drift test, per-merchant rate limits, minimal hosted checkout | Done |
 | — | Merchant management: settings, suspension, API key and webhook secret rotation, encrypted per-merchant PSP credentials, account-scoped PSP webhooks | Done |
-| 14 | Risk: external provider adapter, review queue | Planned |
+| 14 | Risk: external provider connector, decisions stored per attempt, manual review queue (ADR-016) | Done |
 | 15 | Observability: dashboards, SLO alerts, OTel collector in compose | Planned |
 | 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |
 | 17 | Load tests (k6), production-readiness review | Planned |

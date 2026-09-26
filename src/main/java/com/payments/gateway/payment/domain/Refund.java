@@ -24,7 +24,7 @@ public final class Refund {
     private Failure failure;
     private Instant nextStatusCheckAt;
     private int statusCheckCount;
-    private boolean needsReview;
+    private Review review;
     private long version;
     private Instant updatedAt;
     private boolean isNew;
@@ -46,7 +46,7 @@ public final class Refund {
         this.failure = s.failure();
         this.nextStatusCheckAt = s.nextStatusCheckAt();
         this.statusCheckCount = s.statusCheckCount();
-        this.needsReview = s.needsReview();
+        this.review = s.review();
         this.version = s.version();
         this.updatedAt = s.updatedAt();
         this.isNew = isNew;
@@ -57,7 +57,7 @@ public final class Refund {
                                   Instant now) {
         Refund refund = new Refund(new RefundSnapshot(id, paymentId, attemptId, merchantId, providerCode, amount,
                 RefundStatus.INITIATED, reason, merchantRefundId, initiatedBy, null, null,
-                now.plus(Duration.ofSeconds(30)), 0, false, 0, now, now), true);
+                now.plus(Duration.ofSeconds(30)), 0, Review.NONE, 0, now, now), true);
         refund.changes.add(new StatusChange(StatusChange.Entity.REFUND, id, null, RefundStatus.INITIATED.name(),
                 initiatedBy == RefundInitiator.MERCHANT ? TransitionSource.API : TransitionSource.SYSTEM,
                 initiatedBy.name().toLowerCase(java.util.Locale.ROOT), now));
@@ -71,7 +71,7 @@ public final class Refund {
     public RefundSnapshot snapshot() {
         return new RefundSnapshot(id, paymentId, attemptId, merchantId, providerCode, amount, status, reason,
                 merchantRefundId, initiatedBy, providerReference, failure, nextStatusCheckAt, statusCheckCount,
-                needsReview, version, createdAt, updatedAt);
+                review, version, createdAt, updatedAt);
     }
 
     public TransitionOutcome apply(RefundStatus target, String reference, Failure newFailure, TransitionSource source,
@@ -86,7 +86,7 @@ public final class Refund {
         if (!status.canTransitionTo(target)) {
             boolean stale = target.rank() < status.rank();
             if (!stale) {
-                needsReview = true;
+                review = review.flag(Review.PROVIDER_CONFLICT, now);
                 updatedAt = now;
             }
             return stale ? TransitionOutcome.NO_OP : TransitionOutcome.CONFLICT;
@@ -117,10 +117,19 @@ public final class Refund {
             nextStatusCheckAt = null;
         } else if (StatusCheckSchedule.exhausted(createdAt, now)) {
             nextStatusCheckAt = null;
-            needsReview = true;
+            review = review.flag(Review.STATUS_UNRESOLVED, now);
         } else {
             nextStatusCheckAt = now.plus(StatusCheckSchedule.delay(statusCheckCount));
         }
+        updatedAt = now;
+    }
+
+    /** Acknowledges the review (ADR-016); the refund's money state is untouched. */
+    public void resolveReview(Instant now) {
+        if (!review.open()) {
+            throw com.payments.gateway.shared.error.GatewayException.invalidState("Refund is not awaiting review");
+        }
+        review = review.resolve();
         updatedAt = now;
     }
 
@@ -186,7 +195,11 @@ public final class Refund {
     }
 
     public boolean needsReview() {
-        return needsReview;
+        return review.open();
+    }
+
+    public Review review() {
+        return review;
     }
 
     public long version() {

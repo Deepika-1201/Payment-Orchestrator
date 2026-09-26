@@ -19,3 +19,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-013](ADR-013-hosted-checkout.md) | Server-rendered hosted checkout with capability URLs | Accepted |
 | [ADR-014](ADR-014-merchant-psp-accounts.md) | Merchant-owned PSP accounts: encrypted credentials and account-scoped webhooks | Accepted |
 | [ADR-015](ADR-015-data-retention.md) | Data retention by batched deletes; financial records never deleted by the application | Accepted |
+| [ADR-016](ADR-016-review-queue-and-risk.md) | Manual review queue with reasoned flags; risk outside the row lock, external vendor fails open to review | Accepted |

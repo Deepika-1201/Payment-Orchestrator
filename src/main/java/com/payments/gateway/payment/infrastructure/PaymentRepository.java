@@ -8,6 +8,8 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentSnapshot;
 import com.payments.gateway.payment.domain.PaymentStatus;
+import com.payments.gateway.payment.domain.Review;
+import com.payments.gateway.payment.domain.RiskAssessment;
 import com.payments.gateway.shared.jdbc.Sql;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
@@ -242,13 +244,14 @@ public class PaymentRepository {
                                               method_details, amount, currency, status, provider_reference, next_action,
                                               failure_code, failure_category, failure_message, card_network, card_last4,
                                               routing_rule_id, authorized_at, captured_at, void_requested,
-                                              next_status_check_at, status_check_count, needs_review, version,
-                                              created_at, updated_at)
+                                              next_status_check_at, status_check_count, needs_review, review_reason,
+                                              flagged_at, risk_outcome, risk_reasons, version, created_at, updated_at)
                 VALUES (:id, :paymentId, :merchantId, :attemptNumber, :providerCode, :methodType,
                         CAST(:methodDetails AS jsonb), :amount, :currency, :status, :providerReference,
                         CAST(:nextAction AS jsonb), :failureCode, :failureCategory, :failureMessage, :cardNetwork,
                         :cardLast4, :routingRuleId, :authorizedAt, :capturedAt, :voidRequested, :nextStatusCheckAt,
-                        :statusCheckCount, :needsReview, 0, :createdAt, :updatedAt)
+                        :statusCheckCount, :needsReview, :reviewReason, :flaggedAt, :riskOutcome, :riskReasons, 0,
+                        :createdAt, :updatedAt)
                 """)
                 .params(params)
                 .update();
@@ -264,7 +267,9 @@ public class PaymentRepository {
                        card_network = :cardNetwork, card_last4 = :cardLast4,
                        authorized_at = :authorizedAt, captured_at = :capturedAt, void_requested = :voidRequested,
                        next_status_check_at = :nextStatusCheckAt, status_check_count = :statusCheckCount,
-                       needs_review = :needsReview, version = version + 1, updated_at = :updatedAt
+                       needs_review = :needsReview, review_reason = :reviewReason, flagged_at = :flaggedAt,
+                       risk_outcome = :riskOutcome, risk_reasons = :riskReasons,
+                       version = version + 1, updated_at = :updatedAt
                  WHERE id = :id AND version = :version
                 """)
                 .params(params)
@@ -290,7 +295,11 @@ public class PaymentRepository {
         params.put("voidRequested", s.voidRequested());
         params.put("nextStatusCheckAt", Sql.ts(s.nextStatusCheckAt()));
         params.put("statusCheckCount", s.statusCheckCount());
-        params.put("needsReview", s.needsReview());
+        params.put("needsReview", s.review().open());
+        params.put("reviewReason", s.review().reasons());
+        params.put("flaggedAt", Sql.ts(s.review().flaggedAt()));
+        params.put("riskOutcome", s.risk() == null ? null : s.risk().outcome());
+        params.put("riskReasons", s.risk() == null ? null : String.join(",", s.risk().reasons()));
         params.put("updatedAt", Sql.ts(s.updatedAt()));
         return params;
     }
@@ -348,9 +357,17 @@ public class PaymentRepository {
                 rs.getBoolean("void_requested"),
                 Sql.instant(rs, "next_status_check_at"),
                 rs.getInt("status_check_count"),
-                rs.getBoolean("needs_review"),
+                new Review(rs.getBoolean("needs_review"), rs.getString("review_reason"), Sql.instant(rs, "flagged_at")),
+                risk(rs.getString("risk_outcome"), rs.getString("risk_reasons")),
                 rs.getLong("version"),
                 Sql.instant(rs, "created_at"),
                 Sql.instant(rs, "updated_at"));
+    }
+
+    private static RiskAssessment risk(String outcome, String reasons) {
+        if (outcome == null) {
+            return null;
+        }
+        return new RiskAssessment(outcome, reasons == null || reasons.isEmpty() ? List.of() : List.of(reasons.split(",")));
     }
 }

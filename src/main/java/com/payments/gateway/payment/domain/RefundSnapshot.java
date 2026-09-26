@@ -7,6 +7,6 @@ import java.time.Instant;
 public record RefundSnapshot(String id, String paymentId, String attemptId, String merchantId, String providerCode,
                              Money amount, RefundStatus status, String reason, String merchantRefundId,
                              RefundInitiator initiatedBy, String providerReference, Failure failure,
-                             Instant nextStatusCheckAt, int statusCheckCount, boolean needsReview, long version,
+                             Instant nextStatusCheckAt, int statusCheckCount, Review review, long version,
                              Instant createdAt, Instant updatedAt) {
 }

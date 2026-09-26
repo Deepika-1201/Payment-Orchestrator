@@ -261,13 +261,15 @@ Invariant (per attempt): `Σ amount(refunds where status ≠ FAILED) ≤ attempt
 
 ```text
 confirm(merchant, paymentId, method, client):
+  p0 = repo.findPayment(paymentId)                -- no lock
+  risk = p0 looks confirmable ? riskEngine.evaluate(ctx) : ALLOW   -- may call a vendor; outside the lock (ADR-016)
   tx1:
     p = repo.lockPayment(paymentId)               -- SELECT … FOR UPDATE, loads attempts
     require p.status == REQUIRES_PAYMENT_METHOD and now < p.expiresAt
-    risk = riskEngine.evaluate(ctx)
     if risk == BLOCK: p.markRiskBlocked(); save; return p
     decision = routing.route(ctx)                 -- ordered candidates; empty → 422/503
     a = p.startAttempt(newId("att"), method, decision.first)   -- attempt INITIATED, payment PROCESSING
+    p.recordRisk(a, risk)                         -- REVIEW/CHALLENGE → flagged risk_review
     save(p)                                       -- commit: write-ahead record exists before any PSP call
   loop over candidates:
     try:
@@ -290,7 +292,7 @@ confirm(merchant, paymentId, method, client):
 2. tx: lock the payment; `applyAttemptUpdate`; handle the result flags:
    - `refundRequired` → create a system refund (in the same tx; executed after commit).
    - `captureRequired` → mark the attempt `CAPTURE_PENDING` and schedule it (executed after commit).
-   - `amountMismatch` or `conflict` → metric + warning log with ids; the attempt is flagged `needs_review`.
+   - `amountMismatch` or `conflict` → metric + warning log with ids; the attempt is flagged for review with reason `amount_mismatch` or `provider_conflict` (§7.1).
 3. After commit: record the final outcome in `ProviderHealthTracker` and run any follow-up PSP call.
 
 ### 4.3 Refund creation
@@ -424,7 +426,18 @@ Rules are cached per instance, refreshed every 30 s, and invalidated immediately
 | `BlocklistRule` | VPA, IP, email, customer reference in the configured blocklists → `BLOCK` |
 | `VelocityRule` | More than `max-attempts-per-customer` (10) attempts by the same customer reference in `velocity-window` (10 min) → `BLOCK` |
 
-External providers (e.g. a fraud API) implement `RiskRule` and run with their own timeout; a timeout is treated as `REVIEW` (fail-open for availability, flagged for review).
+External providers implement `RiskRule` too. `ExternalRiskRule` (enabled by `pg.risk.external.url`) posts a signed JSON context to a fraud vendor with a hard timeout. A timeout, error or unknown answer becomes `REVIEW` (`external_risk_unavailable` / `external_risk_invalid_response`): fail open for availability, but never unseen. The engine also turns any exception from a rule into `REVIEW risk_rule_error`. Rules run before the payment row is locked (§4.1), and the decision is stored on the attempt (`risk_outcome`, `risk_reasons`). See [ADR-016](decisions/ADR-016-review-queue-and-risk.md).
+
+### 7.1 Manual review queue
+
+| Reason | Raised when | Typical action |
+|---|---|---|
+| `amount_mismatch` | PSP reports success for a different amount; the update is not applied | Contact the PSP; refund or adjust via reconciliation |
+| `provider_conflict` | PSP contradicts a final state (e.g. refund `failed` after `succeeded`) | Confirm with the PSP; correct via refund or reconciliation |
+| `status_unresolved` | 72 h of status checks without a final answer; polling stops | Chase the PSP; reconciliation heals from the settlement report |
+| `risk_review` | Risk outcome `REVIEW`/`CHALLENGE`; the payment proceeds | Check the customer; refund if fraudulent |
+
+Flags live on the attempt or refund (`needs_review`, `review_reason`, `flagged_at`). Reasons accumulate while open. `GET /admin/v1/reviews` lists open items oldest first. Resolving (`POST …/resolve {note}`) takes the payment lock, clears the flag, and writes `review.resolved` to the audit log. It never changes money state.
 
 ## 8. Idempotency
 
@@ -495,7 +508,7 @@ RETURNING id, payment_id, provider_code, status, …;
 | `WebhookDeliveryWorker` | 1 s | Deliver merchant webhooks |
 | `RetentionJob` | 1 h | Batched deletes of expired idempotency records, checkout sessions, handled PSP webhooks and finished merchant deliveries (ADR-015) |
 
-Status-check backoff: 5 s, 10 s, 30 s, 1 m, 2 m, 5 m, 10 m, 30 m, 1 h, then every 2 h. After 72 h from creation the item is set `needs_review = true`, polling stops, and an alert metric fires.
+Status-check backoff: 5 s, 10 s, 30 s, 1 m, 2 m, 5 m, 10 m, 30 m, 1 h, then every 2 h. After 72 h from creation, polling stops and the item is flagged for review with reason `status_unresolved` (§7.1); `pg.reviews.open` drives the alert.
 
 ## 11. Database schema
 
@@ -543,6 +556,8 @@ erDiagram
         boolean void_requested
         timestamptz next_status_check_at
         boolean needs_review
+        text review_reason
+        text risk_outcome
         bigint version
     }
     refunds {
@@ -554,6 +569,7 @@ erDiagram
         text initiated_by
         text merchant_refund_id
         text provider_reference
+        boolean needs_review
         bigint version
     }
 ```
@@ -624,6 +640,8 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `GET /admin/v1/reconciliation/runs/{id}` | Run summary with its exceptions | `200` |
 | `GET /admin/v1/reconciliation/exceptions?status=&merchant_id=` | Exception queue | `200` |
 | `POST /admin/v1/reconciliation/exceptions/{id}/resolve` | Resolve with a note (audited) | `200` |
+| `GET /admin/v1/reviews?kind=&merchant_id=&limit=` | Open manual reviews (attempts and refunds), oldest first, with reasons | `200` |
+| `POST /admin/v1/reviews/attempts/{id}/resolve` · `/refunds/{id}/resolve` | Acknowledge `{note}` (audited; no money movement) | `200` / `409` if not open |
 
 Example — create and confirm UPI intent:
 
@@ -712,11 +730,12 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
+| `pg.risk.external.url` / `.secret` / `.timeout` | unset / — / `800ms` | Optional fraud vendor; secret required when the URL is set (ADR-016) |
 
 ## 14. Observability details
 
 - **MDC keys:** `request_id`, `merchant_id`, `payment_id`, `attempt_id`, `provider`.
-- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`.
+- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`, `pg.risk.decisions{outcome}`, `pg.risk.rule_errors{rule}`, `pg.risk.external{result}` (timer), `pg.reviews.open{kind}` (gauge).
 - **Log hygiene:** request and response bodies are never logged, and neither are PII values (VPA, email, phone). Risk decisions log reason codes such as `vpa_blocklisted`, never the value. API keys are never logged (only `key_…` ids).
 
 ## 15. Test matrix
@@ -731,6 +750,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Contract | Endpoint parity with `docs/openapi.yaml`; requests, responses (statuses, media types, required headers, strict schemas) and webhook events validated against it | `ApiContractTest` |
 | Integration | Merchant lifecycle: settings and audit, suspension (keys and checkout blocked, in-flight payments finish), key rotation and immediate revocation, webhook secret rotation with dual signatures. PSP accounts: encrypted and masked credentials, per-account webhook secret, rejected credentials fail over without opening the shared circuit, disabled accounts finish in-flight work, cross-tenant webhook forgery and event-id squatting | `MerchantAdminIntegrationTest`, `ProviderAccountIntegrationTest` |
 | Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt. Hosted checkout: session rules, escaping, CSP hash, UPI collect, card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
+| Integration | Review queue: amount mismatch, refund contradicted by the PSP, 72 h unresolved, risk review (and across failover); audited acknowledge-only resolution. External risk vendor: signed request, block with sanitized reasons, timeout / error / unknown answer → review | `ReviewQueueIntegrationTest`, `ExternalRiskIntegrationTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |

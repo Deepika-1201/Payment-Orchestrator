@@ -32,7 +32,8 @@ public final class PaymentAttempt {
     private boolean voidRequested;
     private Instant nextStatusCheckAt;
     private int statusCheckCount;
-    private boolean needsReview;
+    private Review review;
+    private RiskAssessment risk;
     private long version;
     private Instant updatedAt;
     private boolean isNew;
@@ -58,7 +59,8 @@ public final class PaymentAttempt {
         this.voidRequested = s.voidRequested();
         this.nextStatusCheckAt = s.nextStatusCheckAt();
         this.statusCheckCount = s.statusCheckCount();
-        this.needsReview = s.needsReview();
+        this.review = s.review();
+        this.risk = s.risk();
         this.version = s.version();
         this.updatedAt = s.updatedAt();
         this.isNew = isNew;
@@ -68,7 +70,7 @@ public final class PaymentAttempt {
                                    PaymentMethod method, Money amount, String routingRuleId, Instant now) {
         return new PaymentAttempt(new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method,
                 amount, AttemptStatus.INITIATED, null, null, null, null, routingRuleId, null, null, false,
-                now.plus(INITIATED_CHECK_DELAY), 0, false, 0, now, now), true);
+                now.plus(INITIATED_CHECK_DELAY), 0, Review.NONE, null, 0, now, now), true);
     }
 
     public static PaymentAttempt rehydrate(AttemptSnapshot snapshot) {
@@ -78,7 +80,7 @@ public final class PaymentAttempt {
     public AttemptSnapshot snapshot() {
         return new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method, amount, status,
                 providerReference, nextAction, failure, card, routingRuleId, authorizedAt, capturedAt, voidRequested,
-                nextStatusCheckAt, statusCheckCount, needsReview, version, createdAt, updatedAt);
+                nextStatusCheckAt, statusCheckCount, review, risk, version, createdAt, updatedAt);
     }
 
     TransitionOutcome apply(AttemptUpdate update, TransitionSource source, Instant now) {
@@ -167,15 +169,25 @@ public final class PaymentAttempt {
             nextStatusCheckAt = null;
         } else if (StatusCheckSchedule.exhausted(createdAt, now)) {
             nextStatusCheckAt = null;
-            needsReview = true;
+            review = review.flag(Review.STATUS_UNRESOLVED, now);
         } else {
             nextStatusCheckAt = now.plus(StatusCheckSchedule.delay(statusCheckCount));
         }
         touch(now);
     }
 
-    void flagForReview(Instant now) {
-        needsReview = true;
+    void flagForReview(String reason, Instant now) {
+        review = review.flag(reason, now);
+        touch(now);
+    }
+
+    void resolveReview(Instant now) {
+        review = review.resolve();
+        touch(now);
+    }
+
+    void recordRisk(RiskAssessment assessment, Instant now) {
+        risk = assessment;
         touch(now);
     }
 
@@ -267,7 +279,15 @@ public final class PaymentAttempt {
     }
 
     public boolean needsReview() {
-        return needsReview;
+        return review.open();
+    }
+
+    public Review review() {
+        return review;
+    }
+
+    public RiskAssessment risk() {
+        return risk;
     }
 
     public long version() {

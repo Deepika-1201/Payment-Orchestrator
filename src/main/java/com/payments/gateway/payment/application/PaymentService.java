@@ -9,6 +9,7 @@ import com.payments.gateway.payment.domain.Failure;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
+import com.payments.gateway.payment.domain.RiskAssessment;
 import com.payments.gateway.payment.domain.TransitionSource;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.provider.ProviderClient;
@@ -120,6 +121,10 @@ public class PaymentService {
         MDC.put(Mdc.PAYMENT_ID, paymentId);
         Set<String> linkedProviders = merchants.activeProviders(merchantId);
         Instant now = clock.instant();
+        Payment current = payments.findForMerchant(merchantId, paymentId)
+                .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
+        // Risk rules may call an external vendor, so they run before the row lock is taken (ADR-016).
+        RiskDecision decision = assessRisk(current, command, now);
         Started started = tx.execute(status -> {
             Payment payment = payments.lockForMerchant(merchantId, paymentId)
                     .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
@@ -129,7 +134,6 @@ public class PaymentService {
                 return new Started(payment, null, List.of(), true);
             }
             payment.ensureConfirmable(properties.maxAttempts(), now);
-            RiskDecision decision = risk.evaluate(riskContext(payment, command, now));
             if (decision.outcome() == RiskDecision.Outcome.BLOCK) {
                 payment.blockByRisk(decision.reasons(), now);
                 store.save(payment);
@@ -142,6 +146,7 @@ public class PaymentService {
             }
             PaymentAttempt attempt = payment.startAttempt(Ids.newId("att"), command.method(), route.providers().getFirst(),
                     route.ruleId(), properties.maxAttempts(), now);
+            payment.recordRisk(attempt.id(), new RiskAssessment(decision.outcome().name(), decision.reasons()), now);
             store.save(payment);
             return new Started(payment, attempt.id(), route.providers(), false);
         });
@@ -212,6 +217,13 @@ public class PaymentService {
                         TransitionSource.PROVIDER_RESPONSE);
             }
         }
+    }
+
+    private RiskDecision assessRisk(Payment payment, ConfirmCommand command, Instant now) {
+        if (payment.status() != PaymentStatus.REQUIRES_PAYMENT_METHOD || !now.isBefore(payment.expiresAt())) {
+            return RiskDecision.allow(); // the locked re-check reports why it cannot be confirmed
+        }
+        return risk.evaluate(riskContext(payment, command, now));
     }
 
     private RiskContext riskContext(Payment payment, ConfirmCommand command, Instant now) {

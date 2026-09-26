@@ -119,3 +119,8 @@ pg:
     blocked-ips: []
     blocked-emails: []
     blocked-customer-references: []
+    # Optional external fraud-scoring service (ADR-016). Timeouts and errors send the payment to manual review.
+    # external:
+    #   url: https://risk.example.com/v1/score
+    #   secret: ${PG_RISK_EXTERNAL_SECRET}
+    #   timeout: 800ms

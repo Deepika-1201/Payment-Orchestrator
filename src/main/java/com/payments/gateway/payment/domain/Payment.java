@@ -133,6 +133,15 @@ public final class Payment {
                 TransitionSource.PROVIDER_RESPONSE, failure.code(), now);
         PaymentAttempt next = PaymentAttempt.initiate(newAttemptId, id, merchantId, attempts.size() + 1, newProviderCode,
                 failed.method(), amount, failed.routingRuleId(), now);
+        if (failed.risk() != null) {
+            next.recordRisk(failed.risk(), now);
+        }
+        if (failed.needsReview() && failed.review().reasonList().contains(Review.RISK_REVIEW)) {
+            next.flagForReview(Review.RISK_REVIEW, now);
+            if (failed.review().reasonList().size() == 1) {
+                failed.resolveReview(now); // the risk review follows the payment to the live attempt
+            }
+        }
         attempts.add(next);
         record(StatusChange.Entity.ATTEMPT, newAttemptId, null, AttemptStatus.INITIATED.name(), TransitionSource.SYSTEM,
                 "failover from " + failed.providerCode(), now);
@@ -145,7 +154,7 @@ public final class Payment {
         PaymentAttempt attempt = requireAttempt(attemptId);
         boolean movesMoney = update.status() == AttemptStatus.SUCCEEDED || update.status() == AttemptStatus.AUTHORIZED;
         if (movesMoney && update.reportedAmount() != null && !update.reportedAmount().equals(attempt.amount())) {
-            attempt.flagForReview(now);
+            attempt.flagForReview(Review.AMOUNT_MISMATCH, now);
             markDirty(now);
             return AttemptApplyResult.amountMismatch(attemptId);
         }
@@ -155,7 +164,7 @@ public final class Payment {
             markDirty(now);
         }
         if (outcome == TransitionOutcome.CONFLICT) {
-            attempt.flagForReview(now);
+            attempt.flagForReview(Review.PROVIDER_CONFLICT, now);
             markDirty(now);
             return AttemptApplyResult.conflict(attemptId);
         }
@@ -289,6 +298,27 @@ public final class Payment {
     public void recordStatusCheck(String attemptId, Instant now) {
         requireAttempt(attemptId).afterStatusCheck(now);
         markDirty(now);
+    }
+
+    /** Stores the risk decision on the attempt; a proceeding non-ALLOW outcome queues it for a human. */
+    public void recordRisk(String attemptId, RiskAssessment assessment, Instant now) {
+        PaymentAttempt attempt = requireAttempt(attemptId);
+        attempt.recordRisk(assessment, now);
+        if (!"ALLOW".equals(assessment.outcome())) {
+            attempt.flagForReview(Review.RISK_REVIEW, now);
+        }
+        markDirty(now);
+    }
+
+    /** Acknowledges an attempt's review (ADR-016); money state is untouched. */
+    public PaymentAttempt resolveAttemptReview(String attemptId, Instant now) {
+        PaymentAttempt attempt = requireAttempt(attemptId);
+        if (!attempt.needsReview()) {
+            throw GatewayException.invalidState("Attempt is not awaiting review");
+        }
+        attempt.resolveReview(now);
+        markDirty(now);
+        return attempt;
     }
 
     /** Bumps the version so concurrent writers serialize on this payment (e.g. refund creation). */
