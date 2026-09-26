@@ -1,5 +1,6 @@
 package com.payments.gateway.webhook.inbound;
 
+import com.payments.gateway.payment.application.DisputeService;
 import com.payments.gateway.payment.application.PaymentOutcomeService;
 import com.payments.gateway.payment.application.RefundService;
 import com.payments.gateway.provider.MerchantAccountResolver;
@@ -43,6 +44,7 @@ public class ProviderWebhookService {
     private final ProviderWebhookRepository inbox;
     private final PaymentOutcomeService payments;
     private final RefundService refunds;
+    private final DisputeService disputes;
     private final JsonCodec json;
     private final WorkerProperties workers;
     private final Clock clock;
@@ -51,7 +53,8 @@ public class ProviderWebhookService {
 
     public ProviderWebhookService(ProviderRegistry providers, MerchantAccountResolver accounts,
                                   ProviderWebhookRepository inbox,
-                                  PaymentOutcomeService payments, RefundService refunds, JsonCodec json,
+                                  PaymentOutcomeService payments, RefundService refunds, DisputeService disputes,
+                                  JsonCodec json,
                                   WorkerProperties workers, Clock clock, MeterRegistry meters,
                                   @Value("${pg.webhooks.inbound.max-attempts:10}") int maxAttempts) {
         this.providers = providers;
@@ -59,6 +62,7 @@ public class ProviderWebhookService {
         this.inbox = inbox;
         this.payments = payments;
         this.refunds = refunds;
+        this.disputes = disputes;
         this.json = json;
         this.workers = workers;
         this.clock = clock;
@@ -124,6 +128,7 @@ public class ProviderWebhookService {
             boolean applied = switch (event.kind()) {
                 case PAYMENT -> payments.applyProviderEvent(providerCode, merchantScope, event);
                 case REFUND -> refunds.applyProviderEvent(providerCode, merchantScope, event);
+                case DISPUTE -> disputes.applyProviderEvent(providerCode, merchantScope, event);
             };
             inbox.markDone(inboxId, applied ? "PROCESSED" : "IGNORED", clock.instant());
             meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", applied ? "processed" : "ignored").increment();

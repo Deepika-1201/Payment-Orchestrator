@@ -2,15 +2,18 @@ package com.payments.gateway.payment.application;
 
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.AttemptUpdate;
+import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.TransitionSource;
+import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository.AttemptLocator;
 import com.payments.gateway.payment.infrastructure.ReconciliationQueries;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
+import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.shared.model.Money;
 import java.time.Instant;
@@ -27,7 +30,8 @@ public class PaymentReconciliationService {
 
     public enum Kind {
         PAYMENT,
-        REFUND
+        REFUND,
+        DISPUTE
     }
 
     public record InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount) {
@@ -39,17 +43,22 @@ public class PaymentReconciliationService {
 
     private final PaymentRepository payments;
     private final RefundRepository refunds;
+    private final DisputeRepository disputes;
     private final ReconciliationQueries queries;
     private final PaymentOutcomeService outcomes;
     private final RefundService refundService;
+    private final DisputeService disputeService;
 
-    public PaymentReconciliationService(PaymentRepository payments, RefundRepository refunds, ReconciliationQueries queries,
-                                        PaymentOutcomeService outcomes, RefundService refundService) {
+    public PaymentReconciliationService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
+                                        ReconciliationQueries queries, PaymentOutcomeService outcomes,
+                                        RefundService refundService, DisputeService disputeService) {
         this.payments = payments;
         this.refunds = refunds;
+        this.disputes = disputes;
         this.queries = queries;
         this.outcomes = outcomes;
         this.refundService = refundService;
+        this.disputeService = disputeService;
     }
 
     /** Scoped to the merchant whose PSP account produced the report. */
@@ -102,5 +111,37 @@ public class PaymentReconciliationService {
     private static InternalItem toItem(Refund refund) {
         return new InternalItem(Kind.REFUND, refund.id(), refund.paymentId(),
                 refund.status() == RefundStatus.SUCCEEDED ? "SUCCEEDED" : refund.status().name(), refund.amount());
+    }
+
+    public Optional<InternalItem> findDispute(String merchantId, String providerCode, String providerDisputeId) {
+        return disputes.findByProviderDisputeId(providerCode, merchantId, providerDisputeId)
+                .map(PaymentReconciliationService::toItem);
+    }
+
+    /**
+     * A chargeback the PSP withheld but never sent a webhook for: recorded as the webhook would have been (source
+     * RECONCILIATION). Empty when the disputed attempt is unknown to this merchant's account.
+     */
+    public Optional<InternalItem> ingestDispute(String merchantId, String providerCode, String providerDisputeId,
+                                                String attemptId, Money amount) {
+        Optional<AttemptLocator> locator = attemptId == null ? Optional.empty()
+                : payments.findAttemptById(attemptId)
+                        .filter(l -> l.providerCode().equals(providerCode) && l.merchantId().equals(merchantId));
+        return locator.map(l -> toItem(disputeService.record(l, new ProviderDisputeResult(providerDisputeId, null,
+                ProviderDisputeResult.Status.OPEN, amount, "reported_in_settlement", null, "settlement_report"),
+                TransitionSource.RECONCILIATION)));
+    }
+
+    /** A chargeback reversal line: the PSP returned the funds, so the dispute was won. */
+    public InternalItem healDisputeWon(InternalItem item) {
+        Dispute dispute = disputes.findById(item.entityId()).orElseThrow();
+        AttemptLocator locator = payments.findAttemptById(dispute.attemptId()).orElseThrow();
+        return toItem(disputeService.record(locator, new ProviderDisputeResult(dispute.providerDisputeId(), null,
+                ProviderDisputeResult.Status.WON, dispute.amount(), null, null, "settlement_report"),
+                TransitionSource.RECONCILIATION));
+    }
+
+    private static InternalItem toItem(Dispute dispute) {
+        return new InternalItem(Kind.DISPUTE, dispute.id(), dispute.paymentId(), dispute.status().name(), dispute.amount());
     }
 }

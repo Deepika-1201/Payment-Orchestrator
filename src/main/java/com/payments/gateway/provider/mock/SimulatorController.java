@@ -47,6 +47,57 @@ public class SimulatorController {
     public record AnomalyRequest(String type, String merchantId, String providerReference, Long amount) {
     }
 
+    /** {@code send_webhook = false} leaves the gateway to learn about the dispute from the settlement report. */
+    public record DisputeRequest(Long amount, String reason, Boolean sendWebhook) {
+    }
+
+    public record DisputeStatusRequest(String status, Boolean sendWebhook) {
+    }
+
+    /** Raises a chargeback on a captured transaction, as the card network or NPCI would through the PSP. */
+    @PostMapping("/{provider}/payments/{reference}/dispute")
+    public Map<String, Object> openDispute(@PathVariable String provider, @PathVariable String reference,
+                                           @RequestBody DisputeRequest request) {
+        MockPaymentProvider mock = provider(provider);
+        Txn txn = transaction(provider, reference);
+        if (txn.state() != MockPsp.TxnState.CAPTURED) {
+            throw GatewayException.invalidState("Only captured transactions can be disputed; " + reference + " is " + txn.state());
+        }
+        long amount = request.amount() == null ? txn.amount().amount() : request.amount();
+        if (amount <= 0 || amount > txn.amount().amount()) {
+            throw GatewayException.validation("amount", "must be between 1 and the transaction amount");
+        }
+        MockPsp.DisputeTxn dispute = mock.psp().openDispute(txn, Money.of(amount, txn.amount().currency()),
+                request.reason() == null ? "fraudulent" : request.reason(), clock.instant());
+        notifyDispute(mock, dispute, request.sendWebhook());
+        return Map.of("dispute_id", dispute.reference(), "status", "open");
+    }
+
+    @PostMapping("/{provider}/disputes/{dispute}/status")
+    public Map<String, Object> updateDispute(@PathVariable String provider, @PathVariable String dispute,
+                                             @RequestBody DisputeStatusRequest request) {
+        MockPaymentProvider mock = provider(provider);
+        MockPsp.DisputeTxn found = mock.psp().findDispute(dispute)
+                .orElseThrow(() -> GatewayException.notFound("Mock dispute", dispute));
+        MockPsp.DisputeState state;
+        try {
+            state = MockPsp.DisputeState.valueOf(String.valueOf(request.status()).toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw GatewayException.validation("status", "must be one of open, under_review, won, lost");
+        }
+        mock.psp().moveDispute(found, state, clock.instant());
+        notifyDispute(mock, found, request.sendWebhook());
+        return Map.of("dispute_id", found.reference(), "status", state.name().toLowerCase(java.util.Locale.ROOT));
+    }
+
+    private void notifyDispute(MockPaymentProvider mock, MockPsp.DisputeTxn dispute, Boolean sendWebhook) {
+        if (Boolean.FALSE.equals(sendWebhook)) {
+            return;
+        }
+        String gatewayBaseUrl = ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
+        webhookSender.send(gatewayBaseUrl, mock, dispute.payment(), mock.webhookFor(dispute));
+    }
+
     @PostMapping("/{provider}/payments/{reference}/complete")
     public Map<String, Object> complete(@PathVariable String provider, @PathVariable String reference,
                                         @RequestBody CompleteRequest request) {

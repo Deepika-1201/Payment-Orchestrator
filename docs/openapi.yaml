@@ -30,6 +30,8 @@ security:
 tags:
   - name: Payments
   - name: Refunds
+  - name: Disputes
+    description: Chargebacks and UPI disputes reported by the PSP. Read-only; evidence is submitted on the PSP's dashboard.
   - name: Checkout
     description: Hosted checkout sessions. The customer-facing pages under `/checkout/` are HTML and not part of this API.
 
@@ -271,6 +273,51 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/UnexpectedError'}
 
+  /v1/payments/{payment_id}/disputes:
+    get:
+      tags: [Disputes]
+      operationId: listDisputes
+      summary: List the disputes of a payment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Disputes, oldest first.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DisputeList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/disputes/{dispute_id}:
+    get:
+      tags: [Disputes]
+      operationId: getDispute
+      summary: Retrieve a dispute
+      parameters:
+        - name: dispute_id
+          in: path
+          required: true
+          schema: {type: string, pattern: '^dsp_'}
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The dispute.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dispute'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
   /v1/checkout-sessions:
     post:
       tags: [Checkout]
@@ -311,7 +358,7 @@ paths:
 webhooks:
   merchantEvent:
     post:
-      summary: Payment and refund events sent to the merchant's webhook URL
+      summary: Payment, refund and dispute events sent to the merchant's webhook URL
       description: |
         Delivered at least once, possibly out of order; deduplicate on `id` (also in `PG-Event-Id`) and re-read
         the resource if ordering matters. Verify `PG-Signature: t=<unix seconds>,v1=<hex>` where
@@ -464,13 +511,18 @@ components:
     RefundStatus:
       type: string
       enum: [initiated, unknown, pending, succeeded, failed]
+    DisputeStatus:
+      type: string
+      enum: [open, under_review, won, lost]
+      description: Final statuses are `won` (the withheld amount is returned) and `lost`.
     FailureCategory:
       type: string
       enum: [customer, issuer, provider, provider_unavailable, validation, risk, timeout, not_submitted]
     EventType:
       type: string
       enum: [payment.authorized, payment.succeeded, payment.attempt_failed, payment.failed, payment.cancelled,
-             payment.expired, refund.succeeded, refund.failed]
+             payment.expired, refund.succeeded, refund.failed, dispute.created, dispute.updated, dispute.won,
+             dispute.lost]
 
     Payment:
       type: object
@@ -582,6 +634,37 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Refund'}
 
+    Dispute:
+      type: object
+      description: |
+        A chargeback or UPI dispute on a succeeded payment. Until it is won, the PSP withholds `amount` from your
+        settlements and it cannot also be refunded. Respond with evidence on the PSP's dashboard before
+        `respond_by`.
+      required: [id, object, payment_id, attempt_id, amount, currency, status, provider, provider_reference,
+                 created_at, updated_at, version]
+      properties:
+        id: {type: string, pattern: '^dsp_'}
+        object: {const: dispute}
+        payment_id: {type: string, pattern: '^pay_'}
+        attempt_id: {type: string, pattern: '^att_'}
+        amount: {$ref: '#/components/schemas/Amount'}
+        currency: {$ref: '#/components/schemas/Currency'}
+        status: {$ref: '#/components/schemas/DisputeStatus'}
+        reason: {type: string, description: 'As reported by the PSP, e.g. `fraudulent`, `product_not_received`.'}
+        provider: {type: string}
+        provider_reference: {type: string, description: The PSP's dispute id.}
+        respond_by: {$ref: '#/components/schemas/Timestamp'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        version: {type: integer, format: int64}
+    DisputeList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Dispute'}
+
     CheckoutSession:
       type: object
       required: [id, object, payment_id, url, expires_at, created_at]
@@ -606,10 +689,11 @@ components:
           required: [object]
           properties:
             object:
-              description: The payment (`payment.*`) or refund (`refund.*`) as returned by the API.
+              description: The payment (`payment.*`), refund (`refund.*`) or dispute (`dispute.*`) as returned by the API.
               oneOf:
                 - $ref: '#/components/schemas/Payment'
                 - $ref: '#/components/schemas/Refund'
+                - $ref: '#/components/schemas/Dispute'
 
     Problem:
       type: object

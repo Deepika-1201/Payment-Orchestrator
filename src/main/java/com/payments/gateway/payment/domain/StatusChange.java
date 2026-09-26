@@ -9,6 +9,7 @@ public record StatusChange(Entity entity, String entityId, String fromStatus, St
     public enum Entity {
         PAYMENT,
         ATTEMPT,
-        REFUND
+        REFUND,
+        DISPUTE
     }
 }

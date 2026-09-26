@@ -11,7 +11,11 @@ public record PaymentEvent(Type type, String resourceId) {
         PAYMENT_CANCELLED("payment.cancelled"),
         PAYMENT_EXPIRED("payment.expired"),
         REFUND_SUCCEEDED("refund.succeeded"),
-        REFUND_FAILED("refund.failed");
+        REFUND_FAILED("refund.failed"),
+        DISPUTE_CREATED("dispute.created"),
+        DISPUTE_UPDATED("dispute.updated"),
+        DISPUTE_WON("dispute.won"),
+        DISPUTE_LOST("dispute.lost");
 
         private final String wireName;
 

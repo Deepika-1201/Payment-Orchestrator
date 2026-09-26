@@ -58,6 +58,13 @@ public final class PaymentResponses {
                                  Instant createdAt, Instant updatedAt, long version) {
     }
 
+    /** {@code respondBy}: the PSP's deadline for evidence, which is submitted on the PSP's dashboard. */
+    public record DisputeResponse(String id, String object, String paymentId, String attemptId, long amount,
+                                  String currency, String status, String reason, String provider,
+                                  String providerReference, Instant respondBy, Instant createdAt, Instant updatedAt,
+                                  long version) {
+    }
+
     public record ListResponse<T>(List<T> data) {
     }
 }

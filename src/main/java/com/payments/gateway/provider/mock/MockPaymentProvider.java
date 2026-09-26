@@ -7,6 +7,7 @@ import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
+import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
@@ -237,8 +238,11 @@ public class MockPaymentProvider implements PaymentProvider {
                         new ProviderFailure(payload.failureCode(), payload.failureMessage(), FailureCategory.PROVIDER));
                 default -> ProviderRefundResult.pending(payload.providerReference(), amount);
             };
-            return List.of(new ProviderEvent(payload.eventId(), ProviderEvent.Kind.REFUND, payload.type(),
-                    payload.providerReference(), payload.merchantReference(), null, result));
+            return List.of(ProviderEvent.refund(payload.eventId(), payload.type(), payload.providerReference(),
+                    payload.merchantReference(), result));
+        }
+        if (MockWebhookPayload.DISPUTE_UPDATED.equals(payload.type())) {
+            return List.of(parseDispute(payload, amount));
         }
         ProviderPaymentResult result = switch (payload.status()) {
             case "captured" -> ProviderPaymentResult.succeeded(payload.providerReference(), amount, "captured");
@@ -251,8 +255,32 @@ public class MockPaymentProvider implements PaymentProvider {
         if (payload.cardNetwork() != null && payload.cardLast4() != null) {
             result = result.withCard(new CardDetails(payload.cardNetwork(), payload.cardLast4()));
         }
-        return List.of(new ProviderEvent(payload.eventId(), ProviderEvent.Kind.PAYMENT, payload.type(),
-                payload.providerReference(), payload.merchantReference(), result, null));
+        return List.of(ProviderEvent.payment(payload.eventId(), payload.type(), payload.providerReference(),
+                payload.merchantReference(), result));
+    }
+
+    private static ProviderEvent parseDispute(MockWebhookPayload payload, Money amount) {
+        ProviderDisputeResult.Status status = switch (payload.status()) {
+            case "open" -> ProviderDisputeResult.Status.OPEN;
+            case "under_review" -> ProviderDisputeResult.Status.UNDER_REVIEW;
+            case "won" -> ProviderDisputeResult.Status.WON;
+            case "lost" -> ProviderDisputeResult.Status.LOST;
+            default -> throw new WebhookVerificationException("malformed payload");
+        };
+        if (amount == null || payload.providerReference() == null) {
+            throw new WebhookVerificationException("malformed payload");
+        }
+        return ProviderEvent.dispute(payload.eventId(), payload.type(), payload.merchantReference(),
+                new ProviderDisputeResult(payload.providerReference(), payload.paymentReference(), status, amount,
+                        payload.disputeReason(), payload.respondBy(), payload.status()));
+    }
+
+    /** Builds the webhook body the simulated PSP would send for a dispute's current state. */
+    public MockWebhookPayload webhookFor(MockPsp.DisputeTxn dispute) {
+        Txn txn = dispute.payment();
+        return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.DISPUTE_UPDATED, dispute.reference(),
+                txn.merchantReference(), dispute.state().name().toLowerCase(Locale.ROOT), dispute.amount().amount(),
+                dispute.amount().currency(), null, null, null, null, txn.reference(), dispute.reason(), dispute.respondBy());
     }
 
     /** Builds the webhook body the simulated PSP would send for the current transaction state. */
@@ -268,7 +296,7 @@ public class MockPaymentProvider implements PaymentProvider {
         return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.PAYMENT_UPDATED, txn.reference(),
                 txn.merchantReference(), status, txn.amount().amount(), txn.amount().currency(), txn.failureCode(),
                 txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode(),
-                card == null ? null : card.network(), card == null ? null : card.last4());
+                card == null ? null : card.network(), card == null ? null : card.last4(), null, null, null);
     }
 
     /** The simulated hosted page always "collects" the Visa test card; only its network and last 4 are reported. */
@@ -355,6 +383,21 @@ public class MockPaymentProvider implements PaymentProvider {
                     refund.reference(), refund.merchantReference(), refund.amount(), Money.of(0, currency), settlementId,
                     refund.createdAt()));
             net -= refund.amount().amount();
+        }
+        for (MockPsp.DisputeTxn dispute : psp.disputesOpenedBetween(query.merchantId(), query.from(), query.to())) {
+            currency = dispute.amount().currency();
+            lines.add(new SettlementReport.Line("line_" + dispute.reference(), SettlementReport.LineType.CHARGEBACK,
+                    dispute.reference(), dispute.payment().merchantReference(), dispute.amount(), Money.of(0, currency),
+                    settlementId, dispute.createdAt()));
+            net -= dispute.amount().amount();
+        }
+        for (MockPsp.DisputeTxn dispute : psp.disputesWonBetween(query.merchantId(), query.from(), query.to())) {
+            currency = dispute.amount().currency();
+            lines.add(new SettlementReport.Line("line_" + dispute.reference() + "_reversal",
+                    SettlementReport.LineType.CHARGEBACK_REVERSAL, dispute.reference(),
+                    dispute.payment().merchantReference(), dispute.amount(), Money.of(0, currency), settlementId,
+                    dispute.wonAt()));
+            net += dispute.amount().amount();
         }
         if (lines.isEmpty()) {
             return new SettlementReport(List.of(), List.of());

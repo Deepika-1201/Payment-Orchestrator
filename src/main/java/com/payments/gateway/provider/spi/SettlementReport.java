@@ -10,9 +10,16 @@ import java.util.List;
  */
 public record SettlementReport(List<Line> lines, List<Settlement> settlements) {
 
+    /**
+     * {@code CHARGEBACK} lines are disputed amounts the PSP withheld; {@code CHARGEBACK_REVERSAL} lines return them after
+     * a won dispute. For both, {@code providerReference} is the PSP's dispute id and {@code merchantReference} the
+     * disputed attempt's id.
+     */
     public enum LineType {
         PAYMENT,
-        REFUND
+        REFUND,
+        CHARGEBACK,
+        CHARGEBACK_REVERSAL
     }
 
     public record Line(String lineId, LineType type, String providerReference, String merchantReference, Money amount,

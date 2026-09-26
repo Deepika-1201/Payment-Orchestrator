@@ -149,6 +149,75 @@ public final class MockPsp {
                             RefundState state, Instant createdAt) {
     }
 
+    public enum DisputeState {
+        OPEN,
+        UNDER_REVIEW,
+        WON,
+        LOST
+    }
+
+    /** A chargeback on a captured transaction; the disputed amount is withheld from the next settlement. */
+    public static final class DisputeTxn {
+        private final String reference;
+        private final Txn payment;
+        private final Money amount;
+        private final String reason;
+        private final Instant createdAt;
+        private final Instant respondBy;
+        private DisputeState state = DisputeState.OPEN;
+        private Instant wonAt;
+
+        DisputeTxn(String reference, Txn payment, Money amount, String reason, Instant createdAt, Instant respondBy) {
+            this.reference = reference;
+            this.payment = payment;
+            this.amount = amount;
+            this.reason = reason;
+            this.createdAt = createdAt;
+            this.respondBy = respondBy;
+        }
+
+        public String reference() {
+            return reference;
+        }
+
+        public Txn payment() {
+            return payment;
+        }
+
+        public Money amount() {
+            return amount;
+        }
+
+        public String reason() {
+            return reason;
+        }
+
+        public Instant createdAt() {
+            return createdAt;
+        }
+
+        public Instant respondBy() {
+            return respondBy;
+        }
+
+        public synchronized DisputeState state() {
+            return state;
+        }
+
+        public synchronized Instant wonAt() {
+            return wonAt;
+        }
+
+        synchronized void moveTo(DisputeState newState, Instant now) {
+            state = newState;
+            if (newState == DisputeState.WON && wonAt == null) {
+                wonAt = now;
+            }
+        }
+    }
+
+    private final ConcurrentMap<String, DisputeTxn> disputes = new ConcurrentHashMap<>();
+
     private final String code;
     private final ConcurrentMap<String, Txn> transactions = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> transactionsByMerchantRef = new ConcurrentHashMap<>();
@@ -241,6 +310,39 @@ public final class MockPsp {
         Instant capturedAt = txn.capturedAt();
         return txn.merchantId().equals(merchantId) && capturedAt != null
                 && !capturedAt.isBefore(from) && capturedAt.isBefore(to);
+    }
+
+    // ------------------------------------------------------------------ disputes (simulation only)
+
+    public DisputeTxn openDispute(Txn payment, Money amount, String reason, Instant now) {
+        DisputeTxn dispute = new DisputeTxn(Ids.newId(code.toLowerCase(Locale.ROOT) + "_dsp"), payment, amount, reason,
+                now, now.plus(java.time.Duration.ofDays(7)));
+        disputes.put(dispute.reference(), dispute);
+        return dispute;
+    }
+
+    public Optional<DisputeTxn> findDispute(String reference) {
+        return Optional.ofNullable(disputes.get(reference));
+    }
+
+    public void moveDispute(DisputeTxn dispute, DisputeState state, Instant now) {
+        dispute.moveTo(state, now);
+    }
+
+    List<DisputeTxn> disputesOpenedBetween(String merchantId, Instant from, Instant to) {
+        return disputes.values().stream()
+                .filter(d -> d.payment().merchantId().equals(merchantId))
+                .filter(d -> !d.createdAt().isBefore(from) && d.createdAt().isBefore(to))
+                .sorted((a, b) -> a.createdAt().compareTo(b.createdAt()))
+                .toList();
+    }
+
+    List<DisputeTxn> disputesWonBetween(String merchantId, Instant from, Instant to) {
+        return disputes.values().stream()
+                .filter(d -> d.payment().merchantId().equals(merchantId))
+                .filter(d -> d.wonAt() != null && !d.wonAt().isBefore(from) && d.wonAt().isBefore(to))
+                .sorted((a, b) -> a.wonAt().compareTo(b.wonAt()))
+                .toList();
     }
 
     // ------------------------------------------------------------------ report anomalies (simulation only)

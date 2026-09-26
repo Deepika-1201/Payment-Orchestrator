@@ -28,16 +28,27 @@ public class ReviewQueueRepository {
              WHERE needs_review AND (CAST(:merchantId AS text) IS NULL OR merchant_id = :merchantId)
             """;
 
+    private static final String DISPUTES = """
+            SELECT 'dispute' AS kind, id, payment_id, merchant_id, provider_code, status, amount, currency,
+                   review_reason, NULL::text AS risk_reasons, flagged_at
+              FROM disputes
+             WHERE needs_review AND (CAST(:merchantId AS text) IS NULL OR merchant_id = :merchantId)
+            """;
+
     private final JdbcClient jdbc;
 
     public ReviewQueueRepository(JdbcClient jdbc) {
         this.jdbc = jdbc;
     }
 
-    /** Oldest first; {@code kind} is {@code attempt}, {@code refund} or null for both. */
+    /** Oldest first; {@code kind} is {@code attempt}, {@code refund}, {@code dispute} or null for all. */
     public List<Row> open(String kind, String merchantId, int limit) {
-        String source = kind == null ? ATTEMPTS + " UNION ALL " + REFUNDS
-                : "attempt".equals(kind) ? ATTEMPTS : REFUNDS;
+        String source = kind == null ? ATTEMPTS + " UNION ALL " + REFUNDS + " UNION ALL " + DISPUTES
+                : switch (kind) {
+                    case "attempt" -> ATTEMPTS;
+                    case "refund" -> REFUNDS;
+                    default -> DISPUTES;
+                };
         return jdbc.sql(source + " ORDER BY flagged_at, id LIMIT :limit")
                 .param("merchantId", merchantId)
                 .param("limit", limit)
@@ -54,5 +65,9 @@ public class ReviewQueueRepository {
 
     public long countOpenRefunds() {
         return jdbc.sql("SELECT count(*) FROM refunds WHERE needs_review").query(Long.class).single();
+    }
+
+    public long countOpenDisputes() {
+        return jdbc.sql("SELECT count(*) FROM disputes WHERE needs_review").query(Long.class).single();
     }
 }

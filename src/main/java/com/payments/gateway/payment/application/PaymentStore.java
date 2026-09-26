@@ -1,11 +1,14 @@
 package com.payments.gateway.payment.application;
 
 import com.payments.gateway.payment.domain.AttemptStatus;
+import com.payments.gateway.payment.domain.Dispute;
+import com.payments.gateway.payment.domain.DisputeStatus;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.StatusChange;
+import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.payment.infrastructure.TransitionLog;
@@ -27,15 +30,18 @@ public class PaymentStore {
 
     private final PaymentRepository payments;
     private final RefundRepository refunds;
+    private final DisputeRepository disputes;
     private final TransitionLog transitions;
     private final PaymentEventPublisher events;
     private final ProviderHealthTracker health;
     private final MeterRegistry meters;
 
-    public PaymentStore(PaymentRepository payments, RefundRepository refunds, TransitionLog transitions,
-                        PaymentEventPublisher events, ProviderHealthTracker health, MeterRegistry meters) {
+    public PaymentStore(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
+                        TransitionLog transitions, PaymentEventPublisher events, ProviderHealthTracker health,
+                        MeterRegistry meters) {
         this.payments = payments;
         this.refunds = refunds;
+        this.disputes = disputes;
         this.transitions = transitions;
         this.events = events;
         this.health = health;
@@ -72,6 +78,26 @@ public class PaymentStore {
                         refund.providerCode(), refund.id(), payment.id(), refund.amount(), change.occurredAt()));
             }
         }
+    }
+
+    /**
+     * Saves a dispute under its payment's lock. Opening withholds the disputed amount (chargeback posting) and
+     * winning returns it (reversal); losing moves nothing further (ADR-018).
+     */
+    public void saveDispute(Payment payment, Dispute dispute) {
+        List<StatusChange> changes = dispute.pullChanges();
+        List<PaymentEvent> disputeEvents = dispute.pullEvents();
+        disputes.save(dispute);
+        transitions.append(payment.id(), payment.merchantId(), changes);
+        for (StatusChange change : changes) {
+            FundsMovement.Type movement = change.fromStatus() == null ? FundsMovement.Type.CHARGEBACK
+                    : DisputeStatus.WON.name().equals(change.toStatus()) ? FundsMovement.Type.CHARGEBACK_REVERSAL : null;
+            if (movement != null) {
+                events.publishFundsMovement(new FundsMovement(movement, dispute.merchantId(), dispute.providerCode(),
+                        dispute.id(), payment.id(), dispute.amount(), change.occurredAt()));
+            }
+        }
+        events.publishDisputeEvents(dispute, disputeEvents);
     }
 
     private void publishCaptures(Payment payment, List<StatusChange> changes) {

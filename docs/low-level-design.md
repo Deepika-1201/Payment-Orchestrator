@@ -174,7 +174,7 @@ The payment status is **derived from the active attempt** plus payment-level com
 | `FAILED` | `REQUIRES_PAYMENT_METHOD` if attempts < max (default 5) and not expired, otherwise `FAILED` |
 | `VOIDED` | `CANCELLED` or `EXPIRED` (whichever command caused the void) |
 
-Refunds and disputes are **not** payment states. The payment exposes `amount_refunded`, and refunds have their own lifecycle (see 3.3).
+Refunds and disputes are **not** payment states. The payment exposes `amount_refunded`, and refunds and disputes have their own lifecycles (see 3.3 and 3.5).
 
 **Cancel** is allowed from `REQUIRES_PAYMENT_METHOD`, `REQUIRES_ACTION`, and `AUTHORIZED` (void). It is rejected in `PROCESSING` because money may be moving; such payments resolve or expire instead.
 
@@ -254,6 +254,20 @@ Invariant (per attempt): `Σ amount(refunds where status ≠ FAILED) ≤ attempt
 ### 3.4 Merchant webhook delivery
 
 `PENDING → SUCCEEDED` on a 2xx response. On failure it stays `PENDING` and is rescheduled with backoff; after the last attempt it becomes `DEAD`. `DEAD → PENDING` happens through replay.
+
+### 3.5 Dispute (ADR-018)
+
+```mermaid
+stateDiagram-v2
+    [*] --> OPEN : PSP webhook or chargeback line in a report
+    OPEN --> UNDER_REVIEW : evidence submitted at the PSP
+    OPEN --> WON
+    OPEN --> LOST
+    UNDER_REVIEW --> WON : funds returned (reversal)
+    UNDER_REVIEW --> LOST
+```
+
+Ranks: `OPEN` 1, `UNDER_REVIEW` 2, `WON`/`LOST` 3. A lower-ranked report is stale and ignored. A contradicting final report is not applied and flags the dispute (`provider_conflict`). Opening posts the chargeback; winning posts its reversal. Refundable amount = captured − active refunds − disputes not won.
 
 ## 4. Transaction boundaries and algorithms
 
@@ -618,6 +632,8 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `POST /v1/payments/{id}/refunds` | Create refund | `201` refund |
 | `GET /v1/payments/{id}/refunds` | List refunds of a payment | `200` list |
 | `GET /v1/refunds/{id}` | Retrieve refund | `200` refund |
+| `GET /v1/payments/{id}/disputes` | Disputes of a payment (oldest first) | `200` list |
+| `GET /v1/disputes/{id}` | Retrieve dispute | `200` dispute |
 | `POST /v1/checkout-sessions` | Hosted checkout session for a `requires_payment_method` payment (§17) | `201` session with `url` |
 | `POST /v1/webhooks/providers/{code}` | PSP webhooks (signature-authenticated) | `200` |
 | `POST /admin/v1/merchants` | Create merchant (+ webhook secret, shown once); `providers` optional | `201` |
@@ -739,7 +755,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 ## 14. Observability details
 
 - **MDC keys:** `request_id`, `merchant_id`, `payment_id`, `attempt_id`, `provider`.
-- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`, `pg.risk.decisions{outcome}`, `pg.risk.rule_errors{rule}`, `pg.risk.external{result}` (timer), `pg.reviews.open{kind}` (gauge), `pg.reconciliation.exceptions.open` / `.overdue` (gauges).
+- **Metrics (Micrometer):** `pg.payments.created`, `pg.payment.attempts{provider,method,outcome}`, `pg.provider.call{provider,operation,result}` (timer), `pg.webhooks.inbound{provider,result}`, `pg.webhook.deliveries{result}`, `pg.merchant.events{type}`, `pg.status.checks{outcome}`, `pg.payments.late_success{action}`, `pg.provider.conflicts{source}`, `pg.provider.amount_mismatches{source}`, `pg.api.rate_limited{operation}`, `pg.risk.decisions{outcome}`, `pg.risk.rule_errors{rule}`, `pg.risk.external{result}` (timer), `pg.reviews.open{kind}` (gauge), `pg.reconciliation.exceptions.open` / `.overdue` (gauges), `pg.disputes.opened{provider}`, `pg.disputes.closed{provider,outcome}`.
 - **Log hygiene:** request and response bodies are never logged, and neither are PII values (VPA, email, phone). Risk decisions log reason codes such as `vpa_blocklisted`, never the value. API keys are never logged (only `key_…` ids).
 
 ## 15. Test matrix
@@ -756,6 +772,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt. Hosted checkout: session rules, escaping, CSP hash, UPI collect, card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
 | Integration | Review queue: amount mismatch, refund contradicted by the PSP, 72 h unresolved, risk review (and across failover); audited acknowledge-only resolution. External risk vendor: signed request, block with sanitized reasons, timeout / error / unknown answer → review | `ReviewQueueIntegrationTest`, `ExternalRiskIntegrationTest` |
 | Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
+| Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
 | Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |
@@ -777,6 +794,8 @@ The database enforces the invariants itself:
 |---|---|---|---|
 | Attempt → `SUCCEEDED` (any path, including late success) | `FundsMovement` listener, same tx as the state change | `PSP_RECEIVABLE` | `SALES_CLEARING` |
 | Refund → `SUCCEEDED` (merchant or system) | `FundsMovement` listener, same tx | `REFUNDS` | `PSP_RECEIVABLE` |
+| Dispute opened (`CHARGEBACK`, reference `DISPUTE`) | `FundsMovement` listener, same tx as the dispute | `CHARGEBACKS` | `PSP_RECEIVABLE` |
+| Dispute won (`REVERSAL`) | `FundsMovement` listener, same tx | `PSP_RECEIVABLE` | `CHARGEBACKS` |
 | Matched report line with a fee | Reconciliation (`REPORT_LINE`) | `PSP_FEES` | `PSP_RECEIVABLE` |
 | Settlement payout (net > 0; reversed legs if < 0) | Reconciliation (`SETTLEMENT`) | `BANK_SETTLEMENTS` | `PSP_RECEIVABLE` |
 
@@ -796,8 +815,11 @@ run(merchant, provider, [from, to)):
      otherwise apply SUCCEEDED via the domain (source RECONCILIATION)
          → AUTO_HEALED, or STATUS_MISMATCH if the domain refuses (e.g. VOIDED)
      matched/healed: post fee, auto-resolve open MISSING_AT_PROVIDER for the entity
+  CHARGEBACK line: known dispute → MATCHED (AMOUNT_MISMATCH if different); unknown dispute on a known attempt
+     → recorded from the report (AUTO_HEALED); unknown attempt → MISSING_INTERNALLY
+  CHARGEBACK_REVERSAL line: dispute WON → MATCHED; otherwise heal to WON (AUTO_HEALED) or STATUS_MISMATCH (LOST)
   for payout in report.settlements:
-     post settlement; if payout ≠ Σ(matched captures − fees − refunds) → SETTLEMENT_MISMATCH
+     post settlement; if payout ≠ Σ(matched captures − fees − refunds − chargebacks + reversals) → SETTLEMENT_MISMATCH
   internal successes in window never seen in any report of this account → MISSING_AT_PROVIDER
 ```
 

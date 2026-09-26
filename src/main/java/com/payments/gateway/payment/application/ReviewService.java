@@ -1,9 +1,11 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.Review;
+import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.payment.infrastructure.ReviewQueueRepository;
@@ -31,7 +33,8 @@ public class ReviewService {
 
     public enum Kind {
         ATTEMPT,
-        REFUND
+        REFUND,
+        DISPUTE
     }
 
     public record ReviewItem(String kind, String id, String paymentId, String merchantId, String providerCode,
@@ -42,17 +45,19 @@ public class ReviewService {
     private final ReviewQueueRepository queue;
     private final PaymentRepository payments;
     private final RefundRepository refunds;
+    private final DisputeRepository disputes;
     private final PaymentStore store;
     private final AuditLogger audit;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public ReviewService(ReviewQueueRepository queue, PaymentRepository payments, RefundRepository refunds,
-                         PaymentStore store, AuditLogger audit, TransactionTemplate tx, Clock clock,
-                         MeterRegistry meters) {
+                         DisputeRepository disputes, PaymentStore store, AuditLogger audit, TransactionTemplate tx,
+                         Clock clock, MeterRegistry meters) {
         this.queue = queue;
         this.payments = payments;
         this.refunds = refunds;
+        this.disputes = disputes;
         this.store = store;
         this.audit = audit;
         this.tx = tx;
@@ -61,6 +66,8 @@ public class ReviewService {
                 .description("Attempts awaiting manual review").register(meters);
         Gauge.builder("pg.reviews.open", queue, ReviewQueueRepository::countOpenRefunds).tag("kind", "refund")
                 .description("Refunds awaiting manual review").register(meters);
+        Gauge.builder("pg.reviews.open", queue, ReviewQueueRepository::countOpenDisputes).tag("kind", "dispute")
+                .description("Disputes awaiting manual review").register(meters);
     }
 
     /** Oldest first. {@code kind} and {@code merchantId} are optional filters. */
@@ -105,6 +112,22 @@ public class ReviewService {
             audited(actor, "refund", refundId, refund.review(), note);
             return item(Kind.REFUND, refund.id(), paymentId, refund.merchantId(), refund.providerCode(),
                     WireEnums.wire(refund.status()), refund.amount(), refund.review(), null);
+        });
+    }
+
+    public ReviewItem resolveDispute(String disputeId, String note, String actor) {
+        String paymentId = disputes.findById(disputeId)
+                .orElseThrow(() -> GatewayException.notFound("Dispute", disputeId))
+                .paymentId();
+        Instant now = clock.instant();
+        return tx.execute(status -> {
+            Payment payment = payments.lockById(paymentId).orElseThrow();
+            Dispute dispute = disputes.findById(disputeId).orElseThrow();
+            dispute.resolveReview(now);
+            store.saveDispute(payment, dispute);
+            audited(actor, "dispute", disputeId, dispute.review(), note);
+            return item(Kind.DISPUTE, dispute.id(), paymentId, dispute.merchantId(), dispute.providerCode(),
+                    WireEnums.wire(dispute.status()), dispute.amount(), dispute.review(), null);
         });
     }
 

@@ -10,6 +10,7 @@ import com.payments.gateway.payment.domain.RefundInitiator;
 import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.TransitionOutcome;
 import com.payments.gateway.payment.domain.TransitionSource;
+import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.provider.ProviderClient;
@@ -46,16 +47,19 @@ public class RefundService {
 
     private final PaymentRepository payments;
     private final RefundRepository refunds;
+    private final DisputeRepository disputes;
     private final PaymentStore store;
     private final ProviderClient providerClient;
     private final ProviderRegistry providers;
     private final TransactionTemplate tx;
     private final Clock clock;
 
-    public RefundService(PaymentRepository payments, RefundRepository refunds, PaymentStore store,
+    public RefundService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
+                         PaymentStore store,
                          ProviderClient providerClient, ProviderRegistry providers, TransactionTemplate tx, Clock clock) {
         this.payments = payments;
         this.refunds = refunds;
+        this.disputes = disputes;
         this.store = store;
         this.providerClient = providerClient;
         this.providers = providers;
@@ -78,10 +82,13 @@ public class RefundService {
             }
             PaymentAttempt attempt = payment.attempt(payment.succeededAttemptId()).orElseThrow();
             long refundable = payment.amountCaptured() - refunds.sumActiveForAttempt(attempt.id());
+            long disputed = disputes.sumHoldingFundsForAttempt(attempt.id());
+            refundable -= disputed;
             long amount = command.amount() == null ? refundable : command.amount();
             if (amount <= 0 || amount > refundable) {
                 throw new GatewayException(ErrorCode.AMOUNT_EXCEEDS_REFUNDABLE,
-                        "Requested " + amount + " but only " + refundable + " is refundable");
+                        "Requested " + amount + " but only " + Math.max(refundable, 0) + " is refundable"
+                                + (disputed > 0 ? " (" + disputed + " is held by open or lost disputes)" : ""));
             }
             if (amount < payment.amountCaptured() && !providers.require(attempt.providerCode()).capabilities().partialRefunds()) {
                 throw new GatewayException(ErrorCode.UNSUPPORTED_PAYMENT_METHOD,

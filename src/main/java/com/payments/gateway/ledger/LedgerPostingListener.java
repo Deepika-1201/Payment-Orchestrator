@@ -30,6 +30,16 @@ public class LedgerPostingListener {
                     "refund for payment " + movement.paymentId(), movement.occurredAt(),
                     List.of(Leg.debit(LedgerAccountType.REFUNDS, movement.amount()),
                             Leg.credit(LedgerAccountType.PSP_RECEIVABLE, movement.amount())));
+            case CHARGEBACK -> new Posting(movement.merchantId(), movement.providerCode(),
+                    LedgerTransactionType.CHARGEBACK, "DISPUTE", movement.referenceId(),
+                    "chargeback on payment " + movement.paymentId(), movement.occurredAt(),
+                    List.of(Leg.debit(LedgerAccountType.CHARGEBACKS, movement.amount()),
+                            Leg.credit(LedgerAccountType.PSP_RECEIVABLE, movement.amount())));
+            case CHARGEBACK_REVERSAL -> new Posting(movement.merchantId(), movement.providerCode(),
+                    LedgerTransactionType.REVERSAL, "DISPUTE", movement.referenceId(),
+                    "dispute won on payment " + movement.paymentId(), movement.occurredAt(),
+                    List.of(Leg.debit(LedgerAccountType.PSP_RECEIVABLE, movement.amount()),
+                            Leg.credit(LedgerAccountType.CHARGEBACKS, movement.amount())));
         };
         ledger.post(posting);
     }

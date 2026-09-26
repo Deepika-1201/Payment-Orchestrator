@@ -14,6 +14,8 @@ public record Review(boolean open, String reasons, Instant flaggedAt) {
     public static final String PROVIDER_CONFLICT = "provider_conflict";
     public static final String AMOUNT_MISMATCH = "amount_mismatch";
     public static final String RISK_REVIEW = "risk_review";
+    /** A dispute larger than what is left of the captured amount (e.g. the customer was already refunded). */
+    public static final String EXCEEDS_NET_CAPTURED = "amount_exceeds_net_captured";
 
     public static final Review NONE = new Review(false, null, null);
 

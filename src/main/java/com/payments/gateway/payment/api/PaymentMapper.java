@@ -2,11 +2,13 @@ package com.payments.gateway.payment.api;
 
 import com.payments.gateway.payment.api.PaymentResponses.AttemptResponse;
 import com.payments.gateway.payment.api.PaymentResponses.CustomerResponse;
+import com.payments.gateway.payment.api.PaymentResponses.DisputeResponse;
 import com.payments.gateway.payment.api.PaymentResponses.ErrorResponse;
 import com.payments.gateway.payment.api.PaymentResponses.NextActionResponse;
 import com.payments.gateway.payment.api.PaymentResponses.PaymentResponse;
 import com.payments.gateway.payment.api.PaymentResponses.RefundResponse;
 import com.payments.gateway.payment.domain.Customer;
+import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.Failure;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
@@ -17,7 +19,7 @@ import org.springframework.stereotype.Component;
 
 import static com.payments.gateway.shared.web.WireEnums.wire;
 
-/** Renders the public representation of payments and refunds (API responses and webhook payloads). */
+/** Renders the public representation of payments, refunds and disputes (API responses and webhook payloads). */
 @Component
 public class PaymentMapper {
 
@@ -72,6 +74,24 @@ public class PaymentMapper {
                 refund.createdAt(),
                 refund.updatedAt(),
                 refund.version());
+    }
+
+    public DisputeResponse toResponse(Dispute dispute) {
+        return new DisputeResponse(
+                dispute.id(),
+                "dispute",
+                dispute.paymentId(),
+                dispute.attemptId(),
+                dispute.amount().amount(),
+                dispute.amount().currency(),
+                wire(dispute.status()),
+                dispute.reason(),
+                dispute.providerCode(),
+                dispute.providerDisputeId(),
+                dispute.respondBy(),
+                dispute.createdAt(),
+                dispute.updatedAt(),
+                dispute.version());
     }
 
     private AttemptResponse toResponse(PaymentAttempt attempt) {

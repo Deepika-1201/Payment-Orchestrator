@@ -55,4 +55,10 @@ public class AdminReviewController {
                                     @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
         return reviews.resolveRefund(id, request.note(), actor);
     }
+
+    @PostMapping("/disputes/{id}/resolve")
+    public ReviewItem resolveDispute(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                     @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
+        return reviews.resolveDispute(id, request.note(), actor);
+    }
 }
