@@ -37,6 +37,7 @@ class PaymentFlowIntegrationTest extends IntegrationTest {
             assertThat(str(succeeded, "status")).isEqualTo("succeeded");
             assertThat(num(succeeded, "amount_captured")).isEqualTo(49_900);
             assertThat(str(succeeded, "latest_attempt.status")).isEqualTo("succeeded");
+            assertThat(str(succeeded, "latest_attempt.card")).as("UPI payments have no card details").isNull();
 
             deliveryWorker.deliverDue();
             List<FakeMerchantEndpoint.Received> received = endpoint.received();
@@ -66,6 +67,9 @@ class PaymentFlowIntegrationTest extends IntegrationTest {
         Map<String, Object> authorized = getPayment(merchant, paymentId);
         assertThat(str(authorized, "status")).isEqualTo("authorized");
         assertThat(str(authorized, "authorization_expires_at")).isNotNull();
+        assertThat(str(authorized, "latest_attempt.card.network")).isEqualTo("visa");
+        assertThat(str(authorized, "latest_attempt.card.last4")).isEqualTo("1111");
+        assertThat(count("SELECT count(*) FROM payment_attempts WHERE payment_id = ? AND card_last4 = '1111'", paymentId)).isEqualTo(1);
 
         Response captured = post(merchant, "/v1/payments/" + paymentId + "/capture", "cap-" + paymentId, Map.of());
 

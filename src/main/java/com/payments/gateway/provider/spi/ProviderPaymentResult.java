@@ -1,12 +1,16 @@
 package com.payments.gateway.provider.spi;
 
+import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import java.util.Objects;
 
-/** Normalized PSP answer for payment operations. {@code amount} is the PSP-reported amount, when known. */
+/**
+ * Normalized PSP answer for payment operations. {@code amount} is the PSP-reported amount, when known; {@code card}
+ * is the card's network and last 4 digits once the customer has paid by card.
+ */
 public record ProviderPaymentResult(Outcome outcome, String providerReference, NextAction nextAction,
-                                    ProviderFailure failure, Money amount, String rawStatus) {
+                                    ProviderFailure failure, Money amount, String rawStatus, CardDetails card) {
 
     public enum Outcome {
         REQUIRES_ACTION,
@@ -23,6 +27,15 @@ public record ProviderPaymentResult(Outcome outcome, String providerReference, N
         if (outcome == Outcome.FAILED) {
             Objects.requireNonNull(failure, "failure is required for FAILED results");
         }
+    }
+
+    public ProviderPaymentResult(Outcome outcome, String providerReference, NextAction nextAction,
+                                 ProviderFailure failure, Money amount, String rawStatus) {
+        this(outcome, providerReference, nextAction, failure, amount, rawStatus, null);
+    }
+
+    public ProviderPaymentResult withCard(CardDetails details) {
+        return new ProviderPaymentResult(outcome, providerReference, nextAction, failure, amount, rawStatus, details);
     }
 
     public static ProviderPaymentResult requiresAction(String reference, NextAction nextAction, String raw) {

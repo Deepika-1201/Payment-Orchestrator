@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.domain;
 
+import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import com.payments.gateway.shared.model.PaymentMethod;
@@ -25,6 +26,7 @@ public final class PaymentAttempt {
     private String providerReference;
     private NextAction nextAction;
     private Failure failure;
+    private CardDetails card;
     private Instant authorizedAt;
     private Instant capturedAt;
     private boolean voidRequested;
@@ -50,6 +52,7 @@ public final class PaymentAttempt {
         this.providerReference = s.providerReference();
         this.nextAction = s.nextAction();
         this.failure = s.failure();
+        this.card = s.card();
         this.authorizedAt = s.authorizedAt();
         this.capturedAt = s.capturedAt();
         this.voidRequested = s.voidRequested();
@@ -64,7 +67,7 @@ public final class PaymentAttempt {
     static PaymentAttempt initiate(String id, String paymentId, String merchantId, int attemptNumber, String providerCode,
                                    PaymentMethod method, Money amount, String routingRuleId, Instant now) {
         return new PaymentAttempt(new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method,
-                amount, AttemptStatus.INITIATED, null, null, null, routingRuleId, null, null, false,
+                amount, AttemptStatus.INITIATED, null, null, null, null, routingRuleId, null, null, false,
                 now.plus(INITIATED_CHECK_DELAY), 0, false, 0, now, now), true);
     }
 
@@ -74,13 +77,17 @@ public final class PaymentAttempt {
 
     public AttemptSnapshot snapshot() {
         return new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method, amount, status,
-                providerReference, nextAction, failure, routingRuleId, authorizedAt, capturedAt, voidRequested,
+                providerReference, nextAction, failure, card, routingRuleId, authorizedAt, capturedAt, voidRequested,
                 nextStatusCheckAt, statusCheckCount, needsReview, version, createdAt, updatedAt);
     }
 
     TransitionOutcome apply(AttemptUpdate update, TransitionSource source, Instant now) {
         if (update.providerReference() != null && providerReference == null) {
             providerReference = update.providerReference();
+            touch(now);
+        }
+        if (update.card() != null && card == null) {
+            card = update.card();
             touch(now);
         }
         AttemptStatus target = update.status();
@@ -241,6 +248,10 @@ public final class PaymentAttempt {
 
     public Failure failure() {
         return failure;
+    }
+
+    public CardDetails card() {
+        return card;
     }
 
     public String routingRuleId() {

@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.domain;
 
+import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
@@ -7,13 +8,18 @@ import java.util.Objects;
 
 /** Normalized PSP evidence to apply to an attempt. {@code reportedAmount} is verified before success is accepted. */
 public record AttemptUpdate(AttemptStatus status, String providerReference, NextAction nextAction, Failure failure,
-                            Money reportedAmount) {
+                            Money reportedAmount, CardDetails card) {
 
     public AttemptUpdate {
         Objects.requireNonNull(status, "status");
         if (status == AttemptStatus.FAILED) {
             Objects.requireNonNull(failure, "failure is required for FAILED");
         }
+    }
+
+    public AttemptUpdate(AttemptStatus status, String providerReference, NextAction nextAction, Failure failure,
+                         Money reportedAmount) {
+        this(status, providerReference, nextAction, failure, reportedAmount, null);
     }
 
     public static AttemptUpdate of(AttemptStatus status) {

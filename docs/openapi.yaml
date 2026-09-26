@@ -531,6 +531,13 @@ components:
         method: {type: string, enum: [upi, card, netbanking]}
         upi_flow: {type: string, enum: [intent, qr, collect]}
         bank_code: {type: string}
+        card:
+          type: object
+          description: Card network and last 4 digits, once the customer has paid by card on the PSP's page. Nothing else about the card is ever stored.
+          required: [network, last4]
+          properties:
+            network: {type: string, examples: [visa, mastercard, rupay]}
+            last4: {type: string, pattern: '^[0-9]{4}$'}
         provider: {type: string}
         provider_reference: {type: string}
         failure: {$ref: '#/components/schemas/PaymentError'}

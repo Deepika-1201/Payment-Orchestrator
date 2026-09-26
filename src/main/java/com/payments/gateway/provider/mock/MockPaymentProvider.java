@@ -29,7 +29,9 @@ import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
+import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.FailureCategory;
+import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import com.payments.gateway.shared.model.UpiFlow;
@@ -56,6 +58,7 @@ public class MockPaymentProvider implements PaymentProvider {
     private static final long FEE_BASIS_POINTS = 200;
     private static final List<CredentialField> CREDENTIALS = List.of(
             new CredentialField(API_KEY, true, false), new CredentialField(WEBHOOK_SECRET, true, false));
+    private static final CardDetails MOCK_CARD = new CardDetails("visa", "1111");
 
     private final String code;
     private final ProviderCapabilities capabilities;
@@ -245,6 +248,9 @@ public class MockPaymentProvider implements PaymentProvider {
             case "voided" -> ProviderPaymentResult.voided(payload.providerReference(), "voided");
             default -> ProviderPaymentResult.pending(payload.providerReference(), payload.status());
         };
+        if (payload.cardNetwork() != null && payload.cardLast4() != null) {
+            result = result.withCard(new CardDetails(payload.cardNetwork(), payload.cardLast4()));
+        }
         return List.of(new ProviderEvent(payload.eventId(), ProviderEvent.Kind.PAYMENT, payload.type(),
                 payload.providerReference(), payload.merchantReference(), result, null));
     }
@@ -258,9 +264,17 @@ public class MockPaymentProvider implements PaymentProvider {
             case VOIDED -> "voided";
             default -> "pending";
         };
+        CardDetails card = cardOf(txn);
         return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.PAYMENT_UPDATED, txn.reference(),
                 txn.merchantReference(), status, txn.amount().amount(), txn.amount().currency(), txn.failureCode(),
-                txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode());
+                txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode(),
+                card == null ? null : card.network(), card == null ? null : card.last4());
+    }
+
+    /** The simulated hosted page always "collects" the Visa test card; only its network and last 4 are reported. */
+    private static CardDetails cardOf(Txn txn) {
+        boolean paid = txn.state() == TxnState.AUTHORIZED || txn.state() == TxnState.CAPTURED || txn.state() == TxnState.VOIDED;
+        return txn.method() != null && txn.method().type() == MethodType.CARD && paid ? MOCK_CARD : null;
     }
 
     /** Signs as the simulated PSP would for the transaction's account (platform secret if the account has none). */
@@ -377,7 +391,7 @@ public class MockPaymentProvider implements PaymentProvider {
     }
 
     private ProviderPaymentResult toResult(Txn txn) {
-        return switch (txn.state()) {
+        ProviderPaymentResult result = switch (txn.state()) {
             case REQUIRES_ACTION -> ProviderPaymentResult.requiresAction(txn.reference(), null, "requires_action");
             case PENDING -> ProviderPaymentResult.pending(txn.reference(), "pending");
             case AUTHORIZED -> ProviderPaymentResult.authorized(txn.reference(), txn.amount(), "authorized");
@@ -386,6 +400,8 @@ public class MockPaymentProvider implements PaymentProvider {
             case FAILED -> ProviderPaymentResult.failed(txn.reference(), new ProviderFailure(txn.failureCode(),
                     "Simulated failure: " + txn.failureCode(), failureCategory(txn.failureCode())), "failed");
         };
+        CardDetails card = cardOf(txn);
+        return card == null ? result : result.withCard(card);
     }
 
     private static FailureCategory failureCategory(String failureCode) {

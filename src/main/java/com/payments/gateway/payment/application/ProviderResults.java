@@ -26,7 +26,7 @@ final class ProviderResults {
             case NOT_FOUND -> throw new IllegalArgumentException("NOT_FOUND must be handled by the caller");
         };
         return new AttemptUpdate(status, result.providerReference(), result.nextAction(),
-                result.failure() == null ? null : toFailure(result.failure()), result.amount());
+                result.failure() == null ? null : toFailure(result.failure()), result.amount(), result.card());
     }
 
     static Failure toFailure(ProviderFailure failure) {

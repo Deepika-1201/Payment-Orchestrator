@@ -42,8 +42,11 @@ public final class PaymentResponses {
     }
 
     public record AttemptResponse(String id, int attemptNumber, String status, String method, String upiFlow,
-                                  String bankCode, String provider, String providerReference, ErrorResponse failure,
-                                  Instant createdAt) {
+                                  String bankCode, CardResponse card, String provider, String providerReference,
+                                  ErrorResponse failure, Instant createdAt) {
+    }
+
+    public record CardResponse(String network, String last4) {
     }
 
     public record ErrorResponse(String code, String category, String message) {

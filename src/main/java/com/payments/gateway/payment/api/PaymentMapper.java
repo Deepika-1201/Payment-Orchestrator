@@ -82,6 +82,7 @@ public class PaymentMapper {
                 wire(attempt.method().type()),
                 wire(attempt.method().upiFlow()),
                 attempt.method().bankCode(),
+                attempt.card() == null ? null : new PaymentResponses.CardResponse(attempt.card().network(), attempt.card().last4()),
                 attempt.providerCode(),
                 attempt.providerReference(),
                 toResponse(attempt.failure()),

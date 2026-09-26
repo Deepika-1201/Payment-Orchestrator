@@ -11,6 +11,7 @@ import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.shared.jdbc.Sql;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
+import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
@@ -239,14 +240,15 @@ public class PaymentRepository {
         jdbc.sql("""
                 INSERT INTO payment_attempts (id, payment_id, merchant_id, attempt_number, provider_code, method_type,
                                               method_details, amount, currency, status, provider_reference, next_action,
-                                              failure_code, failure_category, failure_message, routing_rule_id,
-                                              authorized_at, captured_at, void_requested, next_status_check_at,
-                                              status_check_count, needs_review, version, created_at, updated_at)
+                                              failure_code, failure_category, failure_message, card_network, card_last4,
+                                              routing_rule_id, authorized_at, captured_at, void_requested,
+                                              next_status_check_at, status_check_count, needs_review, version,
+                                              created_at, updated_at)
                 VALUES (:id, :paymentId, :merchantId, :attemptNumber, :providerCode, :methodType,
                         CAST(:methodDetails AS jsonb), :amount, :currency, :status, :providerReference,
-                        CAST(:nextAction AS jsonb), :failureCode, :failureCategory, :failureMessage, :routingRuleId,
-                        :authorizedAt, :capturedAt, :voidRequested, :nextStatusCheckAt, :statusCheckCount, :needsReview,
-                        0, :createdAt, :updatedAt)
+                        CAST(:nextAction AS jsonb), :failureCode, :failureCategory, :failureMessage, :cardNetwork,
+                        :cardLast4, :routingRuleId, :authorizedAt, :capturedAt, :voidRequested, :nextStatusCheckAt,
+                        :statusCheckCount, :needsReview, 0, :createdAt, :updatedAt)
                 """)
                 .params(params)
                 .update();
@@ -259,6 +261,7 @@ public class PaymentRepository {
                 UPDATE payment_attempts
                    SET status = :status, provider_reference = :providerReference, next_action = CAST(:nextAction AS jsonb),
                        failure_code = :failureCode, failure_category = :failureCategory, failure_message = :failureMessage,
+                       card_network = :cardNetwork, card_last4 = :cardLast4,
                        authorized_at = :authorizedAt, captured_at = :capturedAt, void_requested = :voidRequested,
                        next_status_check_at = :nextStatusCheckAt, status_check_count = :statusCheckCount,
                        needs_review = :needsReview, version = version + 1, updated_at = :updatedAt
@@ -280,6 +283,8 @@ public class PaymentRepository {
         params.put("failureCode", s.failure() == null ? null : s.failure().code());
         params.put("failureCategory", s.failure() == null ? null : s.failure().category().name());
         params.put("failureMessage", s.failure() == null ? null : s.failure().message());
+        params.put("cardNetwork", s.card() == null ? null : s.card().network());
+        params.put("cardLast4", s.card() == null ? null : s.card().last4());
         params.put("authorizedAt", Sql.ts(s.authorizedAt()));
         params.put("capturedAt", Sql.ts(s.capturedAt()));
         params.put("voidRequested", s.voidRequested());
@@ -335,6 +340,8 @@ public class PaymentRepository {
                 rs.getString("provider_reference"),
                 nextAction == null ? null : json.read(nextAction, NextAction.class),
                 failure,
+                rs.getString("card_network") == null ? null
+                        : new CardDetails(rs.getString("card_network"), rs.getString("card_last4")),
                 rs.getString("routing_rule_id"),
                 Sql.instant(rs, "authorized_at"),
                 Sql.instant(rs, "captured_at"),
