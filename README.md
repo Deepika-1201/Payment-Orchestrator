@@ -7,9 +7,11 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
 > - admin roles;
-> - API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits (with overrides) and a hosted checkout with UPI QR.
+> - API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits (with overrides) and a hosted checkout with UPI QR;
+> - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege;
+> - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack.
 >
-> Remaining: real PSP adapters (phase 10, needs sandbox credentials), dashboards and alerts, Terraform, and load tests. See the [Roadmap](#roadmap).
+> Remaining: real PSP adapters (phase 10, needs sandbox credentials), Terraform, and load tests. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -19,7 +21,8 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-026 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-027 |
+| [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 
 ## Quick start
 
@@ -34,6 +37,9 @@ docker compose up --build
 
 # In another terminal: end-to-end demo (onboard → pay via UPI → webhook → refund → timeout recovery)
 ./scripts/demo.sh
+
+# With dashboards and traces: Grafana http://localhost:3000, Prometheus alerts http://localhost:9090/alerts
+OTLP_TRACING_ENABLED=true docker compose --profile observability up --build
 ```
 
 The `local` profile is for development only. It uses the admin token `local-admin-token`, enables the mock PSPs and simulator, and relaxes the webhook URL policy.
@@ -138,6 +144,7 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | — | Operations and disputes: reconciliation exception owner, SLA and daily report (ADR-017); chargebacks and UPI disputes with ledger impact and refund guard (ADR-018) | Done |
 | — | Admin roles: named operators, role permissions, deny-by-default enforcement (ADR-019) | Done |
 | — | Per-merchant rate-limit overrides (ADR-020); UPI QR on the hosted checkout (ADR-021) | Done |
-| 15 | Observability: dashboards, SLO alerts, OTel collector in compose | Planned |
+| — | Security hardening: headers, body limits, log redaction, production guard, PSP webhook source allowlist (ADR-022); admin SSO (ADR-023); maker-checker ledger adjustments (ADR-024); data key rotation (ADR-025); database least privilege and verified TLS (ADR-026) | Done |
+| 15 | Observability: SLO burn-rate alerts, dashboard, runbooks, OTel collector and Tempo in compose, promtool tests (ADR-027) | Done |
 | 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |
 | 17 | Load tests (k6), production-readiness review | Planned |

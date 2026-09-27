@@ -1,0 +1,191 @@
+# promtool test rules deploy/observability/prometheus/tests/payment-gateway-test.yml (ADR-027)
+rule_files:
+  - ../rules/payment-gateway.yml
+
+evaluation_interval: 30s
+group_eval_order:
+  - payment-gateway-slo
+  - payment-gateway-alerts
+
+tests:
+  - name: after six clean hours, one hour at 1 % errors pages through the 1h/5m window pair alone
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="201"}'
+        values: '0+1000x360 360990+990x60'
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="503"}'
+        values: '0x360 10+10x60'
+    alert_rule_test:
+      - eval_time: 395m
+        alertname: ApiErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 420m
+        alertname: ApiErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Payment API is burning its monthly error budget fast (5xx responses)
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apierrorbudgetburnfast
+
+  - name: six hours at 0.5 % errors page through the 6h/30m window pair alone
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="201"}'
+        values: '0+995x400'
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="503"}'
+        values: '0+5x400'
+    alert_rule_test:
+      - eval_time: 400m
+        alertname: ApiErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Payment API is burning its monthly error budget fast (5xx responses)
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apierrorbudgetburnfast
+
+  - name: 0.1 % server errors open a ticket but do not page
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments/{paymentId}", method="GET", status="200"}'
+        values: '0+999x90'
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments/{paymentId}", method="GET", status="500"}'
+        values: '0+1x90'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: ApiErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: ApiErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Payment API 5xx responses will exhaust the monthly error budget if they continue
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apierrorbudgetburnslow
+
+  - name: slow reads breach the latency SLO
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{uri="/v1/payments/{paymentId}", method="GET", status="200", le="0.04"}'
+        values: '0+900x30'
+      - series: 'http_server_requests_seconds_bucket{uri="/v1/payments/{paymentId}", method="GET", status="200", le="0.15"}'
+        values: '0+950x30'
+      - series: 'http_server_requests_seconds_bucket{uri="/v1/payments/{paymentId}", method="GET", status="200", le="0.2"}'
+        values: '0+970x30'
+      - series: 'http_server_requests_seconds_bucket{uri="/v1/payments/{paymentId}", method="GET", status="200", le="+Inf"}'
+        values: '0+1000x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ApiLatencyAboveSlo
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: p99 latency of API requests without PSP calls is above 150 ms (NFR-2)
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apilatencyaboveslo
+
+  - name: a provider falling from 80 % to 50 % success pages against its own baseline
+    interval: 1m
+    input_series:
+      - series: 'pg_payment_attempts_total{provider="mock_alpha", method="upi", outcome="succeeded"}'
+        values: '0+48x1440 69150+30x60'
+      - series: 'pg_payment_attempts_total{provider="mock_alpha", method="upi", outcome="failed"}'
+        values: '0+12x1440 17310+30x60'
+    alert_rule_test:
+      - eval_time: 1440m
+        alertname: ProviderSuccessRateBelowBaseline
+        exp_alerts: []
+      - eval_time: 1500m
+        alertname: ProviderSuccessRateBelowBaseline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              provider: mock_alpha
+            exp_annotations:
+              summary: mock_alpha success rate is more than 10 points below its daily baseline
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providersuccessratebelowbaseline
+
+  - name: an attempt unknown for over an hour opens a ticket
+    interval: 1m
+    input_series:
+      - series: 'pg_attempts_unknown_oldest_age_seconds{instance="api-1"}'
+        values: '0+60x80'
+    alert_rule_test:
+      - eval_time: 58m
+        alertname: PaymentOutcomeUnknownTooLong
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: PaymentOutcomeUnknownTooLong
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A payment attempt has had an unknown outcome for more than an hour
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#paymentoutcomeunknowntoolong
+
+  - name: the first DEAD delivery fires because the counter starts at zero, and the alert clears
+    interval: 1m
+    input_series:
+      - series: 'pg_webhook_deliveries_total{result="dead"}'
+        values: '0x10 1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: MerchantWebhookDead
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A merchant webhook delivery exhausted its retries (DEAD)
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#merchantwebhookdead
+      - eval_time: 30m
+        alertname: MerchantWebhookDead
+        exp_alerts: []
+
+  - name: a stuck outbox pages
+    interval: 1m
+    input_series:
+      - series: 'pg_webhook_deliveries_lag_seconds{instance="worker-1"}'
+        values: '0x5 400x10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: MerchantWebhookBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Merchant webhook deliveries have been waiting for more than 5 minutes
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#merchantwebhookbacklog
+
+  - name: a single amount mismatch pages
+    interval: 1m
+    input_series:
+      - series: 'pg_provider_amount_mismatches_total{source="PROVIDER_WEBHOOK"}'
+        values: '0x5 1x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ProviderAmountMismatch
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A PSP reported a different amount for an attempt; the update was not applied
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#provideramountmismatch
+
+  - name: an instance that stops answering scrapes pages
+    interval: 1m
+    input_series:
+      - series: 'up{job="payment-gateway", instance="app:8080"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewayInstanceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: payment-gateway
+              instance: app:8080
+            exp_annotations:
+              summary: Gateway instance app:8080 cannot be scraped
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#gatewayinstancedown

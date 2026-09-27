@@ -12,6 +12,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.time.Clock;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
@@ -38,6 +39,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         this.json = json;
         this.clock = clock;
         this.meters = meters;
+        List.of("read", "write").forEach(operation -> meters.counter("pg.api.rate_limited", "operation", operation));
     }
 
     @Override

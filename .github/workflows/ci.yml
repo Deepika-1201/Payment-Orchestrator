@@ -35,8 +35,24 @@ jobs:
   container:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Build image
-        run: docker build -t payment-gateway:${{ github.sha }} .
+      - name: Check and unit-test alert rules (promtool)
+        run: |
+          docker run --rm --entrypoint promtool -v "$PWD/deploy/observability/prometheus:/p:ro" -w /p/tests \
+            prom/prometheus:v3.15.0 test rules payment-gateway-test.yml slow-burn-test.yml
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/deploy/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/deploy/observability/prometheus/rules:/etc/prometheus/rules:ro" \
+            prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+      - name: Start the application with the observability stack
+        run: OTLP_TRACING_ENABLED=true docker compose --profile observability up -d --build
+      - name: Verify metrics, rules, dashboard and traces
+        run: bash deploy/observability/verify-stack.sh
+      - name: Show logs
+        if: failure()
+        run: docker compose --profile observability logs --no-color --tail 200
+      - name: Stop the stack
+        if: always()
+        run: docker compose --profile observability down -v

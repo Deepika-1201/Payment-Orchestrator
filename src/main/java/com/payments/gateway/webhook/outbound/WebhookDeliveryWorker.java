@@ -4,6 +4,7 @@ import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.shared.config.OutboundWebhookProperties;
 import com.payments.gateway.shared.config.WorkerProperties;
 import com.payments.gateway.shared.net.UrlSafetyValidator;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.net.URI;
@@ -55,6 +56,11 @@ public class WebhookDeliveryWorker {
         this.workers = workers;
         this.clock = clock;
         this.meters = meters;
+        List.of("succeeded", "retry", "dead").forEach(result -> meters.counter("pg.webhook.deliveries", "result", result));
+        Gauge.builder("pg.webhook.deliveries.due", repository, r -> r.countDue(clock.instant()))
+                .description("Merchant webhook deliveries due now").register(meters);
+        Gauge.builder("pg.webhook.deliveries.lag", repository, r -> r.oldestDueAgeSeconds(clock.instant()))
+                .baseUnit("seconds").description("How long the oldest due delivery has been waiting").register(meters);
         this.http = HttpClient.newBuilder()
                 .connectTimeout(properties.connectTimeout())
                 .followRedirects(HttpClient.Redirect.NEVER)

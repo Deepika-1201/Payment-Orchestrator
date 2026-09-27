@@ -29,6 +29,9 @@ public class AdminPermissionInterceptor implements HandlerInterceptor {
     public AdminPermissionInterceptor(JsonCodec json, MeterRegistry meters) {
         this.json = json;
         this.meters = meters;
+        for (AdminPermission permission : AdminPermission.values()) {
+            meters.counter("pg.admin.denied", "permission", permission.name().toLowerCase(Locale.ROOT));
+        }
     }
 
     /** The permission a handler requires, or null when it is undeclared (and therefore denied). */

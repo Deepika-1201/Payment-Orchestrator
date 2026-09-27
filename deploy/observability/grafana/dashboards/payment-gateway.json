@@ -1,0 +1,279 @@
+{
+  "uid": "payment-gateway-overview",
+  "title": "Payment Gateway - Overview",
+  "description": "SLOs, payments, PSP health, webhooks, money safety, security and runtime (ADR-027). Alert rules: deploy/observability/prometheus/rules.",
+  "tags": ["payment-gateway"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "prometheus" }
+      },
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(pg_payment_attempts_total, provider)", "refId": "providers" },
+        "definition": "label_values(pg_payment_attempts_total, provider)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    { "id": 1, "type": "row", "title": "Service level objectives (NFR-2, NFR-3)", "collapsed": false, "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 2, "type": "stat", "title": "Availability, 30 days (target 99.95 %)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "1 - sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", status=~\"5..\"}[30d])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[30d]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 3, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.9995 }] } }, "overrides": [] }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Error budget left, 30 days",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "1 - (sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", status=~\"5..\"}[30d])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[30d]))) / 0.0005" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.25 }, { "color": "green", "value": 0.5 }] } }, "overrides": [] }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Reads within 150 ms, last hour",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(http_server_requests_seconds_bucket{uri=~\"/v1/.+\", method=\"GET\", le=\"0.15\"}[1h])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", method=\"GET\"}[1h]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 2, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.99 }] } }, "overrides": [] }
+    },
+    {
+      "id": 5, "type": "stat", "title": "PSP webhooks acknowledged within 200 ms, last hour",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(http_server_requests_seconds_bucket{uri=~\"/v1/webhooks/providers/.+\", le=\"0.2\"}[1h])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/webhooks/providers/.+\"}[1h]))" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 2, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.99 }] } }, "overrides": [] }
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Error budget burn rate (page above 14.4 for 1 h, 6 for 6 h)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 7, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "slo:api_errors:ratio_rate1h / 0.0005", "legendFormat": "1 h" },
+        { "refId": "B", "expr": "slo:api_errors:ratio_rate6h / 0.0005", "legendFormat": "6 h" },
+        { "refId": "C", "expr": "slo:api_errors:ratio_rate3d / 0.0005", "legendFormat": "3 d" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "p99 latency: API without PSP calls (150 ms) and PSP webhook ack (200 ms)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 12, "y": 7, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "slo:api_latency_no_psp_seconds:p99_5m", "legendFormat": "API without PSP calls" },
+        { "refId": "B", "expr": "slo:webhook_ack_latency_seconds:p99_5m", "legendFormat": "PSP webhook ack" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+
+    { "id": 8, "type": "row", "title": "Payments", "collapsed": false, "gridPos": { "x": 0, "y": 15, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 9, "type": "timeseries", "title": "Payments created per second",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(pg_payments_total[5m]))", "legendFormat": "created" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Attempt transitions per second",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (provider, outcome) (rate(pg_payment_attempts_total{provider=~\"$provider\"}[5m]))", "legendFormat": "{{provider}} {{outcome}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Success ratio: last 30 min vs daily baseline",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "provider:attempt_success:ratio_rate30m{provider=~\"$provider\"}", "legendFormat": "{{provider}} 30 min" },
+        { "refId": "B", "expr": "provider:attempt_success:ratio_rate1d{provider=~\"$provider\"}", "legendFormat": "{{provider}} 1 day" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] }
+    },
+
+    { "id": 12, "type": "row", "title": "Payment service providers", "collapsed": false, "gridPos": { "x": 0, "y": 24, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 13, "type": "timeseries", "title": "PSP call p99 latency",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 25, "w": 8, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "provider:call_latency_seconds:p99_5m{provider=~\"$provider\"}", "legendFormat": "{{provider}} {{operation}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "PSP call results per second",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 8, "y": 25, "w": 8, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (provider, result) (rate(pg_provider_call_seconds_count{provider=~\"$provider\"}[5m]))", "legendFormat": "{{provider}} {{result}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "Status checks per second by outcome",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 16, "y": 25, "w": 8, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (outcome) (rate(pg_status_checks_total[5m]))", "legendFormat": "{{outcome}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+
+    { "id": 16, "type": "row", "title": "Unknown outcomes and webhooks", "collapsed": false, "gridPos": { "x": 0, "y": 33, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 17, "type": "stat", "title": "Attempts with unknown outcome",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 34, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "max(pg_attempts_unknown)" }],
+      "fieldConfig": { "defaults": { "unit": "none", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }, "overrides": [] }
+    },
+    {
+      "id": 18, "type": "stat", "title": "Oldest unknown outcome (ticket after 1 h)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 6, "y": 34, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "max(pg_attempts_unknown_oldest_age_seconds)" }],
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 600 }, { "color": "red", "value": 3600 }] } }, "overrides": [] }
+    },
+    {
+      "id": 19, "type": "stat", "title": "Merchant deliveries due",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 12, "y": 34, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "max(pg_webhook_deliveries_due)" }],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 20, "type": "stat", "title": "Oldest due delivery waiting (page after 5 min)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 18, "y": 34, "w": 6, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "max(pg_webhook_deliveries_lag_seconds)" }],
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 60 }, { "color": "red", "value": 300 }] } }, "overrides": [] }
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "PSP webhooks per second by result",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (provider, result) (rate(pg_webhooks_inbound_total{provider=~\"$provider\"}[5m]))", "legendFormat": "{{provider}} {{result}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "Merchant webhook deliveries per second by result",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (result) (rate(pg_webhook_deliveries_total[5m]))", "legendFormat": "{{result}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+
+    { "id": 23, "type": "row", "title": "Money safety and operations", "collapsed": false, "gridPos": { "x": 0, "y": 48, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 24, "type": "timeseries", "title": "Amount mismatches, evidence conflicts and late successes (per hour)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 49, "w": 8, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(pg_provider_amount_mismatches_total[1h]))", "legendFormat": "amount mismatches" },
+        { "refId": "B", "expr": "sum(increase(pg_provider_conflicts_total[1h]))", "legendFormat": "evidence conflicts" },
+        { "refId": "C", "expr": "sum by (action) (increase(pg_payments_late_success_total[1h]))", "legendFormat": "late success: {{action}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 25, "type": "timeseries", "title": "Open manual reviews by kind",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 8, "y": 49, "w": 8, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "max by (kind) (pg_reviews_open)", "legendFormat": "{{kind}}" }],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 26, "type": "timeseries", "title": "Reconciliation exceptions: open and past SLA",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 16, "y": 49, "w": 8, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "max(pg_reconciliation_exceptions_open)", "legendFormat": "open" },
+        { "refId": "B", "expr": "max(pg_reconciliation_exceptions_overdue)", "legendFormat": "past SLA" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+
+    { "id": 27, "type": "row", "title": "Security", "collapsed": false, "gridPos": { "x": 0, "y": 57, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 28, "type": "timeseries", "title": "Admin requests denied (per 15 min)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 58, "w": 6, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (permission) (increase(pg_admin_denied_total[15m]))", "legendFormat": "{{permission}}" }],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 29, "type": "timeseries", "title": "Rejected PSP webhooks (per 15 min)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 6, "y": 58, "w": 6, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (provider, result) (increase(pg_webhooks_inbound_total{result=~\"invalid|source_rejected\"}[15m]))", "legendFormat": "{{provider}} {{result}}" }],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 30, "type": "timeseries", "title": "Rate-limited API requests per second",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 12, "y": 58, "w": 6, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (operation) (rate(pg_api_rate_limited_total[5m]))", "legendFormat": "{{operation}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 31, "type": "timeseries", "title": "Risk rule errors (per 15 min)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 18, "y": 58, "w": 6, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (rule) (increase(pg_risk_rule_errors_total[15m]))", "legendFormat": "{{rule}}" }],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+
+    { "id": 32, "type": "row", "title": "Runtime", "collapsed": false, "gridPos": { "x": 0, "y": 66, "w": 24, "h": 1 }, "panels": [] },
+    {
+      "id": 33, "type": "timeseries", "title": "API requests per second by status",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 0, "y": 67, "w": 6, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "sum by (status) (rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[5m]))", "legendFormat": "{{status}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 34, "type": "timeseries", "title": "Heap used and maximum",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 6, "y": 67, "w": 6, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (instance) (jvm_memory_used_bytes{area=\"heap\"})", "legendFormat": "{{instance}} used" },
+        { "refId": "B", "expr": "sum by (instance) (jvm_memory_max_bytes{area=\"heap\"} > 0)", "legendFormat": "{{instance}} max" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 35, "type": "timeseries", "title": "Database connections",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 12, "y": 67, "w": 6, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (instance) (hikaricp_connections_active)", "legendFormat": "{{instance}} active" },
+        { "refId": "B", "expr": "sum by (instance) (hikaricp_connections_pending)", "legendFormat": "{{instance}} waiting" },
+        { "refId": "C", "expr": "max(hikaricp_connections_max)", "legendFormat": "pool size" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 36, "type": "timeseries", "title": "Process CPU",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "x": 18, "y": 67, "w": 6, "h": 8 },
+      "targets": [{ "refId": "A", "expr": "process_cpu_usage", "legendFormat": "{{instance}}" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] }
+    }
+  ]
+}

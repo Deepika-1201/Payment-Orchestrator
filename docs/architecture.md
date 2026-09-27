@@ -392,9 +392,20 @@ flowchart LR
 
 - **Correlation:** `X-Request-Id` accepted or generated → MDC (`request_id`, `merchant_id`, `payment_id`) → response header, log lines, and trace attributes.
 - **Traces:** OpenTelemetry via Micrometer Tracing, exported over OTLP to AWS X-Ray or Grafana Tempo. Spans cover HTTP in/out and PSP calls (`provider`, `operation`).
-- **Metrics:** Prometheus format at `/actuator/prometheus` (scraped by the ADOT collector into Amazon Managed Prometheus). Key series: `pg_payments_created_total`, `pg_payment_attempts_total{provider,method,outcome}`, `pg_provider_call_seconds{provider,operation,result}`, `pg_webhooks_inbound_total{provider,result}`, `pg_webhook_deliveries_total{result}`, `pg_status_checks_total{outcome}`, `pg_payments_late_success_total{action}`, `pg_provider_amount_mismatches_total`.
+- **Metrics:** Prometheus format at `/actuator/prometheus` (scraped by the ADOT collector into Amazon Managed Prometheus).
+  - Key series: `pg_payments_total` (payments created), `pg_payment_attempts_total{provider,method,outcome}`, `pg_provider_call_seconds{provider,operation,result}`, `pg_webhooks_inbound_total{provider,result}`, `pg_webhook_deliveries_total{result}`, `pg_status_checks_total{outcome}`, `pg_payments_late_success_total{action}`, `pg_provider_amount_mismatches_total`.
+  - Operational gauges: `pg_attempts_unknown` and `pg_attempts_unknown_oldest_age_seconds`, `pg_webhook_deliveries_due` and `pg_webhook_deliveries_lag_seconds`, `pg_reviews_open{kind}`, `pg_reconciliation_exceptions_open` / `_overdue`.
+  - Latency histograms (`http_server_requests`, `pg_provider_call`) include buckets at the NFR-2 boundaries (40, 150, 200 ms). Counters for rare events are registered at zero so `increase()` alerts see the first one ([ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)).
 - **Logs:** JSON (ECS format) in the `prod` profile; never bodies, keys, secrets, PAN, or CVV.
-- **Alerts (SLO-based):** attempt success rate per provider below baseline, provider p99 latency, unknown attempts older than 1 h, webhook DEAD count > 0, error-budget burn rate.
+- **Alerts (SLO-based, [ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)):**
+  - Rules live in `deploy/observability/prometheus/rules/`, with a runbook section for each alert ([runbooks](runbooks.md)).
+  - Availability error-budget burn uses multiple windows: page at 14.4× or 6×, ticket at 3× or 1×.
+  - Latency p99 above NFR-2 for PSP-free requests and webhook acknowledgements.
+  - PSP success rate more than 10 points below its daily baseline; PSP p99 latency and error ratio.
+  - Unknown attempts older than 1 h; DEAD webhook deliveries; merchant outbox lag above 5 min.
+  - Amount mismatches and evidence conflicts; overdue reconciliation exceptions; review backlog.
+  - Admin denials and rejected PSP webhooks; instance down, DB pool saturation and heap.
+- **Dashboards:** *Payment Gateway - Overview* (Grafana, provisioned from `deploy/observability/grafana/`). `docker compose --profile observability up` runs Prometheus, Grafana, Tempo and an OpenTelemetry Collector locally; in AWS, ADOT feeds Amazon Managed Prometheus and X-Ray with the same rule file.
 
 ## 10. Deployment architecture
 

@@ -54,6 +54,7 @@ public class DisputeService {
         this.tx = tx;
         this.clock = clock;
         this.meters = meters;
+        meters.counter("pg.provider.conflicts", "source", "dispute");
     }
 
     /** Returns false (event ignored) when the disputed payment is unknown or belongs to another merchant. */

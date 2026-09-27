@@ -44,6 +44,20 @@ management:
       probes:
         enabled: true
       show-details: never
+  # Histograms for the latency SLOs and alerts (ADR-027); the slo entries add exact NFR-2 bucket boundaries.
+  metrics:
+    distribution:
+      percentiles-histogram:
+        "[http.server.requests]": true
+        "[pg.provider.call]": true
+      minimum-expected-value:
+        "[http.server.requests]": 5ms
+        "[pg.provider.call]": 10ms
+      maximum-expected-value:
+        "[http.server.requests]": 10s
+        "[pg.provider.call]": 30s
+      slo:
+        "[http.server.requests]": 40ms,150ms,200ms
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING:0.1}

@@ -1,0 +1,253 @@
+# Recording and alerting rules for the payment gateway (ADR-027). The same file is loaded by the local stack
+# (prometheus.yml) and by Amazon Managed Prometheus (Terraform). Unit tests: promtool test rules tests/*.yml
+# Severity: critical pages the on-call engineer; warning opens a ticket for business hours.
+groups:
+  - name: payment-gateway-slo
+    interval: 30s
+    rules:
+      # Availability SLI (NFR-3, 99.95 %): share of payment API and PSP webhook requests answered with a 5xx.
+      - record: slo:api_errors:ratio_rate5m
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[5m]))
+      - record: slo:api_errors:ratio_rate30m
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[30m]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[30m]))
+      - record: slo:api_errors:ratio_rate1h
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[1h]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[1h]))
+      - record: slo:api_errors:ratio_rate2h
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[2h]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[2h]))
+      - record: slo:api_errors:ratio_rate6h
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[6h]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[6h]))
+      - record: slo:api_errors:ratio_rate1d
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[1d]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[1d]))
+      - record: slo:api_errors:ratio_rate3d
+        expr: |
+          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[3d]))
+            / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[3d]))
+
+      # Latency SLIs (NFR-2): endpoints that never call a PSP (reads and payment creation), and PSP webhook
+      # acknowledgements. Confirm, capture, cancel and refunds include PSP time and are covered by provider latency.
+      - record: slo:api_latency_no_psp_seconds:p99_5m
+        expr: |
+          histogram_quantile(0.99, sum by (le) (
+            rate(http_server_requests_seconds_bucket{uri=~"/v1/.+", method="GET"}[5m])
+            or rate(http_server_requests_seconds_bucket{uri="/v1/payments", method="POST"}[5m])))
+      - record: slo:webhook_ack_latency_seconds:p99_5m
+        expr: |
+          histogram_quantile(0.99, sum by (le) (
+            rate(http_server_requests_seconds_bucket{uri=~"/v1/webhooks/providers/.+"}[5m])))
+
+      # PSP health. Success ratio = succeeded / (succeeded + failed) attempts; customer declines are included,
+      # so alerts compare a provider with its own recent baseline rather than a fixed target.
+      - record: provider:attempt_terminal:rate30m
+        expr: sum by (provider) (rate(pg_payment_attempts_total{outcome=~"succeeded|failed"}[30m]))
+      - record: provider:attempt_success:ratio_rate30m
+        expr: |
+          (sum by (provider) (rate(pg_payment_attempts_total{outcome="succeeded"}[30m]))
+            or 0 * provider:attempt_terminal:rate30m)
+          / provider:attempt_terminal:rate30m
+      - record: provider:attempt_terminal:rate1d
+        expr: sum by (provider) (rate(pg_payment_attempts_total{outcome=~"succeeded|failed"}[1d]))
+      - record: provider:attempt_success:ratio_rate1d
+        expr: |
+          (sum by (provider) (rate(pg_payment_attempts_total{outcome="succeeded"}[1d]))
+            or 0 * provider:attempt_terminal:rate1d)
+          / provider:attempt_terminal:rate1d
+      - record: provider:call_latency_seconds:p99_5m
+        expr: histogram_quantile(0.99, sum by (le, provider, operation) (rate(pg_provider_call_seconds_bucket[5m])))
+      - record: provider:call_errors:ratio_rate5m
+        expr: |
+          (sum by (provider) (rate(pg_provider_call_seconds_count{result!="ok"}[5m]))
+            or 0 * sum by (provider) (rate(pg_provider_call_seconds_count[5m])))
+          / sum by (provider) (rate(pg_provider_call_seconds_count[5m]))
+
+  - name: payment-gateway-alerts
+    interval: 30s
+    rules:
+      # Multi-window burn-rate alerts for the 99.95 % availability SLO (error budget 0.05 %).
+      - alert: ApiErrorBudgetBurnFast
+        expr: |
+          (slo:api_errors:ratio_rate1h > 14.4 * 0.0005 and slo:api_errors:ratio_rate5m > 14.4 * 0.0005)
+          or
+          (slo:api_errors:ratio_rate6h > 6 * 0.0005 and slo:api_errors:ratio_rate30m > 6 * 0.0005)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Payment API is burning its monthly error budget fast (5xx responses)
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apierrorbudgetburnfast
+      - alert: ApiErrorBudgetBurnSlow
+        expr: |
+          (slo:api_errors:ratio_rate1d > 3 * 0.0005 and slo:api_errors:ratio_rate2h > 3 * 0.0005)
+          or
+          (slo:api_errors:ratio_rate3d > 0.0005 and slo:api_errors:ratio_rate6h > 0.0005)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Payment API 5xx responses will exhaust the monthly error budget if they continue
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apierrorbudgetburnslow
+      - alert: ApiLatencyAboveSlo
+        expr: slo:api_latency_no_psp_seconds:p99_5m > 0.15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: p99 latency of API requests without PSP calls is above 150 ms (NFR-2)
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apilatencyaboveslo
+      - alert: WebhookAckLatencyAboveSlo
+        expr: slo:webhook_ack_latency_seconds:p99_5m > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: p99 acknowledgement time of PSP webhooks is above 200 ms (NFR-2)
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#webhookacklatencyaboveslo
+
+      - alert: ProviderSuccessRateBelowBaseline
+        expr: |
+          provider:attempt_success:ratio_rate30m < provider:attempt_success:ratio_rate1d - 0.10
+          and provider:attempt_terminal:rate30m > 0.05
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.provider }} success rate is more than 10 points below its daily baseline"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providersuccessratebelowbaseline
+      - alert: ProviderLatencyHigh
+        expr: provider:call_latency_seconds:p99_5m > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }} {{ $labels.operation }} calls have p99 latency above 3 s"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providerlatencyhigh
+      - alert: ProviderErrorsHigh
+        expr: provider:call_errors:ratio_rate5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 % of calls to {{ $labels.provider }} fail, time out or are short-circuited"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providererrorshigh
+      - alert: PaymentOutcomeUnknownTooLong
+        expr: max(pg_attempts_unknown_oldest_age_seconds) > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A payment attempt has had an unknown outcome for more than an hour
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#paymentoutcomeunknowntoolong
+
+      - alert: MerchantWebhookDead
+        expr: sum(increase(pg_webhook_deliveries_total{result="dead"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: A merchant webhook delivery exhausted its retries (DEAD)
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#merchantwebhookdead
+      - alert: MerchantWebhookBacklog
+        expr: max(pg_webhook_deliveries_lag_seconds) > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Merchant webhook deliveries have been waiting for more than 5 minutes
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#merchantwebhookbacklog
+      - alert: ProviderWebhooksRejected
+        expr: sum by (provider) (increase(pg_webhooks_inbound_total{result=~"invalid|source_rejected"}[15m])) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "Webhooks claiming to be from {{ $labels.provider }} are failing verification or the source allowlist"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providerwebhooksrejected
+      - alert: ProviderWebhookRetries
+        expr: sum by (provider) (increase(pg_webhooks_inbound_total{result="retry"}[15m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stored {{ $labels.provider }} webhooks keep failing to process"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providerwebhookretries
+
+      - alert: ProviderAmountMismatch
+        expr: sum(increase(pg_provider_amount_mismatches_total[15m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: A PSP reported a different amount for an attempt; the update was not applied
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#provideramountmismatch
+      - alert: ProviderEvidenceConflict
+        expr: sum(increase(pg_provider_conflicts_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: PSP evidence contradicted a final payment or dispute state and was flagged for review
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#providerevidenceconflict
+      - alert: ReconciliationExceptionsOverdue
+        expr: max(pg_reconciliation_exceptions_overdue) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Reconciliation exceptions are open past their SLA
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#reconciliationexceptionsoverdue
+      - alert: ReviewQueueBacklog
+        expr: max by (kind) (pg_reviews_open) > 25
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 25 {{ $labels.kind }} items await manual review"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#reviewqueuebacklog
+
+      - alert: AdminAccessDeniedSpike
+        expr: sum(increase(pg_admin_denied_total[15m])) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: Many admin requests were denied for missing permissions
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#adminaccessdeniedspike
+      - alert: RiskRuleErrors
+        expr: sum by (rule) (increase(pg_risk_rule_errors_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Risk rule {{ $labels.rule }} is failing; affected payments go to review"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#riskruleerrors
+
+      - alert: GatewayInstanceDown
+        expr: up{job="payment-gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateway instance {{ $labels.instance }} cannot be scraped"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#gatewayinstancedown
+      - alert: DatabasePoolSaturated
+        expr: max by (instance) (hikaricp_connections_pending) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests on {{ $labels.instance }} are waiting for database connections"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#databasepoolsaturated
+      - alert: JvmHeapHigh
+        expr: |
+          sum by (instance) (jvm_memory_used_bytes{area="heap"})
+            / sum by (instance) (jvm_memory_max_bytes{area="heap"} > 0) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Heap use on {{ $labels.instance }} is above 90 %"
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#jvmheaphigh

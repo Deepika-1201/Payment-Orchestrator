@@ -30,3 +30,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-024](ADR-024-ledger-adjustments-maker-checker.md) | Manual ledger adjustments with maker-checker (second operator approves; enforced in the database too) | Accepted |
 | [ADR-025](ADR-025-data-key-rotation.md) | Data key ring (key id in ciphertexts) and audited re-encryption; keys from Secrets Manager under KMS | Accepted |
 | [ADR-026](ADR-026-database-least-privilege.md) | Database least privilege: migrator vs. app role, grants re-applied after every migration, verified TLS | Accepted |
+| [ADR-027](ADR-027-observability-slos-and-alerts.md) | SLOs, burn-rate alerts, dashboards and runbooks as code; zero-initialized alert counters; promtool and contract tests | Accepted |

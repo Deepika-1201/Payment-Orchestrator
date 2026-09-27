@@ -28,8 +28,51 @@ services:
       DB_USER: payments
       DB_PASSWORD: payments
       PG_PUBLIC_BASE_URL: http://localhost:8080
+      # Set OTLP_TRACING_ENABLED=true with --profile observability to send traces to Tempo.
+      OTLP_TRACING_ENABLED: ${OTLP_TRACING_ENABLED:-false}
+      OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      TRACING_SAMPLING: ${TRACING_SAMPLING:-1.0}
     ports:
       - "8080:8080"
+
+  # docker compose --profile observability up (ADR-027): dashboards on :3000, Prometheus alerts on :9090.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [observability]
+    volumes:
+      - ./deploy/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    profiles: [observability]
+    depends_on: [prometheus, tempo]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  tempo:
+    image: grafana/tempo:3.0.3
+    profiles: [observability]
+    command: ["-target=all", "-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./deploy/observability/tempo.yml:/etc/tempo.yml:ro
+    ports:
+      - "127.0.0.1:3200:3200"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.161.0
+    profiles: [observability]
+    depends_on: [tempo]
+    volumes:
+      - ./deploy/observability/otel-collector.yml:/etc/otelcol/config.yaml:ro
 
 volumes:
   pgdata:

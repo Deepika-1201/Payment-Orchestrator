@@ -1,0 +1,30 @@
+# Long-horizon burn-rate scenario: samples every 5 minutes, rules evaluated every minute as in production (30 s),
+# so alerts always see recording rules inside the 5-minute lookback (ADR-027).
+rule_files:
+  - ../rules/payment-gateway.yml
+
+evaluation_interval: 1m
+group_eval_order:
+  - payment-gateway-slo
+  - payment-gateway-alerts
+
+tests:
+  - name: after two clean busy days, a quiet day at 0.2 % errors opens a ticket through the 1d/2h pair without paging
+    interval: 5m
+    input_series:
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="201"}'
+        values: '0+10000x576 5760998+998x288'
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="503"}'
+        values: '0x576 2+2x288'
+    alert_rule_test:
+      - eval_time: 4320m
+        alertname: ApiErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Payment API 5xx responses will exhaust the monthly error budget if they continue
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#apierrorbudgetburnslow
+      - eval_time: 4320m
+        alertname: ApiErrorBudgetBurnFast
+        exp_alerts: []

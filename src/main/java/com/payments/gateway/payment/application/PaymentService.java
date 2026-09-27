@@ -108,7 +108,8 @@ public class PaymentService {
                 now.plus(expiry), now);
         MDC.put(Mdc.PAYMENT_ID, payment.id());
         tx.executeWithoutResult(status -> store.save(payment));
-        meters.counter("pg.payments.created").increment();
+        // Not "pg.payments.created": Prometheus reserves the _created suffix, so it would export as pg_payments_total anyway.
+        meters.counter("pg.payments").increment();
         return payment;
     }
 

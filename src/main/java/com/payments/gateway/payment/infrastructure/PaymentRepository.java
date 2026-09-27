@@ -181,6 +181,21 @@ public class PaymentRepository {
                 .single();
     }
 
+    public long countUnknownAttempts() {
+        return jdbc.sql("SELECT count(*) FROM payment_attempts WHERE status = 'UNKNOWN'").query(Long.class).single();
+    }
+
+    /** Seconds since the oldest attempt with an unknown outcome was created; 0 when there is none. */
+    public double oldestUnknownAttemptAgeSeconds(Instant now) {
+        return jdbc.sql("""
+                SELECT COALESCE(EXTRACT(EPOCH FROM (:now - min(created_at))), 0)
+                  FROM payment_attempts WHERE status = 'UNKNOWN'
+                """)
+                .param("now", Sql.ts(now))
+                .query(Double.class)
+                .single();
+    }
+
     private Optional<Payment> load(String sql, Map<String, ?> params, boolean lock) {
         return jdbc.sql(sql).params(params).query(this::mapPayment).optional()
                 .map(snapshot -> Payment.rehydrate(snapshot, loadAttempts(snapshot.id(), lock)));

@@ -53,6 +53,24 @@ public class MerchantWebhookRepository {
     }
 
     /** Stored payload text is the exact byte sequence that is signed and delivered. */
+    public long countDue(Instant now) {
+        return jdbc.sql("SELECT count(*) FROM webhook_deliveries WHERE status = 'PENDING' AND next_attempt_at <= :now")
+                .param("now", Sql.ts(now))
+                .query(Long.class)
+                .single();
+    }
+
+    /** How long the oldest due delivery has been waiting, in seconds; 0 when none is due. */
+    public double oldestDueAgeSeconds(Instant now) {
+        return jdbc.sql("""
+                SELECT COALESCE(EXTRACT(EPOCH FROM (:now - min(next_attempt_at))), 0)
+                  FROM webhook_deliveries WHERE status = 'PENDING' AND next_attempt_at <= :now
+                """)
+                .param("now", Sql.ts(now))
+                .query(Double.class)
+                .single();
+    }
+
     public List<DueDelivery> claimDue(Instant now, Instant leaseUntil, int limit) {
         return jdbc.sql("""
                 WITH claimed AS (

@@ -1,0 +1,14 @@
+# Local observability stack (docker compose --profile observability, ADR-027). In AWS the ADOT collector scrapes
+# the tasks' management port and writes to Amazon Managed Prometheus, which loads the same rule file.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: payment-gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["app:8080"]

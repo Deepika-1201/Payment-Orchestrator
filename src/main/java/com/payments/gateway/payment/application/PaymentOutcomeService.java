@@ -25,6 +25,7 @@ import com.payments.gateway.shared.model.FailureCategory;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,6 +71,13 @@ public class PaymentOutcomeService {
         this.tx = tx;
         this.clock = clock;
         this.meters = meters;
+        for (TransitionSource source : TransitionSource.values()) {
+            meters.counter("pg.provider.conflicts", "source", source.name());
+            meters.counter("pg.provider.amount_mismatches", "source", source.name());
+        }
+        for (String action : List.of("accepted", "system_late_success", "system_duplicate_success")) {
+            meters.counter("pg.payments.late_success", "action", action);
+        }
     }
 
     public Payment apply(String paymentId, String attemptId, AttemptUpdate update, TransitionSource source) {

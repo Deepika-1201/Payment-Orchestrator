@@ -19,6 +19,7 @@ import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.config.WorkerProperties;
 import com.payments.gateway.shared.model.FailureCategory;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
@@ -58,6 +59,15 @@ public class StatusResolver {
         this.workers = workers;
         this.clock = clock;
         this.meters = meters;
+        for (ProviderPaymentResult.Outcome outcome : ProviderPaymentResult.Outcome.values()) {
+            meters.counter("pg.status.checks", "outcome", outcome.name().toLowerCase(java.util.Locale.ROOT));
+        }
+        meters.counter("pg.status.checks", "outcome", "error");
+        Gauge.builder("pg.attempts.unknown", payments, PaymentRepository::countUnknownAttempts)
+                .description("Attempts whose outcome is not yet known").register(meters);
+        Gauge.builder("pg.attempts.unknown.oldest.age", payments, p -> p.oldestUnknownAttemptAgeSeconds(clock.instant()))
+                .baseUnit("seconds").description("Age of the oldest attempt whose outcome is not yet known")
+                .register(meters);
     }
 
     public int resolveDueAttempts() {

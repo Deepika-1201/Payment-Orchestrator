@@ -20,6 +20,7 @@ public class RiskEngine {
     public RiskEngine(ObjectProvider<RiskRule> rules, MeterRegistry meters) {
         this.rules = rules.orderedStream().toList();
         this.meters = meters;
+        this.rules.forEach(rule -> meters.counter("pg.risk.rule_errors", "rule", rule.getClass().getSimpleName()));
     }
 
     public RiskDecision evaluate(RiskContext context) {
