@@ -136,6 +136,14 @@ pg:
       read-timeout: 10s
     mock:
       enabled: false
+    # Razorpay adapter (ADR-030). Merchants link their own keys (rzp_test_ on a TEST deployment, rzp_live_ on LIVE) with
+    # PUT /admin/v1/merchants/{id}/provider-accounts/RAZORPAY and point Razorpay's webhook at the returned webhook_path.
+    # upi-s2s: true once Razorpay has enabled server-to-server UPI for the platform; otherwise UPI uses the hosted page.
+    razorpay:
+      enabled: false
+      base-url: https://api.razorpay.com/v1
+      upi-s2s: false
+      hosted-page-ttl: 15m
   risk:
     review-threshold: 20000000
     block-threshold: 100000000

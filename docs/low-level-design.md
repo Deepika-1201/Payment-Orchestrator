@@ -332,7 +332,7 @@ public interface PaymentProvider {
     ProviderPaymentResult capture(MerchantAccount a, CaptureRequest r);
     ProviderPaymentResult voidAuthorization(MerchantAccount a, VoidRequest r);
     ProviderRefundResult refund(MerchantAccount a, RefundRequest r);
-    ProviderRefundResult fetchRefundStatus(MerchantAccount a, RefundStatusQuery q);
+    ProviderRefundResult fetchRefundStatus(MerchantAccount a, RefundStatusQuery q); // q: refundId, providerRefundReference (null after a timeout), paymentProviderReference
     List<ProviderEvent> parseWebhook(MerchantAccount a, InboundWebhook w); // a == null on the provider-wide endpoint; throws WebhookVerificationException
     SettlementReport fetchSettlementReport(MerchantAccount a, SettlementReportQuery q);
 }
@@ -353,7 +353,7 @@ public interface PaymentProvider {
 | Signal | Adapter maps to | Orchestrator action |
 |---|---|---|
 | Connect refused, DNS failure, circuit open | `ProviderUnavailableException` | Fail over to next candidate |
-| PSP rejects the merchant account's credentials (401) | `ProviderCredentialsException` (a `ProviderUnavailableException`) | Fail over; attempt `FAILED (provider_credentials_rejected, VALIDATION)`. It does not count against the PSP's circuit or score. Metric `result=credentials_rejected`, WARN log with the account id |
+| PSP rejects the merchant account's credentials (401, or Razorpay's 400 "Authentication failed"), or the key's mode does not match the deployment | `ProviderCredentialsException` (a `ProviderUnavailableException`) | Fail over; attempt `FAILED (provider_credentials_rejected, VALIDATION)`. It does not count against the PSP's circuit or score. Metric `result=credentials_rejected`, WARN log with the account id |
 | Read timeout, connection reset after send, ambiguous 5xx | `ProviderTimeoutException` | Attempt `UNKNOWN`; resolver |
 | Business decline | `FAILED` result, category `ISSUER` / `CUSTOMER` | Payment back to `REQUIRES_PAYMENT_METHOD` |
 | Invalid request / auth error at PSP | `FAILED` result, category `VALIDATION` / `PROVIDER` | Same, plus alert |
@@ -387,6 +387,21 @@ Simulator endpoints (only when `pg.providers.mock.enabled=true`):
 - `GET /simulator/{provider}/checkout/{providerReference}` — HTML "PSP hosted page" with Pay / Fail buttons.
 - `POST /simulator/{provider}/payments/{providerReference}/complete` `{"outcome":"success|failure","duplicate_webhook":false}` — completes and sends the webhook(s).
 - `POST /simulator/{provider}/availability` `{"available":false}` — simulates a PSP outage (tests failover).
+
+### Razorpay (ADR-030)
+
+Enabled with `pg.providers.razorpay.enabled=true`. Merchant credentials are `key_id`, `key_secret` and `webhook_secret`, all required. The key must be `rzp_test_…` on a TEST deployment and `rzp_live_…` on LIVE.
+
+| Operation | Razorpay calls | Provider reference / idempotency key |
+|---|---|---|
+| Initiate (default) | `POST /payment_links`, redirect to `short_url` | `plink_…` / `reference_id` = attempt id |
+| Initiate (UPI, `upi-s2s`, phone and email known) | `POST /orders`, then `POST /payments/create/upi` (`flow=intent`) | `order_…` / `receipt` = attempt id |
+| Status | `GET /payment_links/{id}` or `/orders/{id}`, then `/orders/{id}/payments`; without a reference, `GET /payment_links?reference_id=`, then `GET /orders?receipt=` | — |
+| Capture | `POST /payments/{pay}/capture` (skipped if already captured) | — |
+| Refund / status | `POST /payments/{pay}/refund`; `GET /refunds/{id}`, or the payment's refund list matched by receipt | `receipt` = refund id |
+| Void | Not supported (`voidSupported=false`) | — |
+
+Webhooks are accepted only on `/v1/webhooks/providers/RAZORPAY/{account}`. Each needs `X-Razorpay-Signature` (a hex HMAC-SHA256 of the raw body with the account's `webhook_secret`, compared in constant time) and `X-Razorpay-Event-Id` (the inbox dedupe key). A `payment.failed` event maps to `PENDING`; the status check fails the attempt only after `hosted-page-ttl`.
 
 ## 6. Routing engine
 
@@ -771,6 +786,11 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `DB_MIGRATE_ON_START` / `PG_MIGRATE_ONLY` | `true` (prod `false`) / `false` | Run Flyway at application start / start only DataSource + Flyway, migrate and exit (the deploy migration task, `MigrationTask`) |
 | `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
+| `pg.providers.http.connect-timeout` / `.read-timeout` | `2s` / `10s` | HTTP timeouts of real PSP adapters; a read timeout makes the outcome unknown (ADR-005) |
+| `pg.providers.razorpay.enabled` | `false` | Registers the Razorpay adapter (ADR-030) |
+| `pg.providers.razorpay.base-url` | `https://api.razorpay.com/v1` | Razorpay API; `prod` refuses any other host |
+| `pg.providers.razorpay.upi-s2s` | `false` | S2S UPI intent/QR once Razorpay enables it for the platform; otherwise UPI uses the hosted Payment Link |
+| `pg.providers.razorpay.hosted-page-ttl` | `15m` | Payment window: link expiry (at least 16 min) and when a `failed` payment becomes final |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
 | `pg.risk.external.url` / `.secret` / `.timeout` | unset / — / `800ms` | Optional fraud vendor; secret required when the URL is set (ADR-016) |
 | `pg.reconciliation.exception-sla` | `48h` | Time until an open reconciliation exception is overdue (ADR-017) |
@@ -810,7 +830,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | terraform test | Mocked apply per module and for prod: WAF paths, rate limit and log redaction; TLS policy and HTTP redirect; separate secrets for API, worker and migration; `verify-full` DB URLs; encryption and key rotation; alarms and topic policies; rejection of non-Indian or identical regions, mutable tags and empty PSP ranges | `infra/terraform/**/tests/*.tftest.hcl` (CI, with Trivy) |
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
-| Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
+| Contract (Phase 10) | Razorpay adapter against a local stub of its REST API: request shapes, duplicate `receipt`/`reference_id` recovery, `failed` final only after the window, lookup by attempt id after a timeout, refunds, 401/400-auth/429/5xx/timeout/refused classification, key-mode refusal, webhook HMAC (SDK vector), tampering, missing event id and event mapping. Whole gateway with Razorpay: hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered and settled. Gated sandbox run with `rzp_test_` keys | `RazorpayPaymentProviderTest`, `RazorpayGatewayIntegrationTest`, `RazorpaySandboxContractTest` |
 | Load (k6, ADR-029) | Full payment path (create → confirm → signed PSP webhook → read) with NFR thresholds: p99 create/read < 150 ms, < 0.1 % failed requests, > 99.9 % payments succeeded, server-side webhook ack ≤ 200 ms; profiles smoke (CI), steady 100/s, peak 1,000/s, spike ×5 | `load-tests/payment-flow.js` |
 
 ## 16. Ledger and reconciliation

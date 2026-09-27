@@ -1,6 +1,6 @@
 # ADR-005: Capability-based provider SPI with failure classification
 
-**Status:** Accepted (2026-09-26)
+**Status:** Accepted (2026-09-26). Note (2026-09-27): the first real adapter (ADR-030) is tested against a local stub of the PSP's API, plus a contract test against the live sandbox that runs when test keys are supplied, instead of recorded fixtures. `RefundStatusQuery` now carries the payment's provider reference.
 
 ## Context
 PSPs differ widely: some support separate auth/capture, void, or partial refunds and some don't; UPI and netbanking are single-step; webhook formats and signature schemes differ. The most dangerous integration bug in payments is treating a **timeout** as a **failure** and retrying elsewhere, which can charge the customer twice.

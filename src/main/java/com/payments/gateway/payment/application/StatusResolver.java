@@ -151,8 +151,12 @@ public class StatusResolver {
         }
         ProviderRefundResult result;
         try {
+            String paymentReference = payments.findById(refund.paymentId())
+                    .flatMap(payment -> payment.attempt(refund.attemptId()))
+                    .map(PaymentAttempt::providerReference)
+                    .orElse(null);
             result = providerClient.fetchRefundStatus(refund.merchantId(), refund.providerCode(),
-                    new RefundStatusQuery(refund.id(), refund.providerReference()));
+                    new RefundStatusQuery(refund.id(), refund.providerReference(), paymentReference));
         } catch (ProviderTimeoutException | ProviderUnavailableException e) {
             refundService.recordCheck(refundId);
             return;

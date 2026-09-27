@@ -25,7 +25,8 @@ class ProductionConfigurationGuardTest {
         assertThat(ProductionConfigurationGuard.check(SECURE, false,
                 new OutboundWebhookProperties(null, null, false, true), new RateLimitProperties(true, null, null),
                 new CheckoutProperties("https://pay.example.com", null, null),
-                "jdbc:postgresql://db.internal:5432/payments?sslmode=verify-full&sslrootcert=/app/certs/rds.pem"))
+                "jdbc:postgresql://db.internal:5432/payments?sslmode=verify-full&sslrootcert=/app/certs/rds.pem",
+                "https://api.razorpay.com/v1"))
                 .isEmpty();
     }
 
@@ -34,7 +35,9 @@ class ProductionConfigurationGuardTest {
         SecurityProperties devKey = new SecurityProperties(List.of(), List.of(), null, "bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=",
                 null, null, SecurityProperties.ApiKeyMode.LIVE);
         MockEnvironment environment = new MockEnvironment().withProperty("pg.providers.mock.enabled", "true")
-                .withProperty("spring.datasource.url", "jdbc:postgresql://db.internal:5432/payments?sslmode=require");
+                .withProperty("spring.datasource.url", "jdbc:postgresql://db.internal:5432/payments?sslmode=require")
+                .withProperty("pg.providers.razorpay.enabled", "true")
+                .withProperty("pg.providers.razorpay.base-url", "https://api.razorpay.com.attacker.example/v1");
 
         assertThatThrownBy(() -> new ProductionConfigurationGuard(devKey, environment,
                 new OutboundWebhookProperties(null, null, true, false),
@@ -42,6 +45,7 @@ class ProductionConfigurationGuardTest {
                 new CheckoutProperties("http://localhost:8080", null, null)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("pg.providers.mock.enabled")
+                .hasMessageContaining("pg.providers.razorpay.base-url")
                 .hasMessageContaining("sslmode=verify-full")
                 .hasMessageContaining("allow-private-targets")
                 .hasMessageContaining("require-https")

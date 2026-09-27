@@ -14,8 +14,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Refuses to start the {@code prod} profile with settings that are only safe for development (ADR-022): simulated
- * PSPs, webhook delivery to private addresses, plain HTTP (to clients or to the database), disabled rate limits, or a
- * data key published in this repository.
+ * PSPs, webhook delivery to private addresses, plain HTTP (to clients or to the database), disabled rate limits, a
+ * data key published in this repository, or a PSP endpoint other than the PSP's own HTTPS API (ADR-030).
  */
 @Component
 @Profile("prod")
@@ -24,12 +24,17 @@ public class ProductionConfigurationGuard {
     /** Keys committed for local development and tests; they protect nothing. */
     static final Set<String> PUBLIC_DEVELOPMENT_KEYS = Set.of("bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=");
 
+    /** Merchants' Razorpay keys are sent to this API only; egress proxies belong in the network, not in base-url. */
+    static final String RAZORPAY_API = "https://api.razorpay.com/";
+
     public ProductionConfigurationGuard(SecurityProperties security, Environment environment,
                                         OutboundWebhookProperties webhooks, RateLimitProperties rateLimits,
                                         CheckoutProperties checkout) {
         boolean mockProviders = environment.getProperty("pg.providers.mock.enabled", Boolean.class, false);
         String datasourceUrl = environment.getProperty("spring.datasource.url", "");
-        List<String> problems = check(security, mockProviders, webhooks, rateLimits, checkout, datasourceUrl);
+        String razorpayBaseUrl = environment.getProperty("pg.providers.razorpay.enabled", Boolean.class, false)
+                ? environment.getProperty("pg.providers.razorpay.base-url", RAZORPAY_API + "v1") : null;
+        List<String> problems = check(security, mockProviders, webhooks, rateLimits, checkout, datasourceUrl, razorpayBaseUrl);
         if (!problems.isEmpty()) {
             throw new IllegalStateException("Unsafe production configuration: " + String.join("; ", problems));
         }
@@ -41,10 +46,14 @@ public class ProductionConfigurationGuard {
     }
 
     static List<String> check(SecurityProperties security, boolean mockProviders, OutboundWebhookProperties webhooks,
-                              RateLimitProperties rateLimits, CheckoutProperties checkout, String datasourceUrl) {
+                              RateLimitProperties rateLimits, CheckoutProperties checkout, String datasourceUrl,
+                              String razorpayBaseUrl) {
         List<String> problems = new ArrayList<>();
         if (mockProviders) {
             problems.add("pg.providers.mock.enabled must be false");
+        }
+        if (razorpayBaseUrl != null && !razorpayBaseUrl.startsWith(RAZORPAY_API)) {
+            problems.add("pg.providers.razorpay.base-url must be " + RAZORPAY_API + "v1 (ADR-030)");
         }
         if (!verifiesServerCertificate(datasourceUrl)) {
             problems.add("the database URL must use sslmode=verify-full (ADR-026)");

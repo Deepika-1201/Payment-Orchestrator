@@ -33,3 +33,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-027](ADR-027-observability-slos-and-alerts.md) | SLOs, burn-rate alerts, dashboards and runbooks as code; zero-initialized alert counters; promtool and contract tests | Accepted |
 | [ADR-028](ADR-028-terraform-aws.md) | Terraform for AWS: one region module for primary and standby, edge and IAM controls, ephemeral secrets, mocked tests and Trivy in CI | Accepted |
 | [ADR-029](ADR-029-load-tests-k6.md) | k6 load tests of the full payment path; arrival-rate profiles; thresholds from NFR-1/2/3, including server-side webhook acknowledgement | Accepted |
+| [ADR-030](ADR-030-razorpay-adapter.md) | Razorpay adapter: hosted Payment Links or S2S UPI; timeouts recovered by our ids; `payment.failed` not final; per-account signed webhooks; key mode and API URL guards | Accepted |
