@@ -9,7 +9,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 > - admin roles;
 > - API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits (with overrides) and a hosted checkout with UPI QR;
 > - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege;
-> - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack.
+> - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack ([screenshots](#screenshots)).
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys; settlement-report adapters for both are not started. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. See the [Roadmap](#roadmap).
 
@@ -52,6 +52,60 @@ The `local` profile is for development only. It uses the admin token `local-admi
 k6 run -e PROFILE=smoke -e METRICS_URL=http://localhost:8080/actuator/prometheus load-tests/payment-flow.js
 k6 run -e PROFILE=steady -e DURATION=60s load-tests/payment-flow.js   # 100 payments/s
 ```
+
+## Screenshots
+
+These come from a local run of this repository with the built-in mock PSPs, not from a production system.
+- **Stack:** the gateway (`./gradlew bootTestRun`), with Prometheus 3.15 loading the committed alert rules and Grafana 13.2 serving the provisioned dashboard. This is the same configuration as `docker compose --profile observability`.
+- **Load:** k6 ran 20 end-to-end payments per second for 32 minutes: 38,400 payments, all succeeded, and none of 153,615 requests failed. Alongside it, 2 payments per second exercised the mock PSPs' edge cases (declines, timeouts, pending and never-submitted payments).
+- **Attack:** 15 PSP webhooks with forged signatures were sent at minute 12.
+
+### Grafana dashboard
+
+![Grafana: service level objectives and payments](docs/images/grafana-slo-payments.png)
+
+*Service level objectives and payments.*
+- Availability and error budget stay at 100 %, with a flat burn rate.
+- p99 latency stays under 60 ms, against the 150 ms (API) and 200 ms (webhook) targets.
+- About 22 payments are created per second, and `MOCK_BETA` takes all of them. With no routing rules, the gateway orders PSPs by health score and uses the first one (ADR-009).
+
+![Grafana: PSPs, unknown outcomes and webhooks](docs/images/grafana-psp-webhooks.png)
+
+*PSPs, unknown outcomes and webhooks.*
+- PSP call p99 latency is 56–64 ms; the mocks add 50 ms. The results include the timeouts from the edge cases.
+- Status checks resolve those timeouts. The 5 attempts with an unknown outcome are at most 5.45 s old, far below the one-hour ticket threshold.
+- No merchant deliveries are waiting.
+
+The other rows (money safety, security, runtime) are in the [runbooks](docs/runbooks.md), next to the alerts they explain.
+
+### Prometheus alerts
+
+![Prometheus: alert rules, one firing](docs/images/prometheus-alerts.png)
+
+*Alert rules at minute 20.* `ProviderWebhooksRejected` is firing because of the forged webhooks; the other 20 alerts are inactive.
+
+### Hosted checkout
+
+<p>
+  <img src="docs/images/checkout-options.png" alt="Checkout: choose a payment method" width="190">
+  <img src="docs/images/checkout-upi-qr.png" alt="Checkout: UPI QR code" width="190">
+  <img src="docs/images/checkout-continue.png" alt="Checkout: continue to the payment page" width="190">
+  <img src="docs/images/checkout-paid.png" alt="Checkout: payment received" width="190">
+</p>
+
+*The customer-facing checkout on a phone (ADR-013).* From left to right: choosing a method, the UPI QR code, handing over to the PSP's page for a card, and the result after the customer comes back.
+
+### Mock PSP test page
+
+![Mock PSP test page with Pay and Fail buttons](docs/images/mock-psp-page.png)
+
+*The simulator's stand-in for a PSP-hosted payment page* (local and test profiles only). **Pay** or **Fail** completes the transaction and sends the signed webhook; this is how the card payment above was finished.
+
+### Test report
+
+![Gradle test report: 218 tests, 0 failures](docs/images/test-report.png)
+
+*Gradle's test report for commit `8c0c199`.* 218 tests, 0 failures. The 4 skipped are the Razorpay and Cashfree sandbox contract tests, which run only with sandbox keys. CI runs the same suite on every push.
 
 ## API at a glance
 

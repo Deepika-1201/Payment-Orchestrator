@@ -405,7 +405,7 @@ flowchart LR
   - Unknown attempts older than 1 h; DEAD webhook deliveries; merchant outbox lag above 5 min.
   - Amount mismatches and evidence conflicts; overdue reconciliation exceptions; review backlog.
   - Admin denials and rejected PSP webhooks; instance down, DB pool saturation and heap.
-- **Dashboards:** *Payment Gateway - Overview* (Grafana, provisioned from `deploy/observability/grafana/`). `docker compose --profile observability up` runs Prometheus, Grafana, Tempo and an OpenTelemetry Collector locally; in AWS, ADOT feeds Amazon Managed Prometheus and X-Ray with the same rule file.
+- **Dashboards:** *Payment Gateway - Overview* (Grafana, provisioned from `deploy/observability/grafana/`; [screenshots](../README.md#screenshots)). `docker compose --profile observability up` runs Prometheus, Grafana, Tempo and an OpenTelemetry Collector locally; in AWS, ADOT feeds Amazon Managed Prometheus and X-Ray with the same rule file.
 
 ## 10. Deployment architecture
 

@@ -3,11 +3,13 @@
 Operational response for every alert in [deploy/observability/prometheus/rules/payment-gateway.yml](../deploy/observability/prometheus/rules/payment-gateway.yml) ([ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)), and for the CloudWatch alarms Terraform creates in AWS ([ADR-028](decisions/ADR-028-terraform-aws.md)). Each heading is an alert or alarm name, which is what its `runbook_url` or alarm description links to.
 
 - **Severity:** `critical` pages the on-call engineer at any hour. `warning` opens a ticket for business hours.
-- **Dashboard:** Grafana, *Payment Gateway - Overview* (`deploy/observability/grafana/dashboards/payment-gateway.json`).
+- **Dashboard:** Grafana, *Payment Gateway - Overview* (`deploy/observability/grafana/dashboards/payment-gateway.json`). Each section below shows its dashboard rows, captured from the local run described in the [README](../README.md#screenshots).
 - **Correlation:** every log line and span carries `request_id`, and where known `merchant_id`, `payment_id`, attempt id and `provider` (NFR-10). Start from an id in the alert or the dashboard, then search logs and traces for it.
 - **Admin API:** examples use `$ADMIN` as `https://<host>/admin/v1` with an SSO bearer token (ADR-023). Writes need the permission shown and are audited.
 
 ## Service level objectives
+
+![Dashboard rows: service level objectives and payments](images/grafana-slo-payments.png)
 
 ### ApiErrorBudgetBurnFast
 Payment API or PSP webhook requests are failing with 5xx fast enough to spend 2 % of the monthly budget in an hour (or 5 % in six hours).
@@ -32,6 +34,8 @@ PSPs wait more than 200 ms at p99 for webhook acknowledgements (NFR-2). PSPs ret
 - Scale out the API service if CPU-bound.
 
 ## Payment service providers
+
+![Dashboard rows: PSPs, unknown outcomes and webhooks](images/grafana-psp-webhooks.png)
 
 ### ProviderSuccessRateBelowBaseline
 A PSP's success ratio over 30 minutes is more than 10 points below its daily baseline, with meaningful volume.
@@ -84,6 +88,8 @@ Stored PSP webhooks keep failing to process, so their updates are delayed.
 
 ## Money safety and operations
 
+![Dashboard rows: money safety, operations and security](images/grafana-safety-security.png)
+
 ### ProviderAmountMismatch
 A PSP reported a different amount for an attempt than we sent. The update was not applied, and the attempt is flagged for review.
 - Treat it as a potential incident: a PSP bug, a misrouted reference, or tampering.
@@ -117,6 +123,8 @@ A risk rule is throwing errors. Affected payments go to review instead of being 
 - Watch *Open manual reviews by kind* for growth.
 
 ## Runtime
+
+![Dashboard row: runtime](images/grafana-runtime.png)
 
 ### GatewayInstanceDown
 Prometheus cannot scrape an instance.
