@@ -11,7 +11,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 > - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege;
 > - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack.
 >
-> Remaining: real PSP adapters (phase 10, needs sandbox credentials) and load tests. The Terraform is written and tested without AWS but has not been applied to an account. See the [Roadmap](#roadmap).
+> Remaining: real PSP adapters (phase 10, needs sandbox credentials). The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -21,7 +21,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-028 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-029 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 
 ## Quick start
@@ -47,6 +47,10 @@ The `local` profile is for development only. It uses the admin token `local-admi
 ```bash
 ./gradlew test    # unit, integration (embedded PostgreSQL) and architecture tests
 ./gradlew build   # compile (-Werror), test, package
+
+# Load test against a running local app (k6; thresholds encode NFR-1/2/3, ADR-029)
+k6 run -e PROFILE=smoke -e METRICS_URL=http://localhost:8080/actuator/prometheus load-tests/payment-flow.js
+k6 run -e PROFILE=steady -e DURATION=60s load-tests/payment-flow.js   # 100 payments/s
 ```
 
 ## API at a glance
@@ -172,4 +176,4 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | — | Security hardening: headers, body limits, log redaction, production guard, PSP webhook source allowlist (ADR-022); admin SSO (ADR-023); maker-checker ledger adjustments (ADR-024); data key rotation (ADR-025); database least privilege and verified TLS (ADR-026) | Done |
 | 15 | Observability: SLO burn-rate alerts, dashboard, runbooks, OTel collector and Tempo in compose, promtool tests (ADR-027) | Done |
 | 16 | Terraform: two regions from one module, WAF, TLS 1.3, Aurora Global Database, least-privilege IAM, ephemeral secrets; mocked `terraform test`, Trivy in CI (ADR-028) | Done (not yet applied to an account) |
-| 17 | Load tests (k6), production-readiness review | Planned |
+| 17 | Load tests (k6): smoke in CI, steady, peak 1,000/s, spike; thresholds from NFR-1/2/3 (ADR-029). Local baseline: 100 payments/s with zero errors and p99 create 20 ms | Done (peak run needs AWS) |

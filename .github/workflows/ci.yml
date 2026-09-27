@@ -82,6 +82,10 @@ jobs:
         run: OTLP_TRACING_ENABLED=true docker compose --profile observability up -d --build
       - name: Verify metrics, rules, dashboard and traces
         run: bash deploy/observability/verify-stack.sh
+      - name: Load test, smoke profile (k6)
+        run: |
+          docker run --rm --network host -v "$PWD/load-tests:/scripts:ro" grafana/k6:2.3.0 run --quiet \
+            -e PROFILE=smoke -e METRICS_URL=http://localhost:8080/actuator/prometheus /scripts/payment-flow.js
       - name: Show logs
         if: failure()
         run: docker compose --profile observability logs --no-color --tail 200

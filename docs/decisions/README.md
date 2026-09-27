@@ -32,3 +32,4 @@ Format: Context → Decision → Alternatives and trade-offs → Consequences. S
 | [ADR-026](ADR-026-database-least-privilege.md) | Database least privilege: migrator vs. app role, grants re-applied after every migration, verified TLS | Accepted |
 | [ADR-027](ADR-027-observability-slos-and-alerts.md) | SLOs, burn-rate alerts, dashboards and runbooks as code; zero-initialized alert counters; promtool and contract tests | Accepted |
 | [ADR-028](ADR-028-terraform-aws.md) | Terraform for AWS: one region module for primary and standby, edge and IAM controls, ephemeral secrets, mocked tests and Trivy in CI | Accepted |
+| [ADR-029](ADR-029-load-tests-k6.md) | k6 load tests of the full payment path; arrival-rate profiles; thresholds from NFR-1/2/3, including server-side webhook acknowledgement | Accepted |

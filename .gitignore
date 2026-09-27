@@ -30,5 +30,8 @@ bin/
 *.tfvars
 !*.tfvars.example
 
+### Load tests ###
+load-tests/results/
+
 ### OS ###
 .DS_Store

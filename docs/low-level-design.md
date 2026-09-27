@@ -811,7 +811,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |
-| Load (Phase 17) | k6: steady 100 TPS, peak 1,000 TPS, spike ×5 | `load/` |
+| Load (k6, ADR-029) | Full payment path (create → confirm → signed PSP webhook → read) with NFR thresholds: p99 create/read < 150 ms, < 0.1 % failed requests, > 99.9 % payments succeeded, server-side webhook ack ≤ 200 ms; profiles smoke (CI), steady 100/s, peak 1,000/s, spike ×5 | `load-tests/payment-flow.js` |
 
 ## 16. Ledger and reconciliation
 
