@@ -11,7 +11,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 > - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege;
 > - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack.
 >
-> Remaining: the Razorpay adapter (ADR-030) is built and tested against a stub of Razorpay's API, but its sandbox contract test needs Razorpay test keys; Cashfree and a Razorpay settlement-report adapter are not started. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. See the [Roadmap](#roadmap).
+> Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys; settlement-report adapters for both are not started. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -21,7 +21,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-030 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-031 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 
 ## Quick start
@@ -165,7 +165,7 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 8 | Provider SPI, mock PSPs, simulator | Done |
 | 9 | Routing engine (rules + health + circuit breakers) | Done |
 | 11–12 | Webhooks (inbound inbox, outbound outbox), refunds, status resolver, expiry | Done (core) |
-| 10 | Real PSP adapters: Razorpay (hosted Payment Links, S2S UPI, refunds, signed per-account webhooks, key-mode and URL guards; ADR-030) with stub and gated sandbox contract tests. Cashfree not started | Razorpay done (sandbox run needs keys) |
+| 10 | Real PSP adapters: Razorpay (ADR-030) and Cashfree (ADR-031) — hosted Payment Links, S2S UPI behind a flag, refunds, disputes, signed per-account webhooks, timeout recovery by our ids, environment and URL guards; stub and gated sandbox contract tests | Done (sandbox runs need keys) |
 | 13 | Reconciliation + shadow double-entry ledger | Done |
 | — | API hardening: OpenAPI contract + drift test, per-merchant rate limits, minimal hosted checkout | Done |
 | — | Merchant management: settings, suspension, API key and webhook secret rotation, encrypted per-merchant PSP credentials, account-scoped PSP webhooks | Done |

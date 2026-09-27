@@ -44,7 +44,8 @@ public class RoutingEngine {
     public RoutingDecision route(RoutingContext context) {
         List<String> capable = registry.all().stream()
                 .filter(provider -> context.linkedProviders().contains(provider.code()))
-                .filter(provider -> provider.capabilities().supports(context.method(), context.amount(), context.captureMethod()))
+                .filter(provider -> provider.capabilities().supports(context.method(), context.amount(),
+                        context.captureMethod(), context.customerPhoneKnown()))
                 .map(PaymentProvider::code)
                 .toList();
         if (capable.isEmpty()) {

@@ -26,6 +26,8 @@ public class ProductionConfigurationGuard {
 
     /** Merchants' Razorpay keys are sent to this API only; egress proxies belong in the network, not in base-url. */
     static final String RAZORPAY_API = "https://api.razorpay.com/";
+    /** Likewise for Cashfree (ADR-031); its sandbox host is refused in production. */
+    static final String CASHFREE_API = "https://api.cashfree.com/";
 
     public ProductionConfigurationGuard(SecurityProperties security, Environment environment,
                                         OutboundWebhookProperties webhooks, RateLimitProperties rateLimits,
@@ -34,7 +36,10 @@ public class ProductionConfigurationGuard {
         String datasourceUrl = environment.getProperty("spring.datasource.url", "");
         String razorpayBaseUrl = environment.getProperty("pg.providers.razorpay.enabled", Boolean.class, false)
                 ? environment.getProperty("pg.providers.razorpay.base-url", RAZORPAY_API + "v1") : null;
-        List<String> problems = check(security, mockProviders, webhooks, rateLimits, checkout, datasourceUrl, razorpayBaseUrl);
+        String cashfreeBaseUrl = environment.getProperty("pg.providers.cashfree.enabled", Boolean.class, false)
+                ? environment.getProperty("pg.providers.cashfree.base-url", CASHFREE_API + "pg") : null;
+        List<String> problems = check(security, mockProviders, webhooks, rateLimits, checkout, datasourceUrl, razorpayBaseUrl,
+                cashfreeBaseUrl);
         if (!problems.isEmpty()) {
             throw new IllegalStateException("Unsafe production configuration: " + String.join("; ", problems));
         }
@@ -47,13 +52,16 @@ public class ProductionConfigurationGuard {
 
     static List<String> check(SecurityProperties security, boolean mockProviders, OutboundWebhookProperties webhooks,
                               RateLimitProperties rateLimits, CheckoutProperties checkout, String datasourceUrl,
-                              String razorpayBaseUrl) {
+                              String razorpayBaseUrl, String cashfreeBaseUrl) {
         List<String> problems = new ArrayList<>();
         if (mockProviders) {
             problems.add("pg.providers.mock.enabled must be false");
         }
         if (razorpayBaseUrl != null && !razorpayBaseUrl.startsWith(RAZORPAY_API)) {
             problems.add("pg.providers.razorpay.base-url must be " + RAZORPAY_API + "v1 (ADR-030)");
+        }
+        if (cashfreeBaseUrl != null && !cashfreeBaseUrl.startsWith(CASHFREE_API)) {
+            problems.add("pg.providers.cashfree.base-url must be " + CASHFREE_API + "pg (ADR-031)");
         }
         if (!verifiesServerCertificate(datasourceUrl)) {
             problems.add("the database URL must use sslmode=verify-full (ADR-026)");

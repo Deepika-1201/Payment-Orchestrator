@@ -332,7 +332,7 @@ public interface PaymentProvider {
     ProviderPaymentResult capture(MerchantAccount a, CaptureRequest r);
     ProviderPaymentResult voidAuthorization(MerchantAccount a, VoidRequest r);
     ProviderRefundResult refund(MerchantAccount a, RefundRequest r);
-    ProviderRefundResult fetchRefundStatus(MerchantAccount a, RefundStatusQuery q); // q: refundId, providerRefundReference (null after a timeout), paymentProviderReference
+    ProviderRefundResult fetchRefundStatus(MerchantAccount a, RefundStatusQuery q); // q: refundId, providerRefundReference (null after a timeout), paymentProviderReference, attemptId
     List<ProviderEvent> parseWebhook(MerchantAccount a, InboundWebhook w); // a == null on the provider-wide endpoint; throws WebhookVerificationException
     SettlementReport fetchSettlementReport(MerchantAccount a, SettlementReportQuery q);
 }
@@ -344,7 +344,7 @@ public interface PaymentProvider {
 - **Status:** accounts resolve whatever their status, because work already in flight on a disabled account must finish.
 - **Logging:** `MerchantAccount.toString()` omits credential values.
 
-**Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture`, `voidSupported`, `partialRefunds`, `statusQuery`. The orchestrator checks a capability before invoking an optional operation.
+**Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture`, `voidSupported`, `partialRefunds`, `statusQuery`, and `requiresCustomerPhone`, which routing checks against the payment's customer (ADR-031). The orchestrator checks a capability before invoking an optional operation.
 
 **Normalized outcomes:** `ProviderPaymentOutcome = REQUIRES_ACTION | PENDING | AUTHORIZED | SUCCEEDED | FAILED | VOIDED | NOT_FOUND`; `ProviderRefundOutcome = PENDING | SUCCEEDED | FAILED | NOT_FOUND`. Each result carries `providerReference`, `nextAction`, `failure (code, message, category)`, and the raw PSP status.
 
@@ -402,6 +402,20 @@ Enabled with `pg.providers.razorpay.enabled=true`. Merchant credentials are `key
 | Void | Not supported (`voidSupported=false`) | — |
 
 Webhooks are accepted only on `/v1/webhooks/providers/RAZORPAY/{account}`. Each needs `X-Razorpay-Signature` (a hex HMAC-SHA256 of the raw body with the account's `webhook_secret`, compared in constant time) and `X-Razorpay-Event-Id` (the inbox dedupe key). A `payment.failed` event maps to `PENDING`; the status check fails the attempt only after `hosted-page-ttl`.
+
+### Cashfree (ADR-031)
+
+Enabled with `pg.providers.cashfree.enabled=true`. Merchant credentials are `client_id` and `client_secret`, sent as `x-client-id` and `x-client-secret` along with `x-api-version`. Amounts go out in rupees (`BigDecimal(paise, 2)`) and are read back exactly. `requiresCustomerPhone=true`, so routing skips Cashfree for payments without a phone.
+
+| Operation | Cashfree calls | Provider reference / idempotency key |
+|---|---|---|
+| Initiate (default) | `POST /links`, redirect to `link_url` | `cflink_<cf_link_id>` / `link_id` = attempt id |
+| Initiate (UPI, `upi-s2s`) | `POST /orders`, then `POST /orders/sessions` (`upi.channel` `link` or `qrcode`) | attempt id / `order_id` = attempt id |
+| Status | Link: `GET /links/{attempt}`, plus `/links/{attempt}/orders` and that order's `/payments` when paid. Order: `GET /orders/{id}` and `/orders/{id}/payments`. Without a reference: link first, then order | — |
+| Refund / status | `POST /orders/{paid order}/refunds`; `GET /orders/{paid order}/refunds/{refund id}`. The paid order is the attempt's own order, or the link's `CFPay_…` order | `refund_id` = refund id |
+| Capture / void | Automatic capture only (capture re-reads the status); void not supported | — |
+
+Webhooks are accepted only on `/v1/webhooks/providers/CASHFREE/{account}`. The signature is Base64(HMAC-SHA256(`x-webhook-timestamp` + raw body)) with the account's `client_secret`, compared in constant time. The inbox dedupe key is `sha256:` of the body, never the unsigned `x-idempotency-key`. Failed and user-dropped payments map to `PENDING`. Link payments arrive on a `CFPay_…` order and are matched through `order_tags.cf_link_id`; disputes on such orders are matched by reading the order's tags.
 
 ## 6. Routing engine
 
@@ -791,6 +805,9 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.providers.razorpay.base-url` | `https://api.razorpay.com/v1` | Razorpay API; `prod` refuses any other host |
 | `pg.providers.razorpay.upi-s2s` | `false` | S2S UPI intent/QR once Razorpay enables it for the platform; otherwise UPI uses the hosted Payment Link |
 | `pg.providers.razorpay.hosted-page-ttl` | `15m` | Payment window: link expiry (at least 16 min) and when a `failed` payment becomes final |
+| `pg.providers.cashfree.enabled` | `false` | Registers the Cashfree adapter (ADR-031) |
+| `pg.providers.cashfree.base-url` | by mode: sandbox on TEST, `https://api.cashfree.com/pg` on LIVE | `prod` refuses any other host, including the sandbox |
+| `pg.providers.cashfree.api-version` / `.upi-s2s` / `.hosted-page-ttl` | `2025-01-01` / `false` / `15m` | `x-api-version` sent; Order Pay UPI once Cashfree enables seamless payments; link and order expiry |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
 | `pg.risk.external.url` / `.secret` / `.timeout` | unset / — / `800ms` | Optional fraud vendor; secret required when the URL is set (ADR-016) |
 | `pg.reconciliation.exception-sla` | `48h` | Time until an open reconciliation exception is overdue (ADR-017) |
@@ -831,6 +848,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Razorpay adapter against a local stub of its REST API: request shapes, duplicate `receipt`/`reference_id` recovery, `failed` final only after the window, lookup by attempt id after a timeout, refunds, 401/400-auth/429/5xx/timeout/refused classification, key-mode refusal, webhook HMAC (SDK vector), tampering, missing event id and event mapping. Whole gateway with Razorpay: hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered and settled. Gated sandbox run with `rzp_test_` keys | `RazorpayPaymentProviderTest`, `RazorpayGatewayIntegrationTest`, `RazorpaySandboxContractTest` |
+| Contract (Phase 10) | Cashfree adapter against a stub of its PG API: headers, exact rupee amounts, phone normalization, 409 reuse, link paid on Cashfree's `CFPay_` order, lookups after a timeout, active vs expired orders, refunds on the paid order, error classification, Base64 HMAC over timestamp + body, tampering, event and dispute mapping. Whole gateway with Cashfree: phone-aware routing, hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered. Gated sandbox run | `CashfreePaymentProviderTest`, `CashfreeGatewayIntegrationTest`, `CashfreeSandboxContractTest` |
 | Load (k6, ADR-029) | Full payment path (create → confirm → signed PSP webhook → read) with NFR thresholds: p99 create/read < 150 ms, < 0.1 % failed requests, > 99.9 % payments succeeded, server-side webhook ack ≤ 200 ms; profiles smoke (CI), steady 100/s, peak 1,000/s, spike ×5 | `load-tests/payment-flow.js` |
 
 ## 16. Ledger and reconciliation

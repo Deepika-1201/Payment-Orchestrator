@@ -144,6 +144,14 @@ pg:
       base-url: https://api.razorpay.com/v1
       upi-s2s: false
       hosted-page-ttl: 15m
+    # Cashfree adapter (ADR-031). Merchants link client_id and client_secret (from the sandbox on a TEST deployment).
+    # base-url defaults by deployment mode: sandbox.cashfree.com/pg on TEST, api.cashfree.com/pg on LIVE.
+    # upi-s2s: true once Cashfree has enabled Order Pay (seamless) for the platform; otherwise UPI uses the hosted link.
+    cashfree:
+      enabled: false
+      api-version: "2025-01-01"
+      upi-s2s: false
+      hosted-page-ttl: 15m
   risk:
     review-threshold: 20000000
     block-threshold: 100000000

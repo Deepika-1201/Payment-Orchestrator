@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.support.IntegrationTest;
+import com.payments.gateway.support.StubPsp;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
@@ -22,7 +23,7 @@ import tools.jackson.databind.JsonNode;
 /** The gateway end to end with the Razorpay adapter enabled, against a local stub of Razorpay's API (ADR-030). */
 class RazorpayGatewayIntegrationTest extends IntegrationTest {
 
-    private static final RazorpayStub RAZORPAY = new RazorpayStub();
+    private static final StubPsp RAZORPAY = RazorpayPaymentProviderTest.razorpayStub();
     private static final String KEY_ID = "rzp_test_it0001";
     private static final String KEY_SECRET = "it_key_secret_0001";
     private static final String WEBHOOK_SECRET = "it_webhook_secret_0001";
@@ -75,7 +76,7 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
         assertThat(str(confirmed.body(), "latest_attempt.provider")).isEqualTo(RazorpayApi.CODE);
         assertThat(str(confirmed.body(), "latest_attempt.provider_reference")).isEqualTo("plink_it1");
         String attemptId = str(confirmed.body(), "latest_attempt.id");
-        RazorpayStub.Recorded created = RAZORPAY.last("POST /v1/payment_links");
+        StubPsp.Recorded created = RAZORPAY.last("POST /v1/payment_links");
         assertThat(created.authorization()).as("the merchant's own Razorpay keys")
                 .isEqualTo("Basic " + Base64.getEncoder().encodeToString((KEY_ID + ":" + KEY_SECRET).getBytes(StandardCharsets.UTF_8)));
         assertThat(json.read(created.body(), JsonNode.class).path("reference_id").asString()).isEqualTo(attemptId);

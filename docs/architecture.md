@@ -85,7 +85,7 @@ flowchart TB
     subgraph providers["Provider adapter layer (SPI)"]
         Mock["Mock A / Mock B"]
         Razorpay["Razorpay (ADR-030)"]
-        Cashfree["Cashfree (planned)"]
+        Cashfree["Cashfree (ADR-031)"]
     end
     DB[("PostgreSQL")]
 
@@ -115,7 +115,7 @@ flowchart TB
 | `merchant` | Merchants, API keys, provider accounts, auth filters | shared |
 | `idempotency` | Idempotency records, replay | shared |
 | `payment` | Payment/Attempt/Refund aggregates, orchestrator, resolver, expiry, payment API | shared, merchant, provider (SPI), routing, risk |
-| `provider` | SPI, registry, adapters (mock, Razorpay; Cashfree planned), circuit breakers | shared |
+| `provider` | SPI, registry, adapters (mock, Razorpay, Cashfree), circuit breakers | shared |
 | `routing` | Rules, candidate selection, health tracking | shared, provider (SPI) |
 | `risk` | Risk rules and decisions | shared |
 | `webhook` | Inbound PSP webhook inbox; outbound merchant events and deliveries | shared, payment (events + inbound port), merchant, provider (SPI) |

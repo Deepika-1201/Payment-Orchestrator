@@ -41,7 +41,7 @@ public class PaymentCheckoutService {
         Set<String> linked = merchants.activeProviders(merchantId);
         List<PaymentMethod> routable = candidates.stream()
                 .filter(method -> !routing.route(new RoutingContext(merchantId, method, payment.amount(),
-                        payment.captureMethod(), linked)).isEmpty())
+                        payment.captureMethod(), linked, payment.customer().phone() != null)).isEmpty())
                 .toList();
         return new View(mapper.toResponse(payment), routable);
     }

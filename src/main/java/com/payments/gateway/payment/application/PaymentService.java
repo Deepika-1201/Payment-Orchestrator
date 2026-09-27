@@ -141,7 +141,7 @@ public class PaymentService {
                 return new Started(payment, null, List.of(), false);
             }
             RoutingDecision route = routing.route(new RoutingContext(merchantId, command.method(), payment.amount(),
-                    payment.captureMethod(), linkedProviders));
+                    payment.captureMethod(), linkedProviders, payment.customer().phone() != null));
             if (route.isEmpty()) {
                 throw noRoute(route, command.method());
             }

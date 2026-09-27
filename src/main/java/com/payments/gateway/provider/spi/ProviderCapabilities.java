@@ -8,13 +8,23 @@ import com.payments.gateway.shared.model.UpiFlow;
 import java.util.Map;
 import java.util.Set;
 
-/** Declares what a provider supports; routing and the orchestrator consult this instead of type checks. */
+/**
+ * Declares what a provider supports; routing and the orchestrator consult this instead of type checks.
+ * {@code requiresCustomerPhone}: the PSP rejects payments without the customer's phone number (Cashfree, ADR-031), so
+ * routing skips it for payments that have none.
+ */
 public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies,
-                                   boolean voidSupported, boolean partialRefunds, boolean settlementReports) {
+                                   boolean voidSupported, boolean partialRefunds, boolean settlementReports,
+                                   boolean requiresCustomerPhone) {
 
     public ProviderCapabilities {
         methods = Map.copyOf(methods);
         currencies = Set.copyOf(currencies);
+    }
+
+    public ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies, boolean voidSupported,
+                                boolean partialRefunds, boolean settlementReports) {
+        this(methods, currencies, voidSupported, partialRefunds, settlementReports, false);
     }
 
     public record MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture) {
@@ -22,6 +32,10 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
         public MethodSupport {
             upiFlows = Set.copyOf(upiFlows);
         }
+    }
+
+    public boolean supports(PaymentMethod method, Money amount, CaptureMethod captureMethod, boolean customerPhoneKnown) {
+        return (customerPhoneKnown || !requiresCustomerPhone) && supports(method, amount, captureMethod);
     }
 
     public boolean supports(PaymentMethod method, Money amount, CaptureMethod captureMethod) {

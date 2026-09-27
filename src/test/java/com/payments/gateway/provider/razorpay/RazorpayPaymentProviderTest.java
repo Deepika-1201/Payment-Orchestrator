@@ -27,6 +27,7 @@ import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.model.UpiFlow;
+import com.payments.gateway.support.StubPsp;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -49,7 +50,13 @@ class RazorpayPaymentProviderTest {
     private static final String ATTEMPT = "att_01M3H3TEST0000000000000000";
 
     private final JsonCodec json = new JsonCodec(JsonMapper.builder().build());
-    private final RazorpayStub stub = new RazorpayStub();
+    private final StubPsp stub = razorpayStub();
+
+    /** Unknown ids get Razorpay's 400 "does not exist". */
+    static StubPsp razorpayStub() {
+        return new StubPsp("/v1", 400,
+                "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\",\"description\":\"The id provided does not exist\"}}");
+    }
 
     @AfterEach
     void stop() {
@@ -71,7 +78,7 @@ class RazorpayPaymentProviderTest {
                 "Order 42", "buyer@example.com", "+919000090000", "https://merchant.example/return", "203.0.113.7");
     }
 
-    private JsonNode body(RazorpayStub.Recorded request) {
+    private JsonNode body(StubPsp.Recorded request) {
         return json.read(request.body(), JsonNode.class);
     }
 
@@ -245,10 +252,10 @@ class RazorpayPaymentProviderTest {
 
         stub.on("GET /v1/payments/pay_9/refunds", 200, "{\"items\":[{\"id\":\"rfnd_other\",\"receipt\":\"rfd_0\",\"status\":\"processed\"},"
                 + "{\"id\":\"rfnd_1\",\"receipt\":\"rfd_1\",\"status\":\"processed\",\"amount\":10000,\"currency\":\"INR\"}]}");
-        ProviderRefundResult found = provider(true).fetchRefundStatus(ACCOUNT, new RefundStatusQuery("rfd_1", null, "plink_1"));
+        ProviderRefundResult found = provider(true).fetchRefundStatus(ACCOUNT, new RefundStatusQuery("rfd_1", null, "plink_1", ATTEMPT));
         assertThat(found.outcome()).isEqualTo(ProviderRefundResult.Outcome.SUCCEEDED);
         assertThat(found.providerReference()).isEqualTo("rfnd_1");
-        assertThat(provider(true).fetchRefundStatus(ACCOUNT, new RefundStatusQuery("rfd_2", null, "plink_1")).outcome())
+        assertThat(provider(true).fetchRefundStatus(ACCOUNT, new RefundStatusQuery("rfd_2", null, "plink_1", ATTEMPT)).outcome())
                 .isEqualTo(ProviderRefundResult.Outcome.NOT_FOUND);
     }
 

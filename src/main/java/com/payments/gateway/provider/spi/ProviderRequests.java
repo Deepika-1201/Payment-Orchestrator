@@ -23,9 +23,11 @@ public final class ProviderRequests {
 
     /**
      * {@code providerRefundReference} is null when the refund call timed out; PSPs that list refunds per payment find it
-     * by our {@code refundId} under {@code paymentProviderReference}.
+     * by our {@code refundId} under {@code paymentProviderReference}, PSPs that key refunds by order under
+     * {@code attemptId}.
      */
-    public record RefundStatusQuery(String refundId, String providerRefundReference, String paymentProviderReference) {
+    public record RefundStatusQuery(String refundId, String providerRefundReference, String paymentProviderReference,
+                                    String attemptId) {
     }
 
     /** {@code merchantId} selects the merchant's PSP account (orchestrator mode); window is [from, to). */
