@@ -40,14 +40,14 @@
       "id": 2, "type": "stat", "title": "Availability, 30 days (target 99.95 %)",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "x": 0, "y": 1, "w": 6, "h": 6 },
-      "targets": [{ "refId": "A", "expr": "1 - sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", status=~\"5..\"}[30d])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[30d]))" }],
+      "targets": [{ "refId": "A", "expr": "1 - (sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", status=~\"5..\"}[30d])) or vector(0)) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[30d]))" }],
       "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 3, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.9995 }] } }, "overrides": [] }
     },
     {
       "id": 3, "type": "stat", "title": "Error budget left, 30 days",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "x": 6, "y": 1, "w": 6, "h": 6 },
-      "targets": [{ "refId": "A", "expr": "1 - (sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", status=~\"5..\"}[30d])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[30d]))) / 0.0005" }],
+      "targets": [{ "refId": "A", "expr": "1 - ((sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\", status=~\"5..\"}[30d])) or vector(0)) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1/.+\"}[30d]))) / 0.0005" }],
       "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.25 }, { "color": "green", "value": 0.5 }] } }, "overrides": [] }
     },
     {

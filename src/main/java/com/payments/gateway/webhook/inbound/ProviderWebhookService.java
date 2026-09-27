@@ -68,6 +68,12 @@ public class ProviderWebhookService {
         this.clock = clock;
         this.meters = meters;
         this.maxAttempts = maxAttempts;
+        // Alerts watch these with increase(), which cannot see a series' first increment (ADR-027).
+        for (PaymentProvider provider : providers.all()) {
+            for (String result : List.of("invalid", "source_rejected", "retry")) {
+                meters.counter("pg.webhooks.inbound", "provider", provider.code(), "result", result);
+            }
+        }
     }
 
     /**

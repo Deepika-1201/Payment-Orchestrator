@@ -391,7 +391,7 @@ flowchart LR
 ## 9. Observability
 
 - **Correlation:** `X-Request-Id` accepted or generated → MDC (`request_id`, `merchant_id`, `payment_id`) → response header, log lines, and trace attributes.
-- **Traces:** OpenTelemetry via Micrometer Tracing, exported over OTLP to AWS X-Ray or Grafana Tempo. Spans cover HTTP in/out and PSP calls (`provider`, `operation`).
+- **Traces:** OpenTelemetry via Micrometer Tracing, exported over OTLP to AWS X-Ray or Grafana Tempo. Spans cover inbound HTTP requests; PSP calls and outbound webhooks use the JDK `HttpClient`, which is not instrumented, so their timing comes from the `pg_provider_call_seconds` metric instead.
 - **Metrics:** Prometheus format at `/actuator/prometheus` (scraped by the ADOT collector into Amazon Managed Prometheus).
   - Key series: `pg_payments_total` (payments created), `pg_payment_attempts_total{provider,method,outcome}`, `pg_provider_call_seconds{provider,operation,result}`, `pg_webhooks_inbound_total{provider,result}`, `pg_webhook_deliveries_total{result}`, `pg_status_checks_total{outcome}`, `pg_payments_late_success_total{action}`, `pg_provider_amount_mismatches_total`.
   - Operational gauges: `pg_attempts_unknown` and `pg_attempts_unknown_oldest_age_seconds`, `pg_webhook_deliveries_due` and `pg_webhook_deliveries_lag_seconds`, `pg_reviews_open{kind}`, `pg_reconciliation_exceptions_open` / `_overdue`.

@@ -26,7 +26,8 @@ public record InboundWebhookProperties(Map<String, List<String>> allowedSources)
         return cidrs == null || cidrs.stream().map(CidrRange::parse).anyMatch(range -> range.contains(remoteAddress));
     }
 
-    private static String normalize(String providerCode) {
+    /** The provider code as registered; callers label metrics with it so path spelling cannot add series. */
+    public static String normalize(String providerCode) {
         return providerCode.toUpperCase(Locale.ROOT).replace('-', '_');
     }
 }

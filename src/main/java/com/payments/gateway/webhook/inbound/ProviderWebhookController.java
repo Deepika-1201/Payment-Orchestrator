@@ -50,7 +50,8 @@ public class ProviderWebhookController {
 
     private Map<String, Object> receive(String provider, String account, HttpServletRequest request) throws IOException {
         if (!properties.permits(provider, request.getRemoteAddr())) {
-            meters.counter("pg.webhooks.inbound", "provider", provider, "result", "source_rejected").increment();
+            meters.counter("pg.webhooks.inbound", "provider", InboundWebhookProperties.normalize(provider),
+                    "result", "source_rejected").increment();
             log.warn("Rejected {} webhook from non-allowlisted source {}", provider, request.getRemoteAddr());
             throw new GatewayException(ErrorCode.FORBIDDEN, "Webhook source is not allowed for this provider");
         }

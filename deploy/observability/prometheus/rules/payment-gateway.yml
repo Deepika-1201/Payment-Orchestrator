@@ -6,33 +6,34 @@ groups:
     interval: 30s
     rules:
       # Availability SLI (NFR-3, 99.95 %): share of payment API and PSP webhook requests answered with a 5xx.
+      # "or vector(0)": the 5xx series only exists after the first error, and a clean period must record 0, not nothing.
       - record: slo:api_errors:ratio_rate5m
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[5m]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[5m])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[5m]))
       - record: slo:api_errors:ratio_rate30m
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[30m]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[30m])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[30m]))
       - record: slo:api_errors:ratio_rate1h
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[1h]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[1h])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[1h]))
       - record: slo:api_errors:ratio_rate2h
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[2h]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[2h])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[2h]))
       - record: slo:api_errors:ratio_rate6h
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[6h]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[6h])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[6h]))
       - record: slo:api_errors:ratio_rate1d
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[1d]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[1d])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[1d]))
       - record: slo:api_errors:ratio_rate3d
         expr: |
-          sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[3d]))
+          (sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+", status=~"5.."}[3d])) or vector(0))
             / sum(rate(http_server_requests_seconds_count{uri=~"/v1/.+"}[3d]))
 
       # Latency SLIs (NFR-2): endpoints that never call a PSP (reads and payment creation), and PSP webhook

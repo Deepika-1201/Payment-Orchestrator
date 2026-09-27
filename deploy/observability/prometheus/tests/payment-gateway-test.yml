@@ -8,6 +8,23 @@ group_eval_order:
   - payment-gateway-alerts
 
 tests:
+  - name: a period without a single 5xx records an error ratio of zero, not no data
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{uri="/v1/payments", method="POST", status="201"}'
+        values: '0+100x70'
+    promql_expr_test:
+      - expr: slo:api_errors:ratio_rate5m
+        eval_time: 60m
+        exp_samples:
+          - labels: 'slo:api_errors:ratio_rate5m'
+            value: 0
+      - expr: slo:api_errors:ratio_rate1h
+        eval_time: 60m
+        exp_samples:
+          - labels: 'slo:api_errors:ratio_rate1h'
+            value: 0
+
   - name: after six clean hours, one hour at 1 % errors pages through the 1h/5m window pair alone
     interval: 1m
     input_series:

@@ -360,7 +360,7 @@ public interface PaymentProvider {
 
 `FailureCategory = CUSTOMER | ISSUER | PROVIDER | PROVIDER_UNAVAILABLE | VALIDATION | RISK | TIMEOUT | NOT_SUBMITTED`. Only `PROVIDER`, `PROVIDER_UNAVAILABLE`, and `TIMEOUT` count against a provider's routing success rate.
 
-`ProviderClient` wraps every call with a Resilience4j circuit breaker per provider (count window 20, minimum 10 calls, 50% failure threshold, 30 s open, 3 half-open probes). Only technical failures count. It also records a latency timer `pg_provider_call_seconds{provider,operation,result}`.
+`ProviderClient` wraps every call with a Resilience4j circuit breaker per provider (count window 20, minimum 10 calls, 50% failure threshold, 30 s open, 3 half-open probes). An open circuit turns half-open on a timer: routing skips open circuits, so no call would ever trigger the transition. Only technical failures count. It also records a latency timer `pg_provider_call_seconds{provider,operation,result}`.
 
 ### Mock providers (Phase 8)
 

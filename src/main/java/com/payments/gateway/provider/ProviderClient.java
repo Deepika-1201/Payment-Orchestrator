@@ -27,6 +27,7 @@ import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** Single entry point for PSP calls: merchant account resolution, circuit breaking, failure classification, metrics. */
@@ -41,8 +42,14 @@ public class ProviderClient {
     private final MerchantAccountResolver accounts;
     private final CircuitBreakerRegistry circuitBreakers;
 
+    @Autowired
     public ProviderClient(ProviderRegistry registry, ProviderHealthTracker health, MeterRegistry meters,
                           MerchantAccountResolver accounts) {
+        this(registry, health, meters, accounts, Duration.ofSeconds(30));
+    }
+
+    ProviderClient(ProviderRegistry registry, ProviderHealthTracker health, MeterRegistry meters,
+                   MerchantAccountResolver accounts, Duration openStateWait) {
         this.registry = registry;
         this.health = health;
         this.meters = meters;
@@ -52,7 +59,9 @@ public class ProviderClient {
                 .slidingWindowSize(20)
                 .minimumNumberOfCalls(10)
                 .failureRateThreshold(50)
-                .waitDurationInOpenState(Duration.ofSeconds(30))
+                .waitDurationInOpenState(openStateWait)
+                // Routing never calls a provider whose circuit is open, so a call could never move it to half-open.
+                .automaticTransitionFromOpenToHalfOpenEnabled(true)
                 .permittedNumberOfCallsInHalfOpenState(3)
                 .recordExceptions(ProviderUnavailableException.class, ProviderTimeoutException.class)
                 .build());

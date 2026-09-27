@@ -1,6 +1,6 @@
 # ADR-027: SLOs, alerts and dashboards as code
 
-**Status:** Accepted (2026-09-27)
+**Status:** Accepted (2026-09-27). Note (2026-09-27): running the stack under load found three gaps, since fixed. The 5xx series only exists after the first error, so error ratios now default the numerator to zero (`or vector(0)`); before, a clean period recorded nothing and the availability panels showed "No data". `pg_webhooks_inbound_total{result="invalid|source_rejected|retry"}` is now registered at zero per provider, so `ProviderWebhooksRejected` sees the first burst. Open circuits now turn half-open on a timer, because routing never calls an open provider and so it was never retried after an outage.
 
 ## Context
 The application exported useful metrics, but nothing watched them. Architecture §9 lists the alerts operations needs:
