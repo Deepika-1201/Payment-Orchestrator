@@ -1,0 +1,57 @@
+# ADOT collector sidecar (ADR-027, ADR-028), adapted from aws-otel-collector's ecs-amp-xray-prometheus.yaml:
+# scrapes the task's management port into Amazon Managed Prometheus and forwards the application's traces to X-Ray.
+extensions:
+  health_check:
+  # The workspace may be in another region than the task (standby region writes to the primary's workspace).
+  sigv4auth:
+    region: ${env:AMP_REGION}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+  prometheus:
+    config:
+      global:
+        scrape_interval: 15s
+        scrape_timeout: 10s
+      scrape_configs:
+        - job_name: payment-gateway
+          metrics_path: /actuator/prometheus
+          static_configs:
+            - targets: ["${env:AWS_PROMETHEUS_SCRAPING_ENDPOINT}"]
+
+processors:
+  batch/traces:
+    timeout: 1s
+    send_batch_size: 50
+  batch/metrics:
+    timeout: 30s
+  resourcedetection:
+    detectors: [env, ecs]
+  # Every task scrapes localhost, so name the instance after the task; alert rules group by instance.
+  resource/instance:
+    attributes:
+      - key: service.instance.id
+        from_attribute: aws.ecs.task.arn
+        action: upsert
+
+exporters:
+  awsxray:
+  prometheusremotewrite:
+    endpoint: ${env:AWS_PROMETHEUS_ENDPOINT}
+    auth:
+      authenticator: sigv4auth
+
+service:
+  extensions: [health_check, sigv4auth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, batch/traces]
+      exporters: [awsxray]
+    metrics:
+      receivers: [prometheus]
+      processors: [resourcedetection, resource/instance, batch/metrics]
+      exporters: [prometheusremotewrite]

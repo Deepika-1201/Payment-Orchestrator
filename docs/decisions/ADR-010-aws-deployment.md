@@ -1,6 +1,6 @@
 # ADR-010: AWS reference deployment — ECS Fargate + Aurora PostgreSQL, Mumbai / Hyderabad, Terraform
 
-**Status:** Accepted (2026-09-26)
+**Status:** Accepted (2026-09-26). Implemented in [ADR-028](ADR-028-terraform-aws.md), where state locking uses S3 lock files instead of DynamoDB.
 
 ## Context
 RBI data localization requires payment data (including backups and DR) to stay in India. Targets: 99.95% availability, RPO 0 in-region / ≤ 1 min cross-region, RTO ≤ 30 min. The team is small, and V1 is deployed on demand.

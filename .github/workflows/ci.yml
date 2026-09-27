@@ -17,27 +17,59 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "25"
-      - uses: gradle/actions/setup-gradle@v4
+      # v5, not v6: v6 bundles a proprietary caching component under separate terms of use.
+      - uses: gradle/actions/setup-gradle@v5
       - name: Build and test
         run: ./gradlew --no-daemon build
       - name: Upload test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: build/reports/tests
+
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+      - name: Format
+        run: terraform fmt -recursive -check
+      - name: Validate and test every module with mocked providers (no AWS credentials)
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-plugins
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          for dir in modules/* environments/prod; do
+            echo "::group::$dir"
+            terraform -chdir="$dir" init -backend=false -input=false -no-color
+            terraform -chdir="$dir" validate -no-color
+            if [ -d "$dir/tests" ]; then terraform -chdir="$dir" test -no-color; fi
+            echo "::endgroup::"
+          done
+      - name: Security scan (Trivy, MEDIUM and above)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" aquasec/trivy:0.74.0 config --quiet --exit-code 1 \
+            --severity MEDIUM,HIGH,CRITICAL /src
 
   container:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check and unit-test alert rules (promtool)
         run: |
           docker run --rm --entrypoint promtool -v "$PWD/deploy/observability/prometheus:/p:ro" -w /p/tests \

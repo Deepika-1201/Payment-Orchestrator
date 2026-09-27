@@ -11,7 +11,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 > - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege;
 > - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack.
 >
-> Remaining: real PSP adapters (phase 10, needs sandbox credentials), Terraform, and load tests. See the [Roadmap](#roadmap).
+> Remaining: real PSP adapters (phase 10, needs sandbox credentials) and load tests. The Terraform is written and tested without AWS but has not been applied to an account. See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -21,7 +21,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-027 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-028 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 
 ## Quick start
@@ -124,7 +124,32 @@ src/main/java/com/payments/gateway/
   platform/      worker scheduler (incl. daily T+1 reconciliation at 02:30 IST)
 src/main/resources/db/migration/   Flyway schema
 src/test/java/...                  unit, integration and ArchUnit tests + LocalDevApplication
+deploy/                            database role bootstrap, observability stack (rules, dashboard, collector)
+infra/terraform/                   AWS: modules (network, kms, waf, aurora, ecs-service, observability, region), environments/prod
 ```
+
+## Deploying to AWS
+
+The AWS reference deployment is Terraform ([ADR-028](docs/decisions/ADR-028-terraform-aws.md)): Mumbai primary, Hyderabad warm standby, one `region` module used for both.
+
+```bash
+cd infra/terraform/environments/prod
+cp backend.hcl.example backend.hcl && cp terraform.tfvars.example terraform.tfvars   # fill in both
+terraform init -backend-config=backend.hcl
+terraform apply
+
+# No AWS account needed: every module has tests against mocked providers
+for d in ../../modules/* .; do terraform -chdir=$d init -backend=false >/dev/null && terraform -chdir=$d test; done
+```
+
+First deploy, in this order (see `terraform output`):
+1. Run `deploy/db/roles.sql` with the RDS-managed master secret.
+2. Store the data keys as `SPRING_APPLICATION_JSON` in the `app-config` secret.
+3. Run the migration task.
+4. Subscribe the paging tool and ticket queue to the alert topics.
+5. Give each PSP the NAT egress IPs.
+
+Region failover is a [runbook](docs/runbooks.md#region-failover).
 
 ## Roadmap
 
@@ -146,5 +171,5 @@ src/test/java/...                  unit, integration and ArchUnit tests + LocalD
 | — | Per-merchant rate-limit overrides (ADR-020); UPI QR on the hosted checkout (ADR-021) | Done |
 | — | Security hardening: headers, body limits, log redaction, production guard, PSP webhook source allowlist (ADR-022); admin SSO (ADR-023); maker-checker ledger adjustments (ADR-024); data key rotation (ADR-025); database least privilege and verified TLS (ADR-026) | Done |
 | 15 | Observability: SLO burn-rate alerts, dashboard, runbooks, OTel collector and Tempo in compose, promtool tests (ADR-027) | Done |
-| 16 | Terraform (AWS ECS Fargate, Aurora, WAF, DR) | Planned |
+| 16 | Terraform: two regions from one module, WAF, TLS 1.3, Aurora Global Database, least-privilege IAM, ephemeral secrets; mocked `terraform test`, Trivy in CI (ADR-028) | Done (not yet applied to an account) |
 | 17 | Load tests (k6), production-readiness review | Planned |

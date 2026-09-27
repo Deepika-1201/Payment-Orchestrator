@@ -1,0 +1,8 @@
+# terraform init -backend-config=backend.hcl
+# State bucket: versioned, KMS-encrypted, public access blocked, in ap-south-1. Locking uses an S3 lock file.
+bucket       = "pg-prod-terraform-state-123456789012"
+key          = "payment-gateway/prod/terraform.tfstate"
+region       = "ap-south-1"
+encrypt      = true
+kms_key_id   = "alias/pg-prod-terraform-state"
+use_lockfile = true

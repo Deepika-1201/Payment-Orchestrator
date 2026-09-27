@@ -1,6 +1,6 @@
 # Runbooks
 
-Operational response for every alert in [deploy/observability/prometheus/rules/payment-gateway.yml](../deploy/observability/prometheus/rules/payment-gateway.yml) ([ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)). Each heading is an alert name, which is what its `runbook_url` links to.
+Operational response for every alert in [deploy/observability/prometheus/rules/payment-gateway.yml](../deploy/observability/prometheus/rules/payment-gateway.yml) ([ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)), and for the CloudWatch alarms Terraform creates in AWS ([ADR-028](decisions/ADR-028-terraform-aws.md)). Each heading is an alert or alarm name, which is what its `runbook_url` or alarm description links to.
 
 - **Severity:** `critical` pages the on-call engineer at any hour. `warning` opens a ticket for business hours.
 - **Dashboard:** Grafana, *Payment Gateway - Overview* (`deploy/observability/grafana/dashboards/payment-gateway.json`).
@@ -131,3 +131,34 @@ Requests are waiting for database connections.
 ### JvmHeapHigh
 Heap use has stayed above 90 % for 10 minutes. Tasks exit on OutOfMemoryError and are replaced.
 - Check whether it follows traffic (scale out) or grows steadily (a leak: capture a heap dump from one task before it restarts).
+
+## AWS alarms (CloudWatch)
+
+### NoHealthyApiTask
+No API task in one region has passed its readiness check at the load balancer for 2 minutes, or the metric is missing. This is the AWS counterpart of `GatewayInstanceDown`: each ADOT sidecar scrapes its own task, so a dead task stops reporting instead of reporting `up == 0`.
+- Check the API service's events and stopped tasks (`aws ecs describe-services`, `aws ecs describe-tasks` for the stopped reason). Common causes: failing readiness (the database), a startup guard refusing unsafe configuration (ADR-022), an unreadable secret, or an image pull error.
+- A bad deploy is rolled back by the deployment circuit breaker. Otherwise, redeploy the previous task definition.
+- If the database or the whole region is impaired, follow [Region failover](#region-failover).
+
+### AuroraGlobalReplicationLag
+The standby region is more than a minute behind the primary (the NFR-4 RPO), or the metric is missing.
+- Check the global database in the RDS console. Lag usually follows write spikes or trouble between the regions.
+- A missing metric can mean the secondary cluster is unhealthy. Check it first: failover depends on it.
+- While the lag exceeds the RPO, an unplanned failover loses those writes. If the primary still serves traffic, fix the lag rather than failing over.
+
+## Region failover
+Moves the gateway from ap-south-1 (Mumbai) to ap-south-2 (Hyderabad) within the 30-minute RTO (ADR-010). Drill it every quarter. Terraform state lives in the primary region, so the steps use the AWS CLI.
+1. **Decide.** The primary is impaired and not recovering: AWS Health Dashboard, `NoHealthyApiTask` in the primary, the database unavailable. Record the replication lag at that moment; an unplanned failover loses writes inside it.
+2. **Promote the standby database.**
+   - Primary still reachable (planned, no data loss): `aws rds switchover-global-cluster --global-cluster-identifier pg-prod --target-db-cluster-identifier <pg-prod-hyd cluster ARN>`.
+   - Primary unreachable: `aws rds failover-global-cluster --global-cluster-identifier pg-prod --target-db-cluster-identifier <pg-prod-hyd cluster ARN> --allow-data-loss`.
+   - The standby tasks already use their own cluster's endpoint, which accepts writes once promoted.
+3. **Scale the standby.**
+   - Raise the worker floor first, or target tracking scales it back to 0: `aws application-autoscaling register-scalable-target --service-namespace ecs --scalable-dimension ecs:service:DesiredCount --resource-id service/pg-prod-hyd/pg-prod-hyd-worker --min-capacity 2 --max-capacity 10`.
+   - Do the same for the API (`pg-prod-hyd-api`, minimum 3).
+   - Then `aws ecs update-service --cluster pg-prod-hyd --service pg-prod-hyd-api --force-new-deployment`, so that connection pools open against the writer.
+4. **Traffic.**
+   - Route 53 answers with the standby once the primary's load balancer has no healthy targets. Readiness includes the database, so this usually happens by itself.
+   - PSPs already allowlist both regions' egress IPs (`terraform output psp_egress_ips`).
+5. **Verify.** A payment succeeds end to end, `pg_webhook_deliveries_lag_seconds` drains, and the next reconciliation run is clean.
+6. **Fail back.** Once the primary is healthy and caught up, run a planned switchover back to Mumbai. Restore the standby's capacity to the Terraform values, then run `terraform apply` to confirm there is no drift.

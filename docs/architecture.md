@@ -444,7 +444,11 @@ flowchart TB
 - **Migrations:** Flyway runs as a one-off ECS task before the service update (`PG_MIGRATE_ONLY=true`, migration role; ADR-026); expand/contract only.
 - **Backups:** Aurora continuous backup (PITR, 35 days) plus daily snapshots copied to Hyderabad; everything stays in India.
 - **DR:** Aurora Global Database (RPO typically < 1 s) with managed failover, and ECS scaled up in Hyderabad through a runbook. RTO target 30 min; DR drills quarterly.
-- **Infrastructure as code:** Terraform modules (network, ecs-service, aurora, waf, observability), with state in S3 and DynamoDB locking.
+- **Infrastructure as code ([ADR-028](decisions/ADR-028-terraform-aws.md)):** `infra/terraform`, with modules `network`, `kms`, `waf`, `aurora`, `ecs-service`, `observability` and `region`.
+  - `environments/prod` uses the `region` module twice, for Mumbai and Hyderabad.
+  - State is in S3 with native lock files.
+  - No password reaches the state (ephemeral values, write-only secrets).
+  - CI validates every module, runs `terraform test` against mocked providers, and scans with Trivy.
 
 ## 11. Evolution path
 

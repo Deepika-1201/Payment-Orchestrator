@@ -92,6 +92,34 @@ class ObservabilityContractIntegrationTest extends IntegrationTest {
         assertThat(alerts).hasSizeGreaterThan(15).doesNotHaveDuplicates();
     }
 
+    @Test
+    void everyRunbookLinkInRulesAndInfrastructurePointsToASection() throws IOException {
+        Set<String> anchors = Files.readAllLines(RUNBOOKS).stream()
+                .filter(line -> line.startsWith("## ") || line.startsWith("### "))
+                .map(line -> line.replaceFirst("^#+ ", "").trim().toLowerCase(Locale.ROOT)
+                        .replaceAll("[^a-z0-9 -]", "").replace(' ', '-'))
+                .collect(Collectors.toSet());
+        Pattern link = Pattern.compile("runbooks\\.md#([a-z0-9-]+)");
+        Set<String> linked = new TreeSet<>();
+        for (Path root : List.of(Path.of("deploy"), Path.of("infra"))) {
+            try (Stream<Path> files = Files.walk(root)) {
+                for (Path file : files.filter(Files::isRegularFile)
+                        .filter(f -> !f.toString().contains("/.terraform/"))
+                        .filter(f -> f.toString().matches(".*\\.(ya?ml|tf|hcl|json)$")).toList()) {
+                    Matcher matcher = link.matcher(Files.readString(file));
+                    while (matcher.find()) {
+                        linked.add(matcher.group(1));
+                    }
+                }
+            }
+        }
+
+        assertThat(linked).as("runbook links found").contains("nohealthyapitask", "auroraglobalreplicationlag");
+        Set<String> dangling = new TreeSet<>(linked);
+        dangling.removeAll(anchors);
+        assertThat(dangling).as("runbook links without a docs/runbooks.md section").isEmpty();
+    }
+
     private String scrape() {
         Response response = send("GET", "/actuator/prometheus", Map.of(), null);
         assertThat(response.status()).isEqualTo(200);
