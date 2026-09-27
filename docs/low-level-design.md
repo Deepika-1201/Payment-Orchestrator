@@ -765,6 +765,10 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.security.oidc.roles-claim` / `.name-claim` | `roles` / `preferred_username` | Claim with the admin roles / claim used as audit actor (falls back to `sub`) |
 | `pg.security.data-encryption-key` | — | Base64 AES-256 key for secrets at rest; read as key id `legacy` |
 | `pg.security.data-encryption-keys` / `.primary-data-key-id` | — | Key ring `{id, key}` and the key that encrypts new data; re-encrypt with `POST /admin/v1/security/data-keys/re-encrypt` (ADR-025) |
+| `DB_URL` / `DB_USER` / `DB_PASSWORD` | local | Application role connection; prod requires `sslmode=verify-full` (ADR-026) |
+| `DB_MIGRATION_USER` / `DB_MIGRATION_PASSWORD` | = `DB_USER` | Schema owner used by Flyway |
+| `DB_APP_ROLE` | — (prod `gateway_app`) | Role granted least-privilege DML by `afterMigrate.sql` after every migration |
+| `DB_MIGRATE_ON_START` / `PG_MIGRATE_ONLY` | `true` (prod `false`) / `false` | Run Flyway at application start / start only DataSource + Flyway, migrate and exit (the deploy migration task, `MigrationTask`) |
 | `pg.security.api-key-mode` | `test` (`live` in `prod`) | Key prefix and mode for this environment; a sandbox deployment is a separate environment (ADR-014) |
 | `pg.providers.mock.enabled` | `false` | Enables mock PSPs + simulator (local/test only) |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
@@ -797,6 +801,8 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Admin SSO: IdP roles and name applied; token without roles 403; expired, wrong audience or issuer, unpublished key, `alg: none`, HS256 key confusion and tampered tokens 401 | `AdminSsoIntegrationTest` |
 | Integration | Ledger adjustments: pending until approved, self-approval refused (service and DB check), OPS cannot approve, approval posts and clears a short payout, reject and expiry never post | `LedgerAdjustmentIntegrationTest` |
 | Unit / integration | Data keys: v1 ciphertexts readable, ring encrypts with the primary, AAD still enforced; re-encryption moves webhook secrets and credentials so the old key can be removed, idempotent, admin only | `SecretCipherTest`, `DataKeyRotationIntegrationTest` |
+| Integration | DB least privilege: the app role reads and writes data but DDL, TRUNCATE, rewriting ledger/audit/transitions and the Flyway history all fail with `insufficient_privilege` | `DatabaseLeastPrivilegeIntegrationTest` |
+| Integration | Deploy migration task: migrates and grants a fresh database from database settings alone; in `prod` refuses a URL without `sslmode=verify-full` before any change | `MigrationTaskIntegrationTest` |
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
 | Contract (Phase 10) | Adapter ↔ PSP sandbox recorded fixtures | `provider.*` |

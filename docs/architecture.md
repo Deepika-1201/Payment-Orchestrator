@@ -383,7 +383,10 @@ flowchart LR
   - They are validated against the adapter's declared fields and never returned; the admin API shows only the last 4 characters.
 - **Data:** encryption at rest (Aurora + KMS) and in transit (TLS to the DB). No PAN or CVV anywhere; PII minimized. Structured logs pass through a redactor that masks keys, secrets, tokens, card numbers, emails and VPAs. The `prod` profile refuses to start with development settings (ADR-022).
 - **Egress:** NAT gateways with Elastic IPs give static egress IPs for PSP allowlisting.
-- **Least privilege:** separate IAM task roles for API and worker; the DB app user has no DDL rights (migrations run as a separate migration role).
+- **Least privilege:** separate IAM task roles for API and worker.
+  - The DB app role (`gateway_app`) cannot run DDL, truncate, or update or delete append-only history.
+  - Migrations run as `gateway_migrator` in a one-off task, and grants are re-applied after every migration.
+  - DB connections use `sslmode=verify-full` ([ADR-026](decisions/ADR-026-database-least-privilege.md)).
 
 ## 9. Observability
 
@@ -427,7 +430,7 @@ flowchart TB
 ```
 
 - **Deploys:** rolling with ECS deployment circuit breaker and automatic rollback; readiness gates on `/actuator/health/readiness`. Canary (weighted target groups) comes once real traffic exists.
-- **Migrations:** Flyway runs as a one-off ECS task before the service update; expand/contract only.
+- **Migrations:** Flyway runs as a one-off ECS task before the service update (`PG_MIGRATE_ONLY=true`, migration role; ADR-026); expand/contract only.
 - **Backups:** Aurora continuous backup (PITR, 35 days) plus daily snapshots copied to Hyderabad; everything stays in India.
 - **DR:** Aurora Global Database (RPO typically < 1 s) with managed failover, and ECS scaled up in Hyderabad through a runbook. RTO target 30 min; DR drills quarterly.
 - **Infrastructure as code:** Terraform modules (network, ecs-service, aurora, waf, observability), with state in S3 and DynamoDB locking.

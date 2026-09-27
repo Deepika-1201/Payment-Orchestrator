@@ -29,4 +29,14 @@ public final class EmbeddedPostgresSupport {
         }
         return postgres.getJdbcUrl("postgres", "postgres");
     }
+
+    /** The same database, connecting as {@code user} (the embedded cluster trusts local connections). */
+    public static synchronized String jdbcUrlAs(String user) {
+        return jdbcUrlFor(user, "postgres");
+    }
+
+    public static synchronized String jdbcUrlFor(String user, String database) {
+        jdbcUrl();
+        return postgres.getJdbcUrl(user, database);
+    }
 }

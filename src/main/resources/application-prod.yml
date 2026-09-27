@@ -19,6 +19,15 @@ logging:
 server:
   forward-headers-strategy: native
 
+# Database (ADR-026): DB_URL must carry sslmode=verify-full&sslrootcert=/app/certs/rds-global-bundle.pem, and DB_USER is
+# the application role. API and worker tasks never migrate; a one-off task with PG_MIGRATE_ONLY=true and the
+# migration role's credentials runs before each deploy (MigrationTask).
+spring:
+  flyway:
+    enabled: ${DB_MIGRATE_ON_START:false}
+    placeholders:
+      app_role: ${DB_APP_ROLE:gateway_app}
+
 pg:
   workers:
     enabled: ${PG_WORKERS_ENABLED:false}

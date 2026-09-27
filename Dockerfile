@@ -11,6 +11,8 @@ RUN ./gradlew --no-daemon bootJar -x test && \
 FROM eclipse-temurin:25-jre
 RUN groupadd --system app && useradd --system --gid app --home /app app
 WORKDIR /app
+# CA bundle for sslmode=verify-full against Aurora/RDS (ADR-026).
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /app/certs/rds-global-bundle.pem
 COPY --from=build /workspace/build/extracted/dependencies/ ./
 COPY --from=build /workspace/build/extracted/spring-boot-loader/ ./
 COPY --from=build /workspace/build/extracted/snapshot-dependencies/ ./
