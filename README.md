@@ -2,16 +2,16 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: phases 1–9, 13 and 14 are complete, plus core webhooks, status resolution, expiry and refunds. That includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). That includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
 > - admin roles;
 > - API hardening: an OpenAPI contract enforced by tests, per-merchant rate limits (with overrides) and a hosted checkout with UPI QR;
-> - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege;
+> - security hardening (ADR-022 to ADR-026): admin SSO, maker-checker ledger adjustments, data key rotation, and database least privilege; CI fails on fixable HIGH/CRITICAL vulnerabilities in the jar or image (ADR-033);
 > - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack ([screenshots](#screenshots)).
 >
-> Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. See the [Roadmap](#roadmap).
+> Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 
 ## Documentation
 
@@ -21,7 +21,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-032 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-033 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 
 ## Quick start
@@ -219,7 +219,7 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 7 | Payment domain, state machines, idempotency, payment API | Done |
 | 8 | Provider SPI, mock PSPs, simulator | Done |
 | 9 | Routing engine (rules + health + circuit breakers) | Done |
-| 11–12 | Webhooks (inbound inbox, outbound outbox), refunds, status resolver, expiry | Done (core) |
+| 11–12 | Webhooks (inbound inbox, outbound outbox), refunds, status resolver, expiry | Done |
 | 10 | Real PSP adapters: Razorpay (ADR-030) and Cashfree (ADR-031) — hosted Payment Links, S2S UPI behind a flag, refunds, disputes, signed per-account webhooks, timeout recovery by our ids, environment and URL guards; settlement reports for reconciliation (ADR-032); stub and gated sandbox contract tests | Done (sandbox runs need keys) |
 | 13 | Reconciliation + shadow double-entry ledger | Done |
 | — | API hardening: OpenAPI contract + drift test, per-merchant rate limits, minimal hosted checkout | Done |
@@ -228,7 +228,7 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | — | Operations and disputes: reconciliation exception owner, SLA and daily report (ADR-017); chargebacks and UPI disputes with ledger impact and refund guard (ADR-018) | Done |
 | — | Admin roles: named operators, role permissions, deny-by-default enforcement (ADR-019) | Done |
 | — | Per-merchant rate-limit overrides (ADR-020); UPI QR on the hosted checkout (ADR-021) | Done |
-| — | Security hardening: headers, body limits, log redaction, production guard, PSP webhook source allowlist (ADR-022); admin SSO (ADR-023); maker-checker ledger adjustments (ADR-024); data key rotation (ADR-025); database least privilege and verified TLS (ADR-026) | Done |
+| — | Security hardening: headers, body limits, log redaction, production guard, PSP webhook source allowlist (ADR-022); admin SSO (ADR-023); maker-checker ledger adjustments (ADR-024); data key rotation (ADR-025); database least privilege and verified TLS (ADR-026); vulnerability gates on the jar and image (ADR-033) | Done |
 | 15 | Observability: SLO burn-rate alerts, dashboard, runbooks, OTel collector and Tempo in compose, promtool tests (ADR-027) | Done |
 | 16 | Terraform: two regions from one module, WAF, TLS 1.3, Aurora Global Database, least-privilege IAM, ephemeral secrets; mocked `terraform test`, Trivy in CI (ADR-028) | Done (not yet applied to an account) |
 | 17 | Load tests (k6): smoke in CI, steady, peak 1,000/s, spike; thresholds from NFR-1/2/3 (ADR-029). Local baseline: 100 payments/s with zero errors and p99 create 20 ms | Done (peak run needs AWS) |

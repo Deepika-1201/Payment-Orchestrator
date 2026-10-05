@@ -26,6 +26,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
       - name: Build and test
         run: ./gradlew --no-daemon build
+      - name: Dependency scan of the application jar (Trivy, fixable HIGH and above)
+        run: |
+          docker run --rm -v "$PWD/build/libs:/jars:ro" aquasec/trivy:0.74.0 rootfs --quiet --scanners vuln \
+            --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL /jars
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v7
@@ -86,6 +90,11 @@ jobs:
         run: |
           docker run --rm --network host -v "$PWD/load-tests:/scripts:ro" grafana/k6:2.3.0 run --quiet \
             -e PROFILE=smoke -e METRICS_URL=http://localhost:8080/actuator/prometheus /scripts/payment-flow.js
+      - name: Image scan (Trivy, fixable HIGH and above in OS packages and libraries)
+        run: |
+          docker tag "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q app)")" payment-gateway:ci
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 image --quiet \
+            --scanners vuln --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL payment-gateway:ci
       - name: Show logs
         if: failure()
         run: docker compose --profile observability logs --no-color --tail 200

@@ -17,6 +17,10 @@ repositories {
     mavenCentral()
 }
 
+// Patch releases ahead of Spring Boot 4.1.1's BOM: Tomcat 11.0.24 and Jackson 3.1.5 have published CVEs.
+extra["tomcat.version"] = "11.0.26"
+extra["jackson-bom.version"] = "3.1.7"
+
 val resilience4jVersion = "2.4.0"
 val embeddedPostgresVersion = "2.2.2"
 val embeddedPostgresBinariesVersion = "17.11.0"
