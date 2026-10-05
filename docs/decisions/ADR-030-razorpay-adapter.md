@@ -1,6 +1,6 @@
 # ADR-030: Razorpay adapter
 
-**Status:** Accepted (2026-09-27)
+**Status:** Accepted (2026-09-27). Settlement reports were added later by [ADR-032](ADR-032-settlement-reports.md).
 
 ## Context
 Phase 10 replaces the mock PSPs with real ones behind the provider SPI (ADR-005, ADR-014). Razorpay is first. Four facts about Razorpay shaped the design:

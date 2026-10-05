@@ -8,6 +8,8 @@ import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderPaymentResult.Outcome;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
+import com.payments.gateway.provider.spi.SettlementReport;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
 import com.payments.gateway.shared.model.Money;
@@ -15,6 +17,8 @@ import com.payments.gateway.shared.model.NextAction;
 import com.payments.gateway.shared.model.PaymentMethod;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -22,8 +26,9 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * The assumptions the stub cannot prove, checked against Cashfree's sandbox (ADR-031): link creation is idempotent by
- * {@code link_id} (409 recognized), lookup by our attempt id, and key rejection. Runs only with sandbox keys:
+ * The assumptions the stub cannot prove, checked against Cashfree's sandbox (ADR-031, ADR-032): link creation is
+ * idempotent by {@code link_id} (409 recognized), lookup by our attempt id, key rejection, and the settlement
+ * reconciliation request. Runs only with sandbox keys:
  * {@code CASHFREE_CLIENT_ID=... CASHFREE_CLIENT_SECRET=... ./gradlew test --tests '*CashfreeSandbox*'}.
  */
 @EnabledIfEnvironmentVariable(named = "CASHFREE_CLIENT_ID", matches = ".+")
@@ -33,7 +38,7 @@ class CashfreeSandboxContractTest {
 
     private CashfreePaymentProvider provider() {
         return new CashfreePaymentProvider(new CashfreeProperties(true, CashfreeProperties.SANDBOX, "2025-01-01", false,
-                Duration.ofMinutes(15)), new CashfreeApi(CashfreeProperties.SANDBOX, Duration.ofSeconds(5),
+                Duration.ofMinutes(15), Duration.ofDays(5)), new CashfreeApi(CashfreeProperties.SANDBOX, Duration.ofSeconds(5),
                 Duration.ofSeconds(20), "2025-01-01", json), Clock.systemUTC());
     }
 
@@ -68,5 +73,15 @@ class CashfreeSandboxContractTest {
         assertThatThrownBy(() -> provider().fetchPaymentStatus(account("not-the-secret"),
                 new PaymentStatusQuery("att_sandbox_x", "att_sandbox_x")))
                 .isInstanceOf(ProviderCredentialsException.class);
+    }
+
+    @Test
+    void aWeeksSettlementReconciliationIsAcceptedAndReadable() {
+        Instant to = Instant.now().truncatedTo(ChronoUnit.DAYS);
+        SettlementReport report = provider().fetchSettlementReport(account(System.getenv("CASHFREE_CLIENT_SECRET")),
+                new SettlementReportQuery("mer_sandbox", to.minus(Duration.ofDays(7)), to));
+
+        assertThat(report.lines()).allSatisfy(line -> assertThat(line.settlementId()).isNotNull());
+        assertThat(report.settlements()).extracting(SettlementReport.Settlement::settlementId).doesNotHaveDuplicates();
     }
 }

@@ -334,7 +334,8 @@ public interface PaymentProvider {
     ProviderRefundResult refund(MerchantAccount a, RefundRequest r);
     ProviderRefundResult fetchRefundStatus(MerchantAccount a, RefundStatusQuery q); // q: refundId, providerRefundReference (null after a timeout), paymentProviderReference, attemptId
     List<ProviderEvent> parseWebhook(MerchantAccount a, InboundWebhook w); // a == null on the provider-wide endpoint; throws WebhookVerificationException
-    SettlementReport fetchSettlementReport(MerchantAccount a, SettlementReportQuery q);
+    SettlementReport fetchSettlementReport(MerchantAccount a, SettlementReportQuery q); // lines (PAYMENT, REFUND, CHARGEBACK[_REVERSAL], ADJUSTMENT_CREDIT/DEBIT) + payouts
+    Duration settlementLag();                                              // how long the PSP may take to settle (ADR-032); 0 by default
 }
 ```
 
@@ -808,10 +809,12 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.providers.cashfree.enabled` | `false` | Registers the Cashfree adapter (ADR-031) |
 | `pg.providers.cashfree.base-url` | by mode: sandbox on TEST, `https://api.cashfree.com/pg` on LIVE | `prod` refuses any other host, including the sandbox |
 | `pg.providers.cashfree.api-version` / `.upi-s2s` / `.hosted-page-ttl` | `2025-01-01` / `false` / `15m` | `x-api-version` sent; Order Pay UPI once Cashfree enables seamless payments; link and order expiry |
+| `pg.providers.razorpay.settlement-lag` / `pg.providers.cashfree.settlement-lag` | `5d` | Longest time the PSP takes to settle a capture or refund; reconciliation flags `MISSING_AT_PROVIDER` only after it (ADR-032) |
 | `pg.risk.*` | see §7 | Risk thresholds and lists |
 | `pg.risk.external.url` / `.secret` / `.timeout` | unset / — / `800ms` | Optional fraud vendor; secret required when the URL is set (ADR-016) |
 | `pg.reconciliation.exception-sla` | `48h` | Time until an open reconciliation exception is overdue (ADR-017) |
 | `pg.reconciliation.zone` | `Asia/Kolkata` | Business day for the daily run and report |
+| `pg.reconciliation.catch-up-days` | `3` | The daily run also retries accounts whose latest run of one of these earlier days failed (ADR-032) |
 
 ## 14. Observability details
 
@@ -833,7 +836,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | Integration | Merchant lifecycle: settings and audit, suspension (keys and checkout blocked, in-flight payments finish), key rotation and immediate revocation, webhook secret rotation with dual signatures. PSP accounts: encrypted and masked credentials, per-account webhook secret, rejected credentials fail over without opening the shared circuit, disabled accounts finish in-flight work, cross-tenant webhook forgery and event-id squatting | `MerchantAdminIntegrationTest`, `ProviderAccountIntegrationTest` |
 | Integration | Rate limits: burst then `429` + `Retry-After`, refill, key not consumed, per-merchant and read/write isolation, webhooks exempt, per-merchant override and its removal. Hosted checkout: session rules, escaping, CSP hash, UPI collect, UPI QR (rendered SVG decodes to the PSP payload), card round trip via the PSP page, invalid input, double submit, decline and retry, expiry | `RateLimitIntegrationTest`, `CheckoutIntegrationTest`, `TokenBucketTest` |
 | Integration | Review queue: amount mismatch, refund contradicted by the PSP, 72 h unresolved, risk review (and across failover); audited acknowledge-only resolution. External risk vendor: signed request, block with sanitized reasons, timeout / error / unknown answer → review | `ReviewQueueIntegrationTest`, `ExternalRiskIntegrationTest` |
-| Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter | `ReconciliationOperationsIntegrationTest` |
+| Integration | Reconciliation operations: SLA due date, assignment and reassignment (audited), overdue filter, daily report with missing accounts, exception tallies, backlog, merchant filter; the daily run retries failed days within the catch-up window, not completed or older ones | `ReconciliationOperationsIntegrationTest` |
 | Integration | Disputes: open withholds funds (ledger) and caps refunds, win releases them, lost is final and a contradicting win goes to review, dispute larger than the net captured amount, chargeback seen only in a settlement report recorded and netted, reversal healed from the next report, cross-merchant dispute webhook ignored, events and responses against the contract | `DisputeIntegrationTest` |
 | Integration | Admin roles: each role limited to its permissions, operator name as audit actor, unknown token 401; every admin write endpoint declares a permission (deny by default) | `AdminRolesIntegrationTest` |
 | Integration | Admin SSO: IdP roles and name applied; token without roles 403; expired, wrong audience or issuer, unpublished key, `alg: none`, HS256 key confusion and tampered tokens 401 | `AdminSsoIntegrationTest` |
@@ -847,8 +850,9 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | terraform test | Mocked apply per module and for prod: WAF paths, rate limit and log redaction; TLS policy and HTTP redirect; separate secrets for API, worker and migration; `verify-full` DB URLs; encryption and key rotation; alarms and topic policies; rejection of non-Indian or identical regions, mutable tags and empty PSP ranges | `infra/terraform/**/tests/*.tftest.hcl` (CI, with Trivy) |
 | Integration / unit | Hardening: API and checkout security headers, HSTS only over HTTPS, 413 for declared and chunked oversized bodies, per-provider webhook source allowlist (IPv4/IPv6 via X-Forwarded-For from a trusted proxy), log redaction incl. Luhn card masking, production configuration guard | `SecurityHardeningIntegrationTest`, `WebhookSourceAllowlistIntegrationTest`, `LogRedactorTest`, `ProductionConfigurationGuardTest`, `CidrRangeTest` |
 | Architecture | Module and layer dependency rules | `ArchitectureTest` |
-| Contract (Phase 10) | Razorpay adapter against a local stub of its REST API: request shapes, duplicate `receipt`/`reference_id` recovery, `failed` final only after the window, lookup by attempt id after a timeout, refunds, 401/400-auth/429/5xx/timeout/refused classification, key-mode refusal, webhook HMAC (SDK vector), tampering, missing event id and event mapping. Whole gateway with Razorpay: hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered and settled. Gated sandbox run with `rzp_test_` keys | `RazorpayPaymentProviderTest`, `RazorpayGatewayIntegrationTest`, `RazorpaySandboxContractTest` |
-| Contract (Phase 10) | Cashfree adapter against a stub of its PG API: headers, exact rupee amounts, phone normalization, 409 reuse, link paid on Cashfree's `CFPay_` order, lookups after a timeout, active vs expired orders, refunds on the paid order, error classification, Base64 HMAC over timestamp + body, tampering, event and dispute mapping. Whole gateway with Cashfree: phone-aware routing, hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered. Gated sandbox run | `CashfreePaymentProviderTest`, `CashfreeGatewayIntegrationTest`, `CashfreeSandboxContractTest` |
+| Contract (Phase 10) | Razorpay adapter against a local stub of its REST API: request shapes, duplicate `receipt`/`reference_id` recovery, `failed` final only after the window, lookup by attempt id after a timeout, refunds, 401/400-auth/429/5xx/timeout/refused classification, key-mode refusal, webhook HMAC (SDK vector), tampering, missing event id and event mapping. Settlement recon (ADR-032): India-day reads with a day of margin, `settled_at` window, pagination, every line type with kept fees, dispute → attempt resolution, payout status. Whole gateway with Razorpay: hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered and settled; a settlement reconciled end to end (refund fee, report-only chargeback, adjustment left to finance) and `MISSING_AT_PROVIDER` held back until the settlement lag. Gated sandbox run with `rzp_test_` keys | `RazorpayPaymentProviderTest`, `RazorpayGatewayIntegrationTest`, `RazorpaySandboxContractTest` |
+| Contract (Phase 10) | Cashfree adapter against a stub of its PG API: headers, exact rupee amounts, phone normalization, 409 reuse, link paid on Cashfree's `CFPay_` order, lookups after a timeout, active vs expired orders, refunds on the paid order, error classification, Base64 HMAC over timestamp + body, tampering, event and dispute mapping. Settlement reconciliation (ADR-032): cursor pages, settlement-date window, kept fees on credits and debits, dispute found by order and amount (ambiguous → not ingestable), skipped non-`SUCCESS` events, payout status, exact paise, repeated cursor. Whole gateway with Cashfree: phone-aware routing, hosted-page card payment, forged and replayed webhook, refund, timed-out link recovered; a settlement reconciled end to end with a risk hold. Gated sandbox run | `CashfreePaymentProviderTest`, `CashfreeGatewayIntegrationTest`, `CashfreeSandboxContractTest` |
+| Unit | Settlement reports bypass the circuit breaker and routing latency; adapter errors keep their message | `ProviderClientTest` |
 | Load (k6, ADR-029) | Full payment path (create → confirm → signed PSP webhook → read) with NFR thresholds: p99 create/read < 150 ms, < 0.1 % failed requests, > 99.9 % payments succeeded, server-side webhook ack ≤ 200 ms; profiles smoke (CI), steady 100/s, peak 1,000/s, spike ×5 | `load-tests/payment-flow.js` |
 
 ## 16. Ledger and reconciliation
@@ -871,10 +875,10 @@ The database enforces the invariants itself:
 | Dispute opened (`CHARGEBACK`, reference `DISPUTE`) | `FundsMovement` listener, same tx as the dispute | `CHARGEBACKS` | `PSP_RECEIVABLE` |
 | Dispute won (`REVERSAL`) | `FundsMovement` listener, same tx | `PSP_RECEIVABLE` | `CHARGEBACKS` |
 | Approved manual adjustment (`ADJUSTMENT`, reference `ADJUSTMENT`) | `LedgerAdjustmentService` after a second operator approves (ADR-024) | as requested | as requested |
-| Matched report line with a fee | Reconciliation (`REPORT_LINE`) | `PSP_FEES` | `PSP_RECEIVABLE` |
+| Matched report line with a fee the PSP kept (any line type) | Reconciliation (`REPORT_LINE`) | `PSP_FEES` | `PSP_RECEIVABLE` |
 | Settlement payout (net > 0; reversed legs if < 0) | Reconciliation (`SETTLEMENT`) | `BANK_SETTLEMENTS` | `PSP_RECEIVABLE` |
 
-After a clean reconciliation, `PSP_RECEIVABLE` for the merchant PSP account is zero. Any residual equals the unexplained money.
+After a clean reconciliation, `PSP_RECEIVABLE` for the merchant PSP account is zero. Any residual equals the unexplained money: unmatched lines, or PSP adjustments that finance has not booked yet (ADR-032).
 
 ### 16.2 Reconciliation run
 
@@ -893,15 +897,18 @@ run(merchant, provider, [from, to)):
   CHARGEBACK line: known dispute → MATCHED (AMOUNT_MISMATCH if different); unknown dispute on a known attempt
      → recorded from the report (AUTO_HEALED); unknown attempt → MISSING_INTERNALLY
   CHARGEBACK_REVERSAL line: dispute WON → MATCHED; otherwise heal to WON (AUTO_HEALED) or STATUS_MISMATCH (LOST)
+  ADJUSTMENT_CREDIT / ADJUSTMENT_DEBIT line (ADR-032): UNMATCHED_ADJUSTMENT; counted in the expected payout; not posted
+  every line: fee = what the PSP kept; it moves the payout by (±amount − fee); a matched line's fee is posted
   for payout in report.settlements:
-     post settlement; if payout ≠ Σ(matched captures − fees − refunds − chargebacks + reversals) → SETTLEMENT_MISMATCH
-  internal successes in window never seen in any report of this account → MISSING_AT_PROVIDER
+     post settlement; if payout ≠ Σ(matched lines' ±amount − fee) + Σ(adjustments) → SETTLEMENT_MISMATCH
+  internal successes in [from − lag, to − lag) never seen in any report of this account → MISSING_AT_PROVIDER
+     (lag = provider.settlementLag(): 0 for the mock, which reports by transaction time; 5 days for Razorpay and Cashfree)
 ```
 
 Further properties:
 - **Idempotent reruns:** lines are stored per run, postings are idempotent, and an open exception is unique per (merchant, provider, type, reference).
 - **Auto-heal path:** it goes through the normal domain rules. A PSP-settled capture on an expired payment therefore follows the merchant's late-success policy.
-- **Schedule:** the worker runs the previous local day (`pg.reconciliation.zone`, IST) at 02:30 (T+1) for every active merchant PSP account whose provider supports reports.
+- **Schedule:** the worker runs the previous local day (`pg.reconciliation.zone`, IST) at 02:30 (T+1) for every active merchant PSP account whose provider supports reports. It first retries accounts whose latest run of one of the previous `pg.reconciliation.catch-up-days` (3) days failed, for example while a payout was still pending.
 - **Windows** must not overlap between runs (daily windows are consecutive), because a PSP settles each item exactly once.
 - **Exception queue (ADR-017):** each exception gets `due_at = created_at + pg.reconciliation.exception-sla` (48 h). It can be assigned to an operator (audited), and is `overdue` while open past `due_at`. Filters: `status`, `merchant_id`, `assignee`, `overdue`.
 - **Daily report:** `GET /admin/v1/reconciliation/reports/daily?date=YYYY-MM-DD[&merchant_id=]`:
@@ -910,6 +917,21 @@ Further properties:
   - the open and overdue backlog.
 
 **Mock PSP support.** The mock PSP produces one settlement per merchant and window with a 2% fee. `POST /simulator/{provider}/report-anomalies` injects discrepancies for tests and demos: `drop`, `duplicate`, `amount_override`, `orphan_capture`, `settlement_shortfall`, `clear`.
+
+**Razorpay and Cashfree reports (ADR-032).**
+
+| | Razorpay | Cashfree (API 2025-01-01) |
+|---|---|---|
+| Read | `GET /settlements/recon/combined?year&month&day&count=1000&skip`, per India-time day of the window, plus one either side | `POST /settlement/recon` with `start_date`/`end_date` widened by a day, cursor pages of 1,000 |
+| Kept in the window by | `settled_at` (unsettled items skipped) | `settlement_details.settlement_date` (events not `SUCCESS` skipped) |
+| Capture line | reference `order_id`, attempt from `order_receipt` or the `pg_attempt_id` note | reference `cflink_<cf_link_id>` or the order id; attempt from the `pg_attempt_id` tag or the S2S order id |
+| Refund line | reference `rfnd_…`, `pg_refund_id` note | our `refund_id` |
+| Chargeback / reversal | `adjustment` with `dispute_id` (debit / credit); attempt via the dispute's payment | `DISPUTE`/`CHARGEBACK` (and `_REVERSAL`); the dispute on that order with the same amount, else not ingestable |
+| Adjustment lines | other `adjustment`s and `transfer`s | everything else (`OTHER_ADJUSTMENT`, `RISK`, `REFUND_REVERSAL`, …) by `sale_type` |
+| Fee kept | amount − credit, or debit − amount | the gap between `event_amount` and `event_settlement_amount` |
+| Payout | `GET /settlements/{id}`: `processed` → amount, `failed` → 0, otherwise the fetch fails | `POST /settlements` by id: `SUCCESS` → `amount_settled`, `FAILED` → 0, otherwise the fetch fails |
+
+Report fetches go around the circuit breaker and the routing latency average, so a slow report never steers live payments. Refused requests surface with the PSP's reason in the run's `error`.
 
 ## 17. Hosted checkout (ADR-013)
 

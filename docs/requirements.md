@@ -99,7 +99,7 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 
 ### 4.9 Reconciliation (Phase 13)
 - **FR-RC1** Ingest PSP transaction and settlement reports (API, SFTP, or file) daily for each merchant PSP account.
-- **FR-RC2** Match on provider reference, amount, currency, and status. Exception classes: missing internally, missing at PSP, amount mismatch, status mismatch, duplicate, settlement mismatch.
+- **FR-RC2** Match on provider reference, amount, currency, and status. Exception classes: missing internally, missing at PSP, amount mismatch, status mismatch, duplicate, settlement mismatch, and PSP adjustments the gateway has no record of (ADR-032).
 - **FR-RC3** Auto-heal safe cases (for example, a PSP success we missed is applied with source `RECONCILIATION`). Everything else goes to an exceptions queue with an owner and an SLA.
 - **FR-RC4** Daily reconciliation report per merchant and provider.
 

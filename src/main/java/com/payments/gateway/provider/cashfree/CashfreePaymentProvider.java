@@ -16,7 +16,11 @@ import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.VoidRequest;
+import com.payments.gateway.provider.spi.ProviderUnavailableException;
+import com.payments.gateway.provider.spi.SettlementReport;
+import com.payments.gateway.provider.spi.SettlementReport.LineType;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.model.CardDetails;
@@ -33,10 +37,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,6 +65,7 @@ import tools.jackson.databind.JsonNode;
  *   <li>With {@code upi-s2s}, UPI intent and QR use Create Order ({@code order_id} = attempt id) and Order Pay.</li>
  *   <li>Refunds are keyed by our refund id; amounts are sent in rupees and read back into paise exactly.</li>
  *   <li>Webhooks are signed with the merchant's client secret: Base64(HMAC-SHA256(timestamp + raw body)).</li>
+ *   <li>Settlement reports come from Cashfree's settlement reconciliation (ADR-032).</li>
  * </ul>
  */
 public final class CashfreePaymentProvider implements PaymentProvider {
@@ -71,6 +80,10 @@ public final class CashfreePaymentProvider implements PaymentProvider {
     private static final long UPI_MAX = 10_000_000L;
     private static final long CARD_MAX = 100_000_000L;
     private static final Duration MIN_LINK_TTL = Duration.ofMinutes(16);
+    // Cashfree report pages hold at most 1000 items.
+    private static final int REPORT_PAGE = 1000;
+    private static final int MAX_REPORT_PAGES = 1000;
+    private static final DateTimeFormatter TIMESTAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX");
 
     private final CashfreeProperties properties;
     private final CashfreeApi api;
@@ -86,7 +99,7 @@ public final class CashfreePaymentProvider implements PaymentProvider {
                 MethodType.UPI, new MethodSupport(upiFlows, 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, false),
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)),
-                Set.of("INR"), false, true, false, true);
+                Set.of("INR"), false, true, true, true);
     }
 
     @Override
@@ -367,6 +380,222 @@ public final class CashfreePaymentProvider implements PaymentProvider {
         };
     }
 
+    // ------------------------------------------------------------------ settlement reports
+
+    @Override
+    public Duration settlementLag() {
+        return properties.settlementLag();
+    }
+
+    /**
+     * Cashfree's settlement reconciliation lists the events of each settlement. The request widens the window by a day
+     * on either side and events are kept by their settlement's date; each payout is then read for its amount and status
+     * (ADR-032).
+     */
+    @Override
+    public SettlementReport fetchSettlementReport(MerchantAccount account, SettlementReportQuery query) {
+        Map<String, Object> filters = new LinkedHashMap<>();
+        filters.put("start_date", timestamp(query.from().minus(Duration.ofDays(1))));
+        filters.put("end_date", timestamp(query.to().plus(Duration.ofDays(1))));
+        List<SettlementReport.Line> lines = new ArrayList<>();
+        Map<String, Payout> payouts = new LinkedHashMap<>();
+        for (JsonNode event : pages(account, "/settlement/recon", filters)) {
+            JsonNode settlement = event.path("settlement_details");
+            String settlementId = text(settlement, "cf_settlement_id");
+            Instant settledAt = instant(firstText(settlement, "settlement_date", "settlement_processed_on"));
+            String status = text(event.path("event_details"), "event_status");
+            if (settlementId == null || settledAt == null || settledAt.isBefore(query.from())
+                    || !settledAt.isBefore(query.to()) || (status != null && !status.equals("SUCCESS"))) {
+                continue;
+            }
+            SettlementReport.Line line = reconLine(account, event);
+            lines.add(line);
+            payouts.putIfAbsent(settlementId, new Payout(settledAt, line.amount().currency()));
+        }
+        return new SettlementReport(lines, settlements(account, payouts));
+    }
+
+    private record Payout(Instant settledAt, String currency) {
+    }
+
+    /**
+     * The fee is what Cashfree kept: the gap between the event amount and its settlement amount, so charges invoiced
+     * separately count as zero. Events that are not our captures, refunds or disputes are adjustments.
+     */
+    private SettlementReport.Line reconLine(MerchantAccount account, JsonNode event) {
+        JsonNode details = event.path("event_details");
+        String eventType = Optional.ofNullable(text(details, "event_type")).orElse("UNKNOWN");
+        String lineId = eventType + ":" + text(details, "event_id");
+        String currency = Optional.ofNullable(text(details, "event_currency")).orElse("INR");
+        long amount = Math.abs(requiredPaise(details, "event_amount", lineId));
+        boolean credit = "CREDIT".equals(text(details, "sale_type"));
+        Long settled = paise(details.path("event_settlement_amount"));
+        long kept = settled == null
+                ? orZero(paise(details.path("event_service_charge"))) + orZero(paise(details.path("event_service_tax")))
+                : credit ? amount - Math.abs(settled) : Math.abs(settled) - amount;
+        Money fee = Money.of(Math.max(0, kept), currency);
+        JsonNode order = event.path("order_details");
+        String orderId = text(order, "order_id");
+        String linkId = text(order.path("order_tags"), "cf_link_id");
+        String attemptId = Optional.ofNullable(text(order.path("order_tags"), "pg_attempt_id"))
+                .orElse(linkId == null ? orderId : null);
+        String settlementId = text(event.path("settlement_details"), "cf_settlement_id");
+        Instant occurredAt = instant(text(details, "event_time"));
+        Money money = Money.of(amount, currency);
+        return switch (eventType) {
+            case "PAYMENT" -> new SettlementReport.Line(lineId, LineType.PAYMENT,
+                    linkId != null ? LINK_REFERENCE_PREFIX + linkId : orderId, attemptId, money, fee, settlementId, occurredAt);
+            // The report names a refund only by its refund_id, which is ours.
+            case "REFUND" -> new SettlementReport.Line(lineId, LineType.REFUND, null, refundId(event), money, fee,
+                    settlementId, occurredAt);
+            case "DISPUTE", "CHARGEBACK", "DISPUTE_REVERSAL", "DISPUTE_REVERSE", "CHARGEBACK_REVERSAL", "CHARGEBACK_REVERSE" -> {
+                Optional<String> disputeId = disputeId(account, orderId, amount);
+                // Without the dispute's own id, a dispute recorded from the report could duplicate one already known.
+                yield new SettlementReport.Line(lineId, eventType.contains("_REVERS") ? LineType.CHARGEBACK_REVERSAL
+                        : LineType.CHARGEBACK, disputeId.orElse("cfevent_" + lineId), disputeId.isPresent() ? attemptId : null,
+                        money, fee, settlementId, occurredAt);
+            }
+            default -> {
+                String remarks = text(details, "event_remarks");
+                yield new SettlementReport.Line(lineId, credit ? LineType.ADJUSTMENT_CREDIT : LineType.ADJUSTMENT_DEBIT,
+                        null, null, settled == null ? money : Money.of(Math.abs(settled), currency), Money.of(0, currency),
+                        settlementId, occurredAt, remarks == null ? eventType : eventType + ": " + remarks);
+            }
+        };
+    }
+
+    private static String refundId(JsonNode event) {
+        JsonNode refunds = event.path("refund_details");
+        if (!refunds.isArray()) {
+            return text(refunds, "refund_id");
+        }
+        for (JsonNode refund : refunds) {
+            String id = text(refund, "refund_id");
+            if (id != null) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    /** Cashfree's report names the disputed order, not the dispute: it is the one dispute on that order for the amount. */
+    private Optional<String> disputeId(MerchantAccount account, String orderId, long amount) {
+        if (orderId == null) {
+            return Optional.empty();
+        }
+        JsonNode disputes;
+        try {
+            disputes = api.get(account, "/orders/" + CashfreeApi.segment(orderId) + "/disputes");
+        } catch (CashfreeApi.ApiError e) {
+            if (e.isNotFound()) {
+                return Optional.empty();
+            }
+            throw refused(e);
+        }
+        List<String> matches = new ArrayList<>();
+        for (JsonNode dispute : disputes.isArray() ? disputes : disputes.path("data")) {
+            Long disputed = paise(dispute.path("dispute_amount"));
+            String id = firstText(dispute, "dispute_id", "cf_dispute_id");
+            if (disputed != null && Math.abs(disputed) == amount && id != null) {
+                matches.add(id);
+            }
+        }
+        return matches.size() == 1 ? Optional.of(matches.getFirst()) : Optional.empty();
+    }
+
+    private List<SettlementReport.Settlement> settlements(MerchantAccount account, Map<String, Payout> payouts) {
+        if (payouts.isEmpty()) {
+            return List.of();
+        }
+        Map<String, JsonNode> found = new HashMap<>();
+        for (JsonNode settlement : pages(account, "/settlements", Map.of("cf_settlement_ids", List.copyOf(payouts.keySet())))) {
+            String id = text(settlement, "cf_settlement_id");
+            if (id != null) {
+                found.put(id, settlement);
+            }
+        }
+        List<SettlementReport.Settlement> settlements = new ArrayList<>();
+        payouts.forEach((id, payout) -> {
+            JsonNode settlement = found.get(id);
+            if (settlement == null) {
+                throw new ProviderUnavailableException(CashfreeApi.CODE, "Cashfree did not return settlement " + id);
+            }
+            String status = Optional.ofNullable(text(settlement, "status")).orElse("");
+            long amount = switch (status) {
+                case "SUCCESS" -> requiredPaise(settlement, "amount_settled", "settlement " + id);
+                // Nothing reached the bank: the payout check flags the whole net and the receivable keeps it.
+                case "FAILED" -> 0;
+                default -> throw new ProviderUnavailableException(CashfreeApi.CODE, "settlement " + id + " has status '"
+                        + status + "'; reconcile this window again once Cashfree has paid it out");
+            };
+            settlements.add(new SettlementReport.Settlement(id, amount, payout.currency(),
+                    firstText(settlement, "settlement_utr", "utr"), payout.settledAt()));
+        });
+        return settlements;
+    }
+
+    /** Cashfree's cursor pagination: the first request sends a null cursor, and the last answer has none. */
+    private List<JsonNode> pages(MerchantAccount account, String path, Map<String, ?> filters) {
+        List<JsonNode> data = new ArrayList<>();
+        Set<String> cursors = new HashSet<>();
+        String cursor = null;
+        for (int page = 0; page < MAX_REPORT_PAGES; page++) {
+            Map<String, Object> pagination = new LinkedHashMap<>();
+            pagination.put("limit", REPORT_PAGE);
+            pagination.put("cursor", cursor);
+            JsonNode response;
+            try {
+                response = api.search(account, path, Map.of("pagination", pagination, "filters", filters));
+            } catch (CashfreeApi.ApiError e) {
+                throw refused(e);
+            }
+            JsonNode items = response.isArray() ? response : response.path("data");
+            items.forEach(data::add);
+            cursor = text(response, "cursor");
+            if (cursor == null || cursor.isBlank() || items.isEmpty()) {
+                return data;
+            }
+            if (!cursors.add(cursor)) {
+                throw new ProviderUnavailableException(CashfreeApi.CODE, "Cashfree repeated a pagination cursor on " + path);
+            }
+        }
+        throw new ProviderUnavailableException(CashfreeApi.CODE, path + " returned more than " + MAX_REPORT_PAGES + " pages");
+    }
+
+    /** Report calls only read, so a refusal is reported with Cashfree's reason rather than as an adapter error. */
+    private static ProviderUnavailableException refused(CashfreeApi.ApiError e) {
+        return new ProviderUnavailableException(CashfreeApi.CODE, "Cashfree refused a settlement report request: "
+                + e.getMessage());
+    }
+
+    private static long requiredPaise(JsonNode node, String field, String what) {
+        Long paise = paise(node.path(field));
+        if (paise == null) {
+            throw new ProviderUnavailableException(CashfreeApi.CODE, "Cashfree reported " + what + " without an exact " + field);
+        }
+        return paise;
+    }
+
+    /** Rupees to paise, exactly; null when missing or not a whole number of paise. */
+    private static Long paise(JsonNode value) {
+        if (!value.isValueNode() || value.isNull() || value.asString().isBlank()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(value.asString()).movePointRight(2).setScale(0, RoundingMode.UNNECESSARY).longValueExact();
+        } catch (ArithmeticException | NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static long orZero(Long value) {
+        return value == null ? 0 : value;
+    }
+
+    private static String firstText(JsonNode node, String field, String fallback) {
+        return Optional.ofNullable(text(node, field)).orElse(text(node, fallback));
+    }
+
     // ------------------------------------------------------------------ webhooks
 
     @Override
@@ -538,7 +767,7 @@ public final class CashfreePaymentProvider implements PaymentProvider {
     }
 
     private static String timestamp(Instant instant) {
-        return OffsetDateTime.ofInstant(instant.truncatedTo(ChronoUnit.SECONDS), ZoneOffset.UTC).toString();
+        return TIMESTAMP.format(OffsetDateTime.ofInstant(instant.truncatedTo(ChronoUnit.SECONDS), ZoneOffset.UTC));
     }
 
     private static Instant instant(String value) {

@@ -109,6 +109,11 @@ final class RazorpayApi {
         return json.read(body, JsonNode.class);
     }
 
+    /** Ids read from Razorpay's reports go into paths encoded, whatever they contain. */
+    static String segment(String id) {
+        return URLEncoder.encode(id, StandardCharsets.UTF_8);
+    }
+
     private URI uri(String path) {
         return URI.create(baseUrl.toString().replaceAll("/+$", "") + path);
     }

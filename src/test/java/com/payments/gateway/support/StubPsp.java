@@ -10,14 +10,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 /**
- * A local stand-in for a PSP's REST API (ADR-030, ADR-031): canned responses per "METHOD /path" and a record of every
- * request. Unconfigured paths answer {@code fallbackStatus} with {@code fallbackBody}, the PSP's "not found".
+ * A local stand-in for a PSP's REST API (ADR-030, ADR-031): canned responses per "METHOD /path" (or
+ * "METHOD /path?exact-query", which wins) and a record of every request. Unconfigured paths answer
+ * {@code fallbackStatus} with {@code fallbackBody}, the PSP's "not found".
  */
 public final class StubPsp implements AutoCloseable {
 
@@ -40,6 +43,7 @@ public final class StubPsp implements AutoCloseable {
     private final String basePath;
     private final Canned fallback;
     private final Map<String, Canned> responses = new ConcurrentHashMap<>();
+    private final Map<String, Queue<Canned>> sequences = new ConcurrentHashMap<>();
     private final List<Recorded> requests = new CopyOnWriteArrayList<>();
 
     public StubPsp(String basePath, int fallbackStatus, String fallbackBody) {
@@ -61,11 +65,22 @@ public final class StubPsp implements AutoCloseable {
 
     public void reset() {
         responses.clear();
+        sequences.clear();
         requests.clear();
     }
 
     public StubPsp on(String methodAndPath, int status, String body) {
         responses.put(methodAndPath, new Canned(status, body, 0));
+        return this;
+    }
+
+    /** Successive requests get successive bodies (200); the last one keeps being returned. */
+    public StubPsp onSequence(String methodAndPath, String... bodies) {
+        Queue<Canned> queue = new ConcurrentLinkedQueue<>();
+        for (String body : bodies) {
+            queue.add(new Canned(200, body, 0));
+        }
+        sequences.put(methodAndPath, queue);
         return this;
     }
 
@@ -92,7 +107,7 @@ public final class StubPsp implements AutoCloseable {
                 .collect(Collectors.toUnmodifiableMap(e -> e.getKey().toLowerCase(Locale.ROOT), e -> e.getValue().getFirst(),
                         (first, second) -> first));
         requests.add(new Recorded(method, path, exchange.getRequestURI().getRawQuery(), headers, body));
-        Canned canned = responses.getOrDefault(method + " " + path, fallback);
+        Canned canned = canned(method + " " + path, exchange.getRequestURI().getRawQuery());
         if (canned.delayMillis() > 0) {
             try {
                 Thread.sleep(canned.delayMillis());
@@ -105,6 +120,15 @@ public final class StubPsp implements AutoCloseable {
         exchange.sendResponseHeaders(canned.status(), bytes.length);
         exchange.getResponseBody().write(bytes);
         exchange.close();
+    }
+
+    private Canned canned(String key, String query) {
+        Queue<Canned> sequence = sequences.get(key);
+        if (sequence != null) {
+            return sequence.size() > 1 ? sequence.poll() : sequence.peek();
+        }
+        Canned exact = query == null ? null : responses.get(key + "?" + query);
+        return exact != null ? exact : responses.getOrDefault(key, fallback);
     }
 
     @Override

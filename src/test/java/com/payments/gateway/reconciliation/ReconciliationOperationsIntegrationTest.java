@@ -104,6 +104,40 @@ class ReconciliationOperationsIntegrationTest extends IntegrationTest {
                 .as("future day").isEqualTo(400);
     }
 
+    @Test
+    void aDayWhoseRunFailedIsRetriedByTheNextDailyRunsWithinTheCatchUpWindow() {
+        clock.set(LocalDate.of(2026, 9, 24).atTime(11, 0).atZone(IST).toInstant());
+        TestMerchant merchant = createMerchant(ALPHA);
+        payAndSucceed(merchant, 20_000);
+        var alpha = mockProviders.stream().filter(p -> p.code().equals(ALPHA)).findFirst().orElseThrow().psp();
+        alpha.setAvailable(false);
+        clock.set(LocalDate.of(2026, 9, 25).atTime(2, 30).atZone(IST).toInstant());
+        assertThat(reconciliation.runForPreviousDay()).isZero();
+        clock.set(LocalDate.of(2026, 9, 26).atTime(2, 30).atZone(IST).toInstant());
+        assertThat(reconciliation.runForPreviousDay()).as("both days still fail while the PSP is down").isZero();
+        assertThat(str(account(admin("GET", "/admin/v1/reconciliation/reports/daily?date=2026-09-24", null), merchant),
+                "status")).isEqualTo("failed");
+
+        alpha.setAvailable(true);
+        clock.set(LocalDate.of(2026, 9, 27).atTime(2, 30).atZone(IST).toInstant());
+
+        assertThat(reconciliation.runForPreviousDay()).as("26th, plus the failed 24th and 25th").isEqualTo(3);
+        Map<String, Object> retried = account(admin("GET", "/admin/v1/reconciliation/reports/daily?date=2026-09-24", null),
+                merchant);
+        assertThat(str(retried, "status")).isEqualTo("completed");
+        assertThat(num(retried, "lines_matched")).isEqualTo(1);
+        assertThat(reconciliation.runForPreviousDay()).as("completed days are not run again").isEqualTo(1);
+
+        alpha.setAvailable(false);
+        clock.set(LocalDate.of(2026, 9, 28).atTime(2, 30).atZone(IST).toInstant());
+        reconciliation.runForPreviousDay();
+        alpha.setAvailable(true);
+        clock.set(LocalDate.of(2026, 10, 2).atTime(2, 30).atZone(IST).toInstant());
+        reconciliation.runForPreviousDay();
+        assertThat(str(account(admin("GET", "/admin/v1/reconciliation/reports/daily?date=2026-09-27", null), merchant),
+                "status")).as("older than the catch-up window: left for an operator").isEqualTo("failed");
+    }
+
     private Response reconcileAroundNow(TestMerchant merchant) {
         return admin("POST", "/admin/v1/reconciliation/runs", Map.of(
                 "merchant_id", merchant.id(),

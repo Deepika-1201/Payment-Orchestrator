@@ -6,6 +6,7 @@ import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.VoidRequest;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -47,5 +48,14 @@ public interface PaymentProvider {
     /** Only called when {@link ProviderCapabilities#settlementReports()} is true. */
     default SettlementReport fetchSettlementReport(MerchantAccount account, SettlementReportQuery query) {
         throw new UnsupportedOperationException(code() + " does not provide settlement reports");
+    }
+
+    /**
+     * How long after a capture or refund succeeds the PSP may take to settle it. A PSP that reports by settlement date
+     * settles a day's transactions in later reports, so reconciliation flags an item as missing at the PSP only once
+     * this much time has passed (ADR-032).
+     */
+    default Duration settlementLag() {
+        return Duration.ZERO;
     }
 }

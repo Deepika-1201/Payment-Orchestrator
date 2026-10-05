@@ -18,7 +18,7 @@ public class ReconciliationRepository {
     public record RunRow(String id, String merchantId, String providerCode, Instant windowStart, Instant windowEnd,
                          String status, int linesTotal, int linesMatched, int linesAutoHealed, int exceptionsOpened,
                          long grossAmount, long refundAmount, long feeAmount, long settledAmount, String error,
-                         Instant startedAt, Instant completedAt, long chargebackAmount) {
+                         Instant startedAt, Instant completedAt, long chargebackAmount, long adjustmentAmount) {
     }
 
     public record ExceptionRow(String id, String runId, String merchantId, String providerCode, String type,
@@ -36,7 +36,8 @@ public class ReconciliationRepository {
     }
 
     public record Totals(int linesTotal, int linesMatched, int linesAutoHealed, int exceptionsOpened, long grossAmount,
-                         long refundAmount, long feeAmount, long settledAmount, long chargebackAmount) {
+                         long refundAmount, long feeAmount, long settledAmount, long chargebackAmount,
+                         long adjustmentAmount) {
     }
 
     private static final int IN_CHUNK = 500;
@@ -67,7 +68,7 @@ public class ReconciliationRepository {
                    SET status = 'COMPLETED', lines_total = :total, lines_matched = :matched, lines_auto_healed = :healed,
                        exceptions_opened = :exceptions, gross_amount = :gross, refund_amount = :refunds,
                        fee_amount = :fees, settled_amount = :settled, chargeback_amount = :chargebacks,
-                       completed_at = :now
+                       adjustment_amount = :adjustments, completed_at = :now
                  WHERE id = :id
                 """)
                 .param("id", id)
@@ -80,6 +81,7 @@ public class ReconciliationRepository {
                 .param("fees", totals.feeAmount())
                 .param("settled", totals.settledAmount())
                 .param("chargebacks", totals.chargebackAmount())
+                .param("adjustments", totals.adjustmentAmount())
                 .param("now", Sql.ts(now))
                 .update();
     }
@@ -121,7 +123,8 @@ public class ReconciliationRepository {
                 rs.getInt("lines_total"), rs.getInt("lines_matched"), rs.getInt("lines_auto_healed"),
                 rs.getInt("exceptions_opened"), rs.getLong("gross_amount"), rs.getLong("refund_amount"),
                 rs.getLong("fee_amount"), rs.getLong("settled_amount"), rs.getString("error"),
-                Sql.instant(rs, "started_at"), Sql.instant(rs, "completed_at"), rs.getLong("chargeback_amount"));
+                Sql.instant(rs, "started_at"), Sql.instant(rs, "completed_at"), rs.getLong("chargeback_amount"),
+                rs.getLong("adjustment_amount"));
     }
 
     public void insertLine(String runId, String providerCode, SettlementReport.Line line, String result, String entityId) {

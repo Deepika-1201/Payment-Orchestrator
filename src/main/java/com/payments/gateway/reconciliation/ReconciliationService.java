@@ -53,7 +53,7 @@ public class ReconciliationService {
     public record RunSummary(String id, String merchantId, String provider, Instant windowStart, Instant windowEnd,
                              String status, int linesTotal, int linesMatched, int linesAutoHealed, int exceptionsOpened,
                              long grossAmount, long refundAmount, long feeAmount, long settledAmount,
-                             long chargebackAmount, String error,
+                             long chargebackAmount, long adjustmentAmount, String error,
                              Instant startedAt, Instant completedAt, List<ExceptionView> exceptions) {
     }
 
@@ -72,7 +72,7 @@ public class ReconciliationService {
     public record AccountResult(String merchantId, String provider, String status, String runId, Integer linesTotal,
                                 Integer linesMatched, Integer linesAutoHealed, Integer exceptionsOpened,
                                 Long grossAmount, Long refundAmount, Long feeAmount, Long settledAmount,
-                                Long chargebackAmount, String error) {
+                                Long chargebackAmount, Long adjustmentAmount, String error) {
     }
 
     /** Exceptions opened by the day's runs and where they stand now. */
@@ -107,6 +107,7 @@ public class ReconciliationService {
         long fees;
         long settled;
         long chargebacks;
+        long adjustments;
         final Map<String, Long> internalNetBySettlement = new HashMap<>();
 
         RunContext(String runId, String merchantId, String provider, Instant now) {
@@ -182,9 +183,11 @@ public class ReconciliationService {
         try {
             reconcileLines(run, report);
             postSettlements(run, report);
-            flagMissingAtProvider(run, from, to);
+            Duration lag = provider.settlementLag();
+            flagMissingAtProvider(run, from.minus(lag), to.minus(lag));
             repository.completeRun(run.runId, new ReconciliationRepository.Totals(run.total, run.matched, run.healed,
-                    run.exceptions, run.gross, run.refunds, run.fees, run.settled, run.chargebacks), clock.instant());
+                    run.exceptions, run.gross, run.refunds, run.fees, run.settled, run.chargebacks, run.adjustments),
+                    clock.instant());
         } catch (RuntimeException e) {
             log.error("Reconciliation run {} failed", run.runId, e);
             repository.failRun(run.runId, e.getClass().getSimpleName() + ": " + e.getMessage(), clock.instant());
@@ -197,20 +200,35 @@ public class ReconciliationService {
 
     /**
      * Daily T+1 job: reconciles the previous local day for every merchant PSP account, including suspended merchants
-     * and accounts disabled within the last week, whose earlier payments still settle.
+     * and accounts disabled within the last week, whose earlier payments still settle. It first retries the accounts whose
+     * latest run of one of the {@code catchUpDays} days before failed, for example on a payout still pending (ADR-032).
      */
     public int runForPreviousDay() {
-        Window window = window(LocalDate.ofInstant(clock.instant(), properties.zone()).minusDays(1));
+        LocalDate yesterday = LocalDate.ofInstant(clock.instant(), properties.zone()).minusDays(1);
         int runs = 0;
-        for (MerchantDirectory.ProviderAccount account : accountsToReconcile(window, null)) {
-            try {
-                run(account.merchantId(), account.providerCode(), window.from(), window.to());
-                runs++;
-            } catch (RuntimeException e) {
-                log.warn("Daily reconciliation failed for {}/{}", account.merchantId(), account.providerCode(), e);
+        for (int back = properties.catchUpDays(); back >= 1; back--) {
+            Window window = window(yesterday.minusDays(back));
+            for (RunRow failed : repository.latestRunsForWindow(window.from(), window.to(), null)) {
+                if ("FAILED".equals(failed.status())) {
+                    runs += runQuietly(failed.merchantId(), failed.providerCode(), window);
+                }
             }
         }
+        Window window = window(yesterday);
+        for (MerchantDirectory.ProviderAccount account : accountsToReconcile(window, null)) {
+            runs += runQuietly(account.merchantId(), account.providerCode(), window);
+        }
         return runs;
+    }
+
+    private int runQuietly(String merchantId, String providerCode, Window window) {
+        try {
+            run(merchantId, providerCode, window.from(), window.to());
+            return 1;
+        } catch (RuntimeException e) {
+            log.warn("Daily reconciliation failed for {}/{} on window starting {}", merchantId, providerCode, window.from(), e);
+            return 0;
+        }
     }
 
     /**
@@ -226,13 +244,15 @@ public class ReconciliationService {
         Map<String, AccountResult> accounts = new TreeMap<>();
         for (MerchantDirectory.ProviderAccount account : accountsToReconcile(window, merchantId)) {
             accounts.put(account.merchantId() + "/" + account.providerCode(), new AccountResult(account.merchantId(),
-                    account.providerCode(), "missing", null, null, null, null, null, null, null, null, null, null, null));
+                    account.providerCode(), "missing", null, null, null, null, null, null, null, null, null, null, null,
+                    null));
         }
         for (RunRow run : repository.latestRunsForWindow(window.from(), window.to(), merchantId)) {
             accounts.put(run.merchantId() + "/" + run.providerCode(), new AccountResult(run.merchantId(),
                     run.providerCode(), run.status().toLowerCase(Locale.ROOT), run.id(), run.linesTotal(),
                     run.linesMatched(), run.linesAutoHealed(), run.exceptionsOpened(), run.grossAmount(),
-                    run.refundAmount(), run.feeAmount(), run.settledAmount(), run.chargebackAmount(), run.error()));
+                    run.refundAmount(), run.feeAmount(), run.settledAmount(), run.chargebackAmount(),
+                    run.adjustmentAmount(), run.error()));
         }
         int opened = 0;
         int resolved = 0;
@@ -278,7 +298,7 @@ public class ReconciliationService {
         return new RunSummary(row.id(), row.merchantId(), row.providerCode(), row.windowStart(), row.windowEnd(),
                 row.status().toLowerCase(Locale.ROOT), row.linesTotal(), row.linesMatched(), row.linesAutoHealed(),
                 row.exceptionsOpened(), row.grossAmount(), row.refundAmount(), row.feeAmount(), row.settledAmount(),
-                row.chargebackAmount(),
+                row.chargebackAmount(), row.adjustmentAmount(),
                 row.error(), row.startedAt(), row.completedAt(),
                 repository.exceptionsForRun(runId).stream().map(e -> toView(e, now)).toList());
     }
@@ -324,14 +344,14 @@ public class ReconciliationService {
         for (SettlementReport.Line line : report.lines()) {
             run.total++;
             long fee = line.fee() == null ? 0 : line.fee().amount();
+            run.fees += fee;
             switch (line.type()) {
-                case PAYMENT -> {
-                    run.gross += line.amount().amount();
-                    run.fees += fee;
-                }
+                case PAYMENT -> run.gross += line.amount().amount();
                 case REFUND -> run.refunds += line.amount().amount();
                 case CHARGEBACK -> run.chargebacks += line.amount().amount();
                 case CHARGEBACK_REVERSAL -> run.chargebacks -= line.amount().amount();
+                case ADJUSTMENT_CREDIT -> run.adjustments += line.amount().amount();
+                case ADJUSTMENT_DEBIT -> run.adjustments -= line.amount().amount();
             }
             String reference = line.providerReference() == null ? line.lineId() : line.providerReference();
             if (!seen.add(line.type() + "|" + reference)) {
@@ -344,6 +364,7 @@ public class ReconciliationService {
                 case REFUND -> reconcileRefund(run, line, reference);
                 case CHARGEBACK -> reconcileChargeback(run, line, reference);
                 case CHARGEBACK_REVERSAL -> reconcileChargebackReversal(run, line, reference);
+                case ADJUSTMENT_CREDIT, ADJUSTMENT_DEBIT -> reconcileAdjustment(run, line, reference, fee);
             };
             repository.insertLine(run.runId, run.provider, line, outcome.result().name(),
                     outcome.item() == null ? null : outcome.item().entityId());
@@ -356,15 +377,12 @@ public class ReconciliationService {
                 run.healed++;
             }
             repository.autoResolveMissingAtProvider(run.merchantId, run.provider, outcome.item().entityId(), run.runId, run.now);
-            long signedInternal = switch (line.type()) {
-                case PAYMENT -> outcome.item().amount().amount() - fee;
-                case REFUND, CHARGEBACK -> -outcome.item().amount().amount();
-                case CHARGEBACK_REVERSAL -> outcome.item().amount().amount();
-            };
+            long internal = outcome.item().amount().amount();
+            long signedInternal = (line.type().credit() ? internal : -internal) - fee;
             if (line.settlementId() != null) {
                 run.internalNetBySettlement.merge(line.settlementId(), signedInternal, Long::sum);
             }
-            if (line.type() == SettlementReport.LineType.PAYMENT && fee > 0) {
+            if (fee > 0) {
                 postFee(run, line);
             }
         }
@@ -469,9 +487,25 @@ public class ReconciliationService {
         return new LineOutcome(Result.EXCEPTION, item);
     }
 
+    /**
+     * Money the PSP moved outside our captures, refunds and chargebacks. Finance books it with a ledger adjustment once
+     * explained (ADR-024); the payout check counts it, so the payout is not flagged a second time (ADR-032).
+     */
+    private LineOutcome reconcileAdjustment(RunContext run, SettlementReport.Line line, String reference, long fee) {
+        long signed = (line.type().credit() ? line.amount().amount() : -line.amount().amount()) - fee;
+        run.open("UNMATCHED_ADJUSTMENT", reference, null, null, signed, "The PSP "
+                + (line.type().credit() ? "credited" : "debited") + " an adjustment the gateway has no record of"
+                + (line.description() == null ? "" : ": " + line.description()));
+        if (line.settlementId() != null) {
+            run.internalNetBySettlement.merge(line.settlementId(), signed, Long::sum);
+        }
+        return new LineOutcome(Result.EXCEPTION, null);
+    }
+
     private void postFee(RunContext run, SettlementReport.Line line) {
         ledger.post(new Posting(run.merchantId, run.provider, LedgerTransactionType.PSP_FEE, "REPORT_LINE",
-                run.provider + ":" + line.lineId(), "PSP fee on " + line.providerReference(),
+                run.provider + ":" + line.lineId(), "PSP fee on "
+                        + (line.providerReference() == null ? line.lineId() : line.providerReference()),
                 line.occurredAt() == null ? run.now : line.occurredAt(),
                 List.of(Leg.debit(LedgerAccountType.PSP_FEES, line.fee()), Leg.credit(LedgerAccountType.PSP_RECEIVABLE, line.fee()))));
     }
@@ -492,7 +526,8 @@ public class ReconciliationService {
             long expected = run.internalNetBySettlement.getOrDefault(settlement.settlementId(), 0L);
             if (expected != settlement.netAmount()) {
                 run.open("SETTLEMENT_MISMATCH", settlement.settlementId(), null, expected, settlement.netAmount(),
-                        "Payout differs from the net of matched captures, refunds, fees and chargebacks by " + (settlement.netAmount() - expected));
+                        "Payout differs from the net of matched captures, refunds, fees, chargebacks and adjustments by "
+                                + (settlement.netAmount() - expected));
             }
         }
     }

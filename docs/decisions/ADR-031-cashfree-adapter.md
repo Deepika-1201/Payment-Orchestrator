@@ -1,6 +1,6 @@
 # ADR-031: Cashfree adapter
 
-**Status:** Accepted (2026-09-27)
+**Status:** Accepted (2026-09-27). Settlement reports were added later by [ADR-032](ADR-032-settlement-reports.md); Cashfree timestamps now always carry seconds.
 
 ## Context
 Cashfree is the second real PSP, after Razorpay (ADR-030). Its PG API differs in ways that matter to the orchestrator:

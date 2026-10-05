@@ -81,6 +81,13 @@ final class CashfreeApi {
                 .POST(HttpRequest.BodyPublishers.ofString(json.write(body))), true);
     }
 
+    /** A POST that only reads (Cashfree's settlement reports), so its failures are classified like a GET's. */
+    JsonNode search(MerchantAccount account, String path, Map<String, ?> body) {
+        return send(account, HttpRequest.newBuilder(uri(path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json.write(body))), false);
+    }
+
     JsonNode parse(String body) {
         return json.read(body, JsonNode.class);
     }

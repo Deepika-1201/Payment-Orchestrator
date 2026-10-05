@@ -104,6 +104,9 @@ PSP evidence contradicted a final state (for example a success after a failure, 
 Reconciliation exceptions are open past their SLA (ADR-017).
 - `GET $ADMIN/reconciliation/exceptions?overdue=true` lists them. Assign an owner with `POST $ADMIN/reconciliation/exceptions/{id}/assign` (`finance_write`).
 - Resolve them with evidence: `POST $ADMIN/reconciliation/exceptions/{id}/resolve`, and a ledger adjustment if money must move.
+- `unmatched_adjustment` (Razorpay or Cashfree, ADR-032): the PSP added or took money outside our payments, such as a risk hold, a transfer or a correction. `details` carries its description. Ask the PSP what it is, book it with a maker-checker ledger adjustment (ADR-024), then resolve the exception.
+- `missing_at_provider` on a real PSP means the settlement lag (`pg.providers.<psp>.settlement-lag`, 5 days) has passed and the capture still hasn't settled. Right after a PSP is enabled, it can also mean the capture settled before the first reconciled day: rerun that earlier day's window.
+- A day's run that failed, for example because a payout was still pending, shows as `failed` in `GET $ADMIN/reconciliation/reports/daily?date=…`. The daily run retries it for 3 days (`pg.reconciliation.catch-up-days`). After that, rerun it with `POST $ADMIN/reconciliation/runs`.
 
 ### ReviewQueueBacklog
 More than 25 items of one kind have waited for manual review for an hour.

@@ -2,6 +2,7 @@ package com.payments.gateway.provider.razorpay;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import com.payments.gateway.provider.spi.InboundWebhook;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
@@ -15,8 +16,11 @@ import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
+import com.payments.gateway.provider.spi.SettlementReport;
+import com.payments.gateway.provider.spi.SettlementReport.LineType;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
@@ -68,7 +72,8 @@ class RazorpayPaymentProviderTest {
     }
 
     private RazorpayPaymentProvider provider(boolean upiS2s, Duration readTimeout) {
-        RazorpayProperties properties = new RazorpayProperties(true, stub.baseUrl(), upiS2s, Duration.ofMinutes(15));
+        RazorpayProperties properties = new RazorpayProperties(true, stub.baseUrl(), upiS2s, Duration.ofMinutes(15),
+                Duration.ofDays(5));
         return new RazorpayPaymentProvider(properties,
                 new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), readTimeout, "rzp_test_", json), Clock.fixed(NOW, ZoneOffset.UTC));
     }
@@ -295,7 +300,8 @@ class RazorpayPaymentProviderTest {
                 .isInstanceOf(ProviderTimeoutException.class);
 
         RazorpayPaymentProvider unreachable = new RazorpayPaymentProvider(
-                new RazorpayProperties(true, java.net.URI.create("http://127.0.0.1:1/v1"), true, Duration.ofMinutes(15)),
+                new RazorpayProperties(true, java.net.URI.create("http://127.0.0.1:1/v1"), true, Duration.ofMinutes(15),
+                        Duration.ofDays(5)),
                 new RazorpayApi(java.net.URI.create("http://127.0.0.1:1/v1"), Duration.ofSeconds(1), Duration.ofSeconds(1), "rzp_test_", json),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         assertThatThrownBy(() -> unreachable.initiatePayment(ACCOUNT, request(PaymentMethod.upi(UpiFlow.INTENT, null))))
@@ -371,5 +377,143 @@ class RazorpayPaymentProviderTest {
 
         assertThat(provider.parseWebhook(ACCOUNT, signed("{\"event\":\"payment.downtime.started\",\"payload\":{}}", "whsec_rzp")))
                 .as("events the gateway does not use").isEmpty();
+    }
+
+    // ------------------------------------------------------------------ settlement reports (ADR-032)
+
+    /** 4 October 2026 in India time. */
+    private static final Instant DAY_START = Instant.parse("2026-10-03T18:30:00Z");
+    private static final SettlementReportQuery DAY = new SettlementReportQuery("mer_1", DAY_START, DAY_START.plus(Duration.ofDays(1)));
+    private static final Instant NOON = Instant.parse("2026-10-04T06:30:00Z");
+    private static final String RECON = "GET /v1/settlements/recon/combined";
+
+    private static String recon(String day, int skip) {
+        return RECON + "?year=2026&month=10&day=" + day + "&count=1000&skip=" + skip;
+    }
+
+    private static String collection(List<String> items) {
+        return "{\"entity\":\"collection\",\"count\":" + items.size() + ",\"items\":[" + String.join(",", items) + "]}";
+    }
+
+    private static String item(String entityId, String type, long amount, long credit, long debit, String settlement,
+                               Instant settledAt, String extra) {
+        return "{\"entity_id\":\"" + entityId + "\",\"type\":\"" + type + "\",\"amount\":" + amount + ",\"credit\":" + credit
+                + ",\"debit\":" + debit + ",\"currency\":\"INR\",\"settled\":true,\"created_at\":"
+                + settledAt.minus(Duration.ofDays(2)).getEpochSecond() + ",\"settled_at\":" + settledAt.getEpochSecond()
+                + ",\"settlement_id\":\"" + settlement + "\",\"settlement_utr\":\"UTR_" + settlement + "\"" + extra + "}";
+    }
+
+    private void payout(String settlementId, String status, long amount) {
+        stub.on("GET /v1/settlements/" + settlementId, 200, "{\"id\":\"" + settlementId + "\",\"entity\":\"settlement\",\"amount\":"
+                + amount + ",\"status\":\"" + status + "\",\"fees\":0,\"tax\":0,\"utr\":\"UTR_" + settlementId + "\",\"created_at\":"
+                + NOON.getEpochSecond() + "}");
+    }
+
+    @Test
+    void settlementReconIsReadPerIndiaDayAndItemsAreKeptByWhenTheyWereSettled() {
+        stub.on(RECON, 200, collection(List.of()))
+                .on(recon("03", 0), 200, collection(List.of(
+                        item("pay_0", "payment", 1_000, 980, 0, "setl_0", Instant.parse("2026-10-03T10:00:00Z"), ""),
+                        item("pay_3", "payment", 1_000, 980, 0, "setl_3", Instant.parse("2026-10-03T19:00:00Z"),
+                                ",\"order_id\":\"order_3\""))))
+                .on(recon("04", 0), 200, collection(List.of(
+                        item("pay_1", "payment", 49_900, 48_722, 0, "setl_1", NOON,
+                                ",\"order_id\":\"order_1\",\"order_receipt\":\"" + ATTEMPT + "\",\"notes\":[]"),
+                        item("pay_2", "payment", 20_000, 19_528, 0, "setl_1", NOON,
+                                ",\"order_id\":\"order_2\",\"order_receipt\":null,\"notes\":{\"pg_attempt_id\":\"att_2\"}"),
+                        item("rfnd_1", "refund", 10_000, 0, 10_000, "setl_1", NOON,
+                                ",\"payment_id\":\"pay_1\",\"notes\":{\"pg_refund_id\":\"rfd_1\"}"),
+                        item("rfnd_2", "refund", 5_000, 0, 5_590, "setl_1", NOON, ",\"fee\":590,\"tax\":90,\"notes\":\"text\""),
+                        item("adj_1", "adjustment", 3_000, 0, 3_000, "setl_1", NOON, ",\"dispute_id\":\"disp_1\""),
+                        item("adj_2", "adjustment", 1_012, 1_012, 0, "setl_1", NOON, ",\"description\":\"test reason\""),
+                        item("trf_1", "transfer", 100_000, 0, 100_296, "setl_1", NOON, ",\"fee\":296,\"tax\":46"),
+                        item("pay_8", "payment", 700, 686, 0, "setl_1", NOON, "").replace("\"settled\":true", "\"settled\":false"))))
+                .on(recon("05", 0), 200, collection(List.of(
+                        item("pay_9", "payment", 1_000, 980, 0, "setl_9", Instant.parse("2026-10-04T18:30:00Z"), ""))))
+                .on("GET /v1/disputes/disp_1", 200, "{\"id\":\"disp_1\",\"payment_id\":\"pay_7\",\"amount\":3000}")
+                .on("GET /v1/payments/pay_7", 200, "{\"id\":\"pay_7\",\"order_id\":\"order_7\",\"notes\":[]}")
+                .on("GET /v1/orders/order_7", 200, "{\"id\":\"order_7\",\"receipt\":\"att_7\"}");
+        payout("setl_3", "processed", 980);
+        payout("setl_1", "processed", -28_034 + 100_000);
+
+        SettlementReport report = provider(false).fetchSettlementReport(ACCOUNT, DAY);
+
+        assertThat(report.lines()).extracting(SettlementReport.Line::lineId, SettlementReport.Line::type,
+                        SettlementReport.Line::providerReference, SettlementReport.Line::merchantReference,
+                        line -> line.amount().amount(), line -> line.fee().amount(), SettlementReport.Line::settlementId)
+                .containsExactly(
+                        tuple("pay_3", LineType.PAYMENT, "order_3", null, 1_000L, 20L, "setl_3"),
+                        tuple("pay_1", LineType.PAYMENT, "order_1", ATTEMPT, 49_900L, 1_178L, "setl_1"),
+                        tuple("pay_2", LineType.PAYMENT, "order_2", "att_2", 20_000L, 472L, "setl_1"),
+                        tuple("rfnd_1", LineType.REFUND, "rfnd_1", "rfd_1", 10_000L, 0L, "setl_1"),
+                        tuple("rfnd_2", LineType.REFUND, "rfnd_2", null, 5_000L, 590L, "setl_1"),
+                        tuple("adj_1", LineType.CHARGEBACK, "disp_1", "att_7", 3_000L, 0L, "setl_1"),
+                        tuple("adj_2", LineType.ADJUSTMENT_CREDIT, "adj_2", null, 1_012L, 0L, "setl_1"),
+                        tuple("trf_1", LineType.ADJUSTMENT_DEBIT, "trf_1", null, 100_296L, 0L, "setl_1"));
+        assertThat(report.lines()).filteredOn(line -> line.type().name().startsWith("ADJUSTMENT"))
+                .extracting(SettlementReport.Line::description).containsExactly("adjustment: test reason", "transfer");
+        assertThat(report.settlements()).containsExactly(
+                new SettlementReport.Settlement("setl_3", 980, "INR", "UTR_setl_3", Instant.parse("2026-10-03T19:00:00Z")),
+                new SettlementReport.Settlement("setl_1", 71_966, "INR", "UTR_setl_1", NOON));
+        assertThat(stub.requests()).filteredOn(r -> r.path().equals("/v1/settlements/recon/combined"))
+                .as("the India day of the window plus one either side")
+                .extracting(StubPsp.Recorded::query).containsExactly(
+                        "year=2026&month=10&day=03&count=1000&skip=0",
+                        "year=2026&month=10&day=04&count=1000&skip=0",
+                        "year=2026&month=10&day=05&count=1000&skip=0");
+        assertThat(stub.last("GET /v1/settlements/setl_1").authorization())
+                .isEqualTo("Basic " + Base64.getEncoder().encodeToString("rzp_test_abc:secret123".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void settlementReconPagesUntilAPageIsShort() {
+        List<String> full = new java.util.ArrayList<>();
+        for (int i = 0; i < 1_000; i++) {
+            full.add(item("pay_a" + i, "payment", 100, 98, 0, "setl_1", NOON, ""));
+        }
+        stub.on(RECON, 200, collection(List.of()))
+                .on(recon("04", 0), 200, collection(full))
+                .on(recon("04", 1_000), 200, collection(List.of(item("pay_b", "payment", 100, 98, 0, "setl_1", NOON, ""))));
+        payout("setl_1", "processed", 98_098);
+
+        SettlementReport report = provider(false).fetchSettlementReport(ACCOUNT, DAY);
+
+        assertThat(report.lines()).hasSize(1_001);
+        assertThat(report.lines().getLast().lineId()).isEqualTo("pay_b");
+        assertThat(stub.requests()).filteredOn(r -> r.path().equals("/v1/settlements/recon/combined"))
+                .extracting(StubPsp.Recorded::query).contains("year=2026&month=10&day=04&count=1000&skip=1000")
+                .doesNotContain("year=2026&month=10&day=04&count=1000&skip=2000");
+    }
+
+    @Test
+    void aFailedPayoutIsReportedAsNothingPaidAndAPendingOneFailsTheReport() {
+        stub.on(RECON, 200, collection(List.of()))
+                .on(recon("04", 0), 200, collection(List.of(item("pay_1", "payment", 49_900, 48_722, 0, "setl_1", NOON, ""))));
+        payout("setl_1", "failed", 48_722);
+
+        assertThat(provider(false).fetchSettlementReport(ACCOUNT, DAY).settlements())
+                .extracting(SettlementReport.Settlement::netAmount).containsExactly(0L);
+
+        payout("setl_1", "created", 48_722);
+        assertThatThrownBy(() -> provider(false).fetchSettlementReport(ACCOUNT, DAY))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessageContaining("setl_1 has status 'created'").hasMessageContaining("reconcile this window again");
+    }
+
+    @Test
+    void refusedReportRequestsCarryRazorpaysReasonAndBadKeysAreCredentialFailures() {
+        stub.on(RECON, 400, "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\",\"description\":\"The month is not a valid month.\"}}");
+        assertThatThrownBy(() -> provider(false).fetchSettlementReport(ACCOUNT, DAY))
+                .isInstanceOf(ProviderUnavailableException.class).hasMessageContaining("The month is not a valid month.");
+
+        stub.on(RECON, 401, "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\",\"description\":\"Authentication failed\"}}");
+        assertThatThrownBy(() -> provider(false).fetchSettlementReport(ACCOUNT, DAY))
+                .isInstanceOf(ProviderCredentialsException.class);
+    }
+
+    @Test
+    void razorpayDeclaresSettlementReportsAndItsSettlementLag() {
+        assertThat(provider(false).capabilities().settlementReports()).isTrue();
+        assertThat(provider(false).settlementLag()).isEqualTo(Duration.ofDays(5));
     }
 }

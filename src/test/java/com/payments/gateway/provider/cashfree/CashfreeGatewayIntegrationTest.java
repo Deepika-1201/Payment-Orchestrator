@@ -8,6 +8,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.payments.gateway.support.IntegrationTest;
 import com.payments.gateway.support.StubPsp;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -161,5 +165,67 @@ class CashfreeGatewayIntegrationTest extends IntegrationTest {
         assertThat(str(payment, "latest_attempt.provider_reference")).isEqualTo("cflink_555002");
         assertThat(CASHFREE.requests()).filteredOn(r -> r.method().equals("POST") && r.path().equals("/pg/links"))
                 .as("never created twice").hasSize(1);
+    }
+
+    private static String reconEvent(String type, String id, String saleType, String amount, String settled,
+                                     Instant settledAt, String order, String extra) {
+        return "{\"event_details\":{\"entity\":\"recon\",\"event_id\":\"" + id + "\",\"event_type\":\"" + type
+                + "\",\"sale_type\":\"" + saleType + "\",\"event_status\":\"SUCCESS\",\"event_amount\":" + amount
+                + ",\"event_settlement_amount\":" + settled + ",\"event_currency\":\"INR\"},\"order_details\":" + order
+                + ",\"settlement_details\":{\"cf_settlement_id\":\"88001\",\"settlement_date\":\""
+                + OffsetDateTime.ofInstant(settledAt.truncatedTo(ChronoUnit.SECONDS), ZoneOffset.ofHoursMinutes(5, 30))
+                + "\",\"utr\":\"CB88001\"}" + extra + "}";
+    }
+
+    @Test
+    void cashfreesSettlementReconciliationMatchesWebhookOutcomesAndFlagsARiskHold() {
+        Linked linked = merchantOnCashfree();
+        CASHFREE.on("POST /pg/links", 200, "{\"cf_link_id\":\"555010\",\"link_status\":\"ACTIVE\","
+                + "\"link_url\":\"https://payments-test.cashfree.com/links/rc1\"}");
+        String paymentId = paymentWithPhone(linked.merchant(), 49_901, "9000090000");
+        String attemptId = str(confirm(linked.merchant(), paymentId, card()).body(), "latest_attempt.id");
+        String linkOrder = "{\"order_id\":\"CFPay_rc1\",\"order_tags\":{\"cf_link_id\":\"555010\"}}";
+        assertThat(webhook(linked, "{\"type\":\"PAYMENT_SUCCESS_WEBHOOK\",\"data\":{\"order\":" + linkOrder
+                + ",\"payment\":{\"payment_status\":\"SUCCESS\",\"payment_amount\":499.01,\"payment_currency\":\"INR\"}}}",
+                CLIENT_SECRET).status()).isEqualTo(200);
+        CASHFREE.on("GET /pg/links/" + attemptId + "/orders", 200, "[{\"order_id\":\"CFPay_rc1\",\"order_status\":\"PAID\"}]")
+                .on("POST /pg/orders/CFPay_rc1/refunds", 200, "{\"cf_refund_id\":\"77010\",\"refund_amount\":100.00,"
+                        + "\"refund_currency\":\"INR\",\"refund_status\":\"SUCCESS\"}")
+                .on("GET /pg/orders/CFPay_rc1", 200, linkOrder);
+        String refundId = str(post(linked.merchant(), "/v1/payments/" + paymentId + "/refunds", UUID.randomUUID().toString(),
+                Map.of("amount", 10_000)).body(), "id");
+        assertThat(webhook(linked, "{\"type\":\"DISPUTE_CREATED\",\"data\":{\"dispute\":{\"dispute_id\":\"433010\","
+                + "\"dispute_type\":\"CHARGEBACK\",\"dispute_amount\":50.00,\"dispute_amount_currency\":\"INR\","
+                + "\"dispute_status\":\"CHARGEBACK_CREATED\"},\"order_details\":{\"order_id\":\"CFPay_rc1\"}}}",
+                CLIENT_SECRET).status()).isEqualTo(200);
+        Instant now = clock.instant();
+        CASHFREE.on("POST /pg/settlement/recon", 200, "{\"cursor\":null,\"limit\":1000,\"data\":["
+                        + reconEvent("PAYMENT", "91", "CREDIT", "499.01", "487.23", now, linkOrder, "") + ","
+                        + reconEvent("REFUND", "92", "DEBIT", "100.00", "100.00", now, linkOrder,
+                                ",\"refund_details\":{\"refund_id\":\"" + refundId + "\"}") + ","
+                        + reconEvent("CHARGEBACK", "93", "DEBIT", "50.00", "50.00", now, linkOrder, "") + ","
+                        + reconEvent("RISK", "94", "DEBIT", "25.00", "25.00", now, "{}", "") + "]}")
+                .on("GET /pg/orders/CFPay_rc1/disputes", 200, "[{\"dispute_id\":433010,\"dispute_amount\":50.00}]")
+                .on("POST /pg/settlements", 200, "{\"cursor\":null,\"data\":[{\"cf_settlement_id\":\"88001\","
+                        + "\"status\":\"SUCCESS\",\"amount_settled\":312.23,\"settlement_utr\":\"CB88001\"}]}");
+
+        Response run = admin("POST", "/admin/v1/reconciliation/runs", Map.of("merchant_id", linked.merchant().id(),
+                "provider", CashfreeApi.CODE, "from", now.minus(Duration.ofHours(1)).toString(),
+                "to", now.plus(Duration.ofHours(1)).toString()));
+
+        assertThat(run.status()).as(run.raw()).isEqualTo(201);
+        assertThat(num(run.body(), "lines_total")).isEqualTo(4);
+        assertThat(num(run.body(), "lines_matched")).as("capture, refund and chargeback").isEqualTo(3);
+        assertThat(num(run.body(), "fee_amount")).isEqualTo(1_178);
+        assertThat(num(run.body(), "adjustment_amount")).isEqualTo(-2_500);
+        assertThat(num(run.body(), "settled_amount")).isEqualTo(31_223);
+        assertThat(list(run.body(), "exceptions")).singleElement().satisfies(exception -> {
+            assertThat(str(exception, "type")).isEqualTo("unmatched_adjustment");
+            assertThat(str(exception, "reference")).isEqualTo("RISK:94");
+            assertThat(num(exception, "actual_amount")).isEqualTo(-2_500);
+        });
+        assertThat(ledgerBalances(linked.merchant())).as("Cashfree holds 25.00 the gateway cannot explain yet")
+                .containsEntry("psp_receivable", 2_500L)
+                .containsEntry("bank_settlements", 31_223L);
     }
 }

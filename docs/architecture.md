@@ -318,6 +318,8 @@ flowchart LR
     SM --> RPT["Daily report per merchant/provider"]
 ```
 
+Razorpay and Cashfree report by settlement date, a few days after a capture. A capture therefore counts as missing at the PSP only once its settlement lag has passed. Money the PSP moved for anything else (reserves, transfers, manual corrections) becomes an exception for finance, who books it in the ledger once it is explained. A payout still pending fails the run, which the next daily runs retry. See ADR-032.
+
 ## 5. Data architecture
 
 - **PostgreSQL is the single source of truth** for payments, attempts, refunds, idempotency, the webhook inbox and outbox, routing rules, and audit logs. Strong consistency comes from row locks on the payment row plus database constraints (e.g. `amount_refunded <= amount_captured`).

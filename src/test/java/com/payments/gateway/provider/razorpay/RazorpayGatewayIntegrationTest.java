@@ -10,7 +10,11 @@ import com.payments.gateway.support.IntegrationTest;
 import com.payments.gateway.support.StubPsp;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
@@ -32,6 +36,7 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
     static void razorpay(DynamicPropertyRegistry registry) {
         registry.add("pg.providers.razorpay.enabled", () -> "true");
         registry.add("pg.providers.razorpay.base-url", () -> RAZORPAY.baseUrl().toString());
+        registry.add("pg.providers.razorpay.settlement-lag", () -> "2d");
         registry.add("pg.providers.http.read-timeout", () -> "1s");
     }
 
@@ -141,5 +146,129 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
         assertThat(RAZORPAY.requests()).filteredOn(r -> r.method().equals("POST") && r.path().equals("/v1/payment_links"))
                 .as("a link that may exist is never created twice").hasSize(1);
         assertThat(RAZORPAY.last("GET /v1/payment_links").query()).isEqualTo("reference_id=" + attemptId);
+    }
+
+    // ------------------------------------------------------------------ settlement reconciliation (ADR-032)
+
+    private record Paid(String paymentId, String attemptId) {
+    }
+
+    /** A card payment on a Razorpay link, captured through a signed webhook. */
+    private Paid paidOnRazorpay(Linked linked, String suffix, long amount) {
+        RAZORPAY.on("POST /v1/payment_links", 200, "{\"id\":\"plink_" + suffix + "\",\"short_url\":\"https://rzp.io/i/" + suffix
+                + "\",\"status\":\"created\"}");
+        String paymentId = str(createPayment(linked.merchant(), amount, "automatic"), "id");
+        String attemptId = str(confirm(linked.merchant(), paymentId, card()).body(), "latest_attempt.id");
+        String paid = "{\"entity\":\"event\",\"event\":\"payment_link.paid\",\"payload\":{\"payment_link\":{\"entity\":{"
+                + "\"id\":\"plink_" + suffix + "\",\"reference_id\":\"" + attemptId + "\",\"order_id\":\"order_" + suffix
+                + "\",\"status\":\"paid\"}},\"payment\":{\"entity\":{\"id\":\"pay_" + suffix + "\",\"order_id\":\"order_"
+                + suffix + "\",\"status\":\"captured\",\"amount\":" + amount + ",\"currency\":\"INR\",\"method\":\"card\"}}}}";
+        assertThat(webhook(linked, "evt_paid_" + suffix, paid, WEBHOOK_SECRET).status()).isEqualTo(200);
+        assertThat(str(getPayment(linked.merchant(), paymentId), "status")).isEqualTo("succeeded");
+        return new Paid(paymentId, attemptId);
+    }
+
+    private static String reconItem(String entityId, String type, long amount, long credit, long debit, String settlementId,
+                                    Instant settledAt, String extra) {
+        return "{\"entity_id\":\"" + entityId + "\",\"type\":\"" + type + "\",\"amount\":" + amount + ",\"credit\":" + credit
+                + ",\"debit\":" + debit + ",\"currency\":\"INR\",\"settled\":true,\"created_at\":"
+                + settledAt.minus(Duration.ofDays(1)).getEpochSecond() + ",\"settled_at\":" + settledAt.getEpochSecond()
+                + ",\"settlement_id\":\"" + settlementId + "\"" + extra + "}";
+    }
+
+    /** Razorpay's recon for the India day of {@code settledAt} lists {@code items}, paid out as {@code payout}. */
+    private void settles(Instant settledAt, String settlementId, long payout, String... items) {
+        LocalDate day = LocalDate.ofInstant(settledAt, ZoneId.of("Asia/Kolkata"));
+        RAZORPAY.on("GET /v1/settlements/recon/combined", 200, "{\"entity\":\"collection\",\"count\":0,\"items\":[]}")
+                .on(String.format(Locale.ROOT, "GET /v1/settlements/recon/combined?year=%d&month=%02d&day=%02d&count=1000&skip=0",
+                        day.getYear(), day.getMonthValue(), day.getDayOfMonth()), 200, "{\"entity\":\"collection\",\"count\":"
+                        + items.length + ",\"items\":[" + String.join(",", items) + "]}")
+                .on("GET /v1/settlements/" + settlementId, 200, "{\"id\":\"" + settlementId + "\",\"entity\":\"settlement\","
+                        + "\"amount\":" + payout + ",\"status\":\"processed\",\"utr\":\"UTR_" + settlementId + "\"}");
+    }
+
+    private Response reconcileAround(TestMerchant merchant, Instant at) {
+        return admin("POST", "/admin/v1/reconciliation/runs", Map.of("merchant_id", merchant.id(), "provider", RazorpayApi.CODE,
+                "from", at.minus(Duration.ofHours(1)).toString(), "to", at.plus(Duration.ofHours(1)).toString()));
+    }
+
+    @Test
+    void razorpaysSettlementReconIsReconciledAndAnUnexplainedAdjustmentIsLeftToFinance() {
+        Linked linked = merchantOnRazorpay();
+        Paid paid = paidOnRazorpay(linked, "r1", 49_900);
+        RAZORPAY.on("GET /v1/payment_links/plink_r1", 200, "{\"id\":\"plink_r1\",\"order_id\":\"order_r1\",\"status\":\"paid\"}")
+                .on("GET /v1/orders/order_r1/payments", 200, "{\"items\":[{\"id\":\"pay_r1\",\"status\":\"captured\","
+                        + "\"amount\":49900,\"currency\":\"INR\"}]}")
+                .on("POST /v1/payments/pay_r1/refund", 200, "{\"id\":\"rfnd_r1\",\"status\":\"processed\",\"amount\":10000,"
+                        + "\"currency\":\"INR\"}");
+        Response refund = post(linked.merchant(), "/v1/payments/" + paid.paymentId() + "/refunds", UUID.randomUUID().toString(),
+                Map.of("amount", 10_000));
+        assertThat(str(refund.body(), "status")).as(refund.raw()).isEqualTo("succeeded");
+        Instant now = clock.instant();
+        settles(now, "setl_r1", 48_722 - 10_590 - 5_000 + 250,
+                reconItem("pay_r1", "payment", 49_900, 48_722, 0, "setl_r1", now,
+                        ",\"order_id\":\"order_r1\",\"order_receipt\":\"" + paid.attemptId() + "\""),
+                reconItem("rfnd_r1", "refund", 10_000, 0, 10_590, "setl_r1", now, ",\"payment_id\":\"pay_r1\",\"fee\":590"),
+                reconItem("adj_r1", "adjustment", 5_000, 0, 5_000, "setl_r1", now, ",\"dispute_id\":\"disp_r1\""),
+                reconItem("adj_r2", "adjustment", 250, 250, 0, "setl_r1", now, ",\"description\":\"Fee reversal\""));
+        RAZORPAY.on("GET /v1/disputes/disp_r1", 200, "{\"id\":\"disp_r1\",\"payment_id\":\"pay_r1\"}")
+                .on("GET /v1/payments/pay_r1", 200, "{\"id\":\"pay_r1\",\"order_id\":\"order_r1\",\"notes\":"
+                        + "{\"pg_attempt_id\":\"" + paid.attemptId() + "\"}}");
+
+        Response run = reconcileAround(linked.merchant(), now);
+
+        assertThat(run.status()).as(run.raw()).isEqualTo(201);
+        assertThat(str(run.body(), "status")).isEqualTo("completed");
+        assertThat(num(run.body(), "lines_total")).isEqualTo(4);
+        assertThat(num(run.body(), "lines_matched")).as("the capture and the refund").isEqualTo(2);
+        assertThat(num(run.body(), "lines_auto_healed")).as("a chargeback only the report knew about").isEqualTo(1);
+        assertThat(num(run.body(), "fee_amount")).as("the capture's fee and an instant refund's").isEqualTo(1_768);
+        assertThat(num(run.body(), "chargeback_amount")).isEqualTo(5_000);
+        assertThat(num(run.body(), "adjustment_amount")).isEqualTo(250);
+        assertThat(num(run.body(), "settled_amount")).isEqualTo(33_382);
+        Map<String, Object> exception = list(run.body(), "exceptions").getFirst();
+        assertThat(list(run.body(), "exceptions")).as("the payout itself adds up").hasSize(1);
+        assertThat(str(exception, "type")).isEqualTo("unmatched_adjustment");
+        assertThat(str(exception, "reference")).isEqualTo("adj_r2");
+        assertThat(num(exception, "actual_amount")).isEqualTo(250);
+        assertThat(str(exception, "details")).endsWith("adjustment: Fee reversal");
+        Map<String, Object> dispute = list(get(linked.merchant(), "/v1/payments/" + paid.paymentId() + "/disputes").body(), "data")
+                .getFirst();
+        assertThat(str(dispute, "reason")).isEqualTo("reported_in_settlement");
+        assertThat(ledgerBalances(linked.merchant()))
+                .as("the receivable keeps exactly the adjustment until finance books it")
+                .containsEntry("psp_receivable", -250L)
+                .containsEntry("psp_fees", 1_768L)
+                .containsEntry("chargebacks", 5_000L)
+                .containsEntry("bank_settlements", 33_382L);
+    }
+
+    @Test
+    void aCaptureIsMissingAtRazorpayOnlyOnceTheSettlementLagHasPassed() {
+        Linked linked = merchantOnRazorpay();
+        Paid paid = paidOnRazorpay(linked, "l1", 20_000);
+        Instant capturedAt = clock.instant();
+        settles(capturedAt, "setl_none", 0);
+
+        Response sameDay = reconcileAround(linked.merchant(), capturedAt);
+        assertThat(num(sameDay.body(), "exceptions_opened")).as("Razorpay settles it later").isZero();
+
+        clock.advance(Duration.ofDays(2));
+        Response afterLag = reconcileAround(linked.merchant(), clock.instant());
+        Map<String, Object> missing = list(afterLag.body(), "exceptions").getFirst();
+        assertThat(str(missing, "type")).isEqualTo("missing_at_provider");
+        assertThat(str(missing, "entity_id")).isEqualTo(paid.attemptId());
+
+        clock.advance(Duration.ofDays(1));
+        Instant late = clock.instant();
+        settles(late, "setl_l1", 19_528, reconItem("pay_l1", "payment", 20_000, 19_528, 0, "setl_l1", late,
+                ",\"order_id\":\"order_l1\",\"order_receipt\":\"" + paid.attemptId() + "\""));
+        Response settledLate = reconcileAround(linked.merchant(), late);
+
+        assertThat(num(settledLate.body(), "lines_matched")).isEqualTo(1);
+        assertThat(num(settledLate.body(), "exceptions_opened")).isZero();
+        assertThat(list(admin("GET", "/admin/v1/reconciliation/exceptions?status=resolved", null).body(), "data"))
+                .extracting(e -> str(e, "resolution")).singleElement().asString().startsWith("auto-resolved");
+        assertThat(ledgerBalances(linked.merchant())).containsEntry("psp_receivable", 0L);
     }
 }

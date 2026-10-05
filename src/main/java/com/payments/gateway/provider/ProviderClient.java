@@ -91,9 +91,33 @@ public class ProviderClient {
         return call(merchantId, providerCode, "refund_status", (provider, account) -> provider.fetchRefundStatus(account, query));
     }
 
+    /**
+     * Settlement reports are batch reads that can span many pages: they bypass the circuit breaker and routing latency, so
+     * a slow or failing report never steers live payments (ADR-032). Adapter errors surface with their message.
+     */
     public SettlementReport fetchSettlementReport(String providerCode, SettlementReportQuery query) {
-        return call(query.merchantId(), providerCode, "settlement_report",
-                (provider, account) -> provider.fetchSettlementReport(account, query));
+        PaymentProvider provider = registry.require(providerCode);
+        MerchantAccount account = accounts.require(query.merchantId(), providerCode);
+        MDC.put(Mdc.PROVIDER, providerCode);
+        long start = System.nanoTime();
+        try {
+            SettlementReport report = provider.fetchSettlementReport(account, query);
+            record(providerCode, "settlement_report", "ok", System.nanoTime() - start);
+            return report;
+        } catch (ProviderCredentialsException e) {
+            record(providerCode, "settlement_report", "credentials_rejected", System.nanoTime() - start);
+            throw e;
+        } catch (ProviderUnavailableException | ProviderTimeoutException e) {
+            record(providerCode, "settlement_report", e instanceof ProviderTimeoutException ? "timeout" : "unavailable",
+                    System.nanoTime() - start);
+            throw e;
+        } catch (RuntimeException e) {
+            record(providerCode, "settlement_report", "error", System.nanoTime() - start);
+            log.error("Settlement report adapter error for merchant account {}", account.id(), e);
+            throw new ProviderUnavailableException(providerCode, "settlement report failed: " + e.getMessage(), e);
+        } finally {
+            MDC.remove(Mdc.PROVIDER);
+        }
     }
 
     public boolean isAvailable(String providerCode) {

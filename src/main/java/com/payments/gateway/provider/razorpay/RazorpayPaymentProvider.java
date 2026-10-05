@@ -16,7 +16,11 @@ import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.VoidRequest;
+import com.payments.gateway.provider.spi.ProviderUnavailableException;
+import com.payments.gateway.provider.spi.SettlementReport;
+import com.payments.gateway.provider.spi.SettlementReport.LineType;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
@@ -29,6 +33,9 @@ import com.payments.gateway.shared.model.UpiFlow;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +43,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -46,6 +54,7 @@ import tools.jackson.databind.JsonNode;
  *   <li>Our attempt and refund ids are the Razorpay {@code receipt}/{@code reference_id} and are copied into
  *       {@code notes}, so every object can be found again after a timeout and every webhook maps back to us.</li>
  *   <li>Payments are captured automatically; Razorpay cannot void an authorization, so neither can this adapter.</li>
+ *   <li>Settlement reports come from Razorpay's settlement recon, read per settlement day (ADR-032).</li>
  * </ul>
  */
 public final class RazorpayPaymentProvider implements PaymentProvider {
@@ -64,6 +73,10 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
     private static final long CARD_MAX = 100_000_000L;
     // Razorpay rejects Payment Links that expire less than 15 minutes after creation.
     private static final Duration MIN_LINK_TTL = Duration.ofMinutes(16);
+    // Razorpay dates settlements in India time; recon pages hold at most 1000 items.
+    private static final ZoneId SETTLEMENT_ZONE = ZoneId.of("Asia/Kolkata");
+    private static final int RECON_PAGE = 1000;
+    private static final int MAX_RECON_PAGES = 1000;
 
     private final RazorpayProperties properties;
     private final RazorpayApi api;
@@ -79,7 +92,7 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                 MethodType.UPI, new MethodSupport(upiFlows, 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, false),
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)),
-                Set.of("INR"), false, true, false);
+                Set.of("INR"), false, true, true);
     }
 
     @Override
@@ -378,6 +391,156 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             }
         }
         return Optional.empty();
+    }
+
+    // ------------------------------------------------------------------ settlement reports
+
+    @Override
+    public Duration settlementLag() {
+        return properties.settlementLag();
+    }
+
+    /**
+     * Razorpay's settlement recon lists what was settled on a day, so every India-time day the window touches is read,
+     * plus one on either side in case Razorpay dates a settlement differently, and items are kept by {@code settled_at}.
+     * Each payout is then read for its amount and status (ADR-032).
+     */
+    @Override
+    public SettlementReport fetchSettlementReport(MerchantAccount account, SettlementReportQuery query) {
+        List<SettlementReport.Line> lines = new ArrayList<>();
+        Map<String, Payout> payouts = new LinkedHashMap<>();
+        LocalDate last = LocalDate.ofInstant(query.to().minusNanos(1), SETTLEMENT_ZONE).plusDays(1);
+        for (LocalDate day = LocalDate.ofInstant(query.from(), SETTLEMENT_ZONE).minusDays(1); !day.isAfter(last);
+             day = day.plusDays(1)) {
+            for (JsonNode item : reconItems(account, day)) {
+                Instant settledAt = epochSeconds(item, "settled_at");
+                String settlementId = text(item, "settlement_id");
+                boolean unsettled = item.path("settled").isBoolean() && !item.path("settled").asBoolean();
+                if (unsettled || settledAt == null || settlementId == null || settledAt.isBefore(query.from())
+                        || !settledAt.isBefore(query.to())) {
+                    continue;
+                }
+                SettlementReport.Line line = reconLine(account, item);
+                lines.add(line);
+                payouts.putIfAbsent(settlementId, new Payout(settledAt, line.amount().currency()));
+            }
+        }
+        List<SettlementReport.Settlement> settlements = new ArrayList<>();
+        payouts.forEach((id, payout) -> settlements.add(settlement(account, id, payout)));
+        return new SettlementReport(lines, settlements);
+    }
+
+    private record Payout(Instant settledAt, String currency) {
+    }
+
+    private List<JsonNode> reconItems(MerchantAccount account, LocalDate day) {
+        List<JsonNode> items = new ArrayList<>();
+        for (int page = 0; page < MAX_RECON_PAGES; page++) {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("year", String.valueOf(day.getYear()));
+            params.put("month", String.format(Locale.ROOT, "%02d", day.getMonthValue()));
+            params.put("day", String.format(Locale.ROOT, "%02d", day.getDayOfMonth()));
+            params.put("count", String.valueOf(RECON_PAGE));
+            params.put("skip", String.valueOf(page * RECON_PAGE));
+            JsonNode found = report(() -> api.get(account, "/settlements/recon/combined", params)).path("items");
+            found.forEach(items::add);
+            if (found.size() < RECON_PAGE) {
+                return items;
+            }
+        }
+        throw new ProviderUnavailableException(RazorpayApi.CODE, "settlement recon for " + day + " has more than "
+                + MAX_RECON_PAGES * RECON_PAGE + " items");
+    }
+
+    /**
+     * The fee is what Razorpay kept: the gap between the amount and what it credited or debited, so fees invoiced
+     * separately count as zero. Adjustments without a dispute have nothing of ours to match.
+     */
+    private SettlementReport.Line reconLine(MerchantAccount account, JsonNode item) {
+        String id = text(item, "entity_id");
+        String currency = Optional.ofNullable(text(item, "currency")).orElse("INR");
+        Money amount = Money.of(item.path("amount").asLong(0), currency);
+        long credit = item.path("credit").asLong(0);
+        long debit = item.path("debit").asLong(0);
+        Money keptOnCredit = Money.of(Math.max(0, amount.amount() - credit), currency);
+        Money keptOnDebit = Money.of(Math.max(0, debit - amount.amount()), currency);
+        String settlementId = text(item, "settlement_id");
+        Instant createdAt = epochSeconds(item, "created_at");
+        String type = Optional.ofNullable(text(item, "type")).orElse("");
+        String disputeId = text(item, "dispute_id");
+        if (type.equals("payment")) {
+            String attemptId = Optional.ofNullable(text(item, "order_receipt")).orElse(note(item, ATTEMPT_NOTE));
+            return new SettlementReport.Line(id, LineType.PAYMENT, Optional.ofNullable(text(item, "order_id")).orElse(id),
+                    attemptId, amount, keptOnCredit, settlementId, createdAt);
+        }
+        if (type.equals("refund")) {
+            return new SettlementReport.Line(id, LineType.REFUND, id, note(item, REFUND_NOTE), amount, keptOnDebit,
+                    settlementId, createdAt);
+        }
+        if (type.equals("adjustment") && disputeId != null) {
+            boolean withheld = debit > 0;
+            return new SettlementReport.Line(id, withheld ? LineType.CHARGEBACK : LineType.CHARGEBACK_REVERSAL, disputeId,
+                    disputedAttempt(account, disputeId), amount, withheld ? keptOnDebit : keptOnCredit, settlementId,
+                    createdAt);
+        }
+        String description = text(item, "description");
+        boolean credited = credit > 0;
+        return new SettlementReport.Line(id, credited ? LineType.ADJUSTMENT_CREDIT : LineType.ADJUSTMENT_DEBIT, id, null,
+                Money.of(credited ? credit : debit, currency), Money.of(0, currency), settlementId, createdAt,
+                description == null ? type : type + ": " + description);
+    }
+
+    /** The attempt behind a dispute, for a chargeback the gateway only learns about from the report (ADR-018). */
+    private String disputedAttempt(MerchantAccount account, String disputeId) {
+        try {
+            String paymentId = text(api.get(account, "/disputes/" + RazorpayApi.segment(disputeId), Map.of()), "payment_id");
+            if (paymentId == null) {
+                return null;
+            }
+            JsonNode payment = api.get(account, "/payments/" + RazorpayApi.segment(paymentId), Map.of());
+            String attemptId = text(payment.path("notes"), ATTEMPT_NOTE);
+            String orderId = text(payment, "order_id");
+            if (attemptId != null || orderId == null) {
+                return attemptId;
+            }
+            return text(api.get(account, "/orders/" + RazorpayApi.segment(orderId), Map.of()), "receipt");
+        } catch (RazorpayApi.BadRequest e) {
+            return null;
+        }
+    }
+
+    private SettlementReport.Settlement settlement(MerchantAccount account, String settlementId, Payout payout) {
+        JsonNode settlement = report(() -> api.get(account, "/settlements/" + RazorpayApi.segment(settlementId), Map.of()));
+        String status = Optional.ofNullable(text(settlement, "status")).orElse("");
+        long amount = switch (status) {
+            case "processed" -> settlement.path("amount").asLong();
+            // Nothing reached the bank: the payout check flags the whole net and the receivable keeps it.
+            case "failed" -> 0;
+            default -> throw new ProviderUnavailableException(RazorpayApi.CODE, "settlement " + settlementId
+                    + " has status '" + status + "'; reconcile this window again once Razorpay has paid it out");
+        };
+        return new SettlementReport.Settlement(settlementId, amount, payout.currency(), text(settlement, "utr"),
+                payout.settledAt());
+    }
+
+    /** Report calls only read, so a refusal is reported with Razorpay's reason rather than as an adapter error. */
+    private static JsonNode report(Supplier<JsonNode> call) {
+        try {
+            return call.get();
+        } catch (RazorpayApi.BadRequest e) {
+            throw new ProviderUnavailableException(RazorpayApi.CODE, "Razorpay refused a settlement report request: "
+                    + e.getMessage());
+        }
+    }
+
+    private static String note(JsonNode entity, String key) {
+        JsonNode notes = entity.path("notes");
+        return notes.isObject() ? text(notes, key) : null;
+    }
+
+    private static Instant epochSeconds(JsonNode entity, String field) {
+        long seconds = entity.path(field).asLong(0);
+        return seconds > 0 ? Instant.ofEpochSecond(seconds) : null;
     }
 
     // ------------------------------------------------------------------ webhooks
