@@ -977,3 +977,161 @@ Rules:
 - **Failed confirms:** they never surface internals. `payment_invalid_state` (a double submit, or the payment changed) simply re-renders the current state. `unsupported_payment_method` and `no_provider_available` show "method unavailable". Anything else shows "try again" and is logged with the session id.
 - **Response headers:** every `/checkout/*` response, including errors, carries `Content-Security-Policy: default-src 'none'; style-src 'sha256-…'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, together with `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
 - **Risk inputs:** the customer's IP (`request.getRemoteAddr()`, via ALB forwarded headers in `prod`) and User-Agent are passed to risk checks.
+
+## 18. Recurring payments and mandates (phase 18, ADR-035)
+
+Requirements: [§8.1](requirements.md#81-recurring-payments-and-mandates-phase-18). Mandates and their debits live in the payment module: `payment.domain.Mandate` and `MandateDebit`, `payment.application.MandateService` and `MandateScheduler`, and `payment.web.MandateController`.
+
+### 18.1 Model
+
+| | Mandate (`mdt_`) | Debit (`mdd_`) |
+|---|---|---|
+| Identity | merchant, provider (fixed at creation), instrument `UPI_AUTOPAY` / `CARD` / `ENACH` | mandate, its payment (`pay_`, 1:1), `merchant_debit_id` (unique per mandate) |
+| Money | `max_amount` per debit, currency INR | `amount`, plus `max_amount` and `frictionless_limit` copied from the mandate and the merchant when created |
+| Terms | `frequency` (`daily` … `yearly`, `as_presented`; passed to the PSP, which enforces cycles), `start_at`, `end_at` (default 10 years) | `due_at` (merchant's date), `not_before` (earliest execution of the current cycle) |
+| PSP | `provider_reference` (registration), `provider_mandate_reference` (token or UMRN), `provider_customer_reference`, `next_action` while authorizing | `notification_reference` of the current cycle, `notified_at` |
+| Other | customer (reference, name, email, phone; email and phone required), metadata, `registration_payment_id` | `requires_notification` (UPI and card), `last_executed_at` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> PENDING_AUTHORIZATION : registration sent (next_action)
+    CREATED --> FAILED : PSP refused, or never processed
+    PENDING_AUTHORIZATION --> ACTIVE : customer authorized
+    PENDING_AUTHORIZATION --> FAILED : rejected, or authorization window passed
+    ACTIVE --> PAUSED : customer paused
+    PAUSED --> ACTIVE : customer resumed
+    ACTIVE --> REVOKED : merchant or customer
+    PAUSED --> REVOKED
+    ACTIVE --> EXPIRED : end_at
+    PAUSED --> EXPIRED
+```
+
+Ranks: `CREATED` 0, `PENDING_AUTHORIZATION` 1, `ACTIVE`/`PAUSED` 2, `REVOKED`/`EXPIRED`/`FAILED` 3. Lower-ranked evidence and anything after a final status are ignored; `ACTIVE ⇄ PAUSED` follow arrival order. Events: `mandate.activated` (→ `ACTIVE` the first time), `mandate.paused`, `mandate.resumed`, `mandate.revoked`, `mandate.expired`, `mandate.failed`. A mandate reaching `REVOKED` or `EXPIRED` cancels its debits that have not started executing.
+
+```mermaid
+stateDiagram-v2
+    [*] --> SCHEDULED : UPI or card
+    [*] --> READY : eNACH
+    SCHEDULED --> NOTIFYING : notification requested
+    NOTIFYING --> READY : delivered (execute ≥ delivered + 24 h)
+    NOTIFYING --> FAILED : not delivered
+    READY --> EXECUTING : attempt started (mandate ACTIVE)
+    READY --> FAILED : mandate not ACTIVE
+    EXECUTING --> SUCCEEDED : payment succeeded
+    EXECUTING --> SCHEDULED : attempt failed, retries left (UPI, card)
+    EXECUTING --> READY : attempt failed, retries left (eNACH)
+    EXECUTING --> FAILED : no retries left
+    SCHEDULED --> CANCELLED
+    NOTIFYING --> CANCELLED
+    READY --> CANCELLED
+```
+
+The debit's payment carries the money state: `payments.mandate_id` is set and `payments.attempt_limit` = 1 + `max-retries`. `SUCCEEDED`, `FAILED` and `CANCELLED` follow the payment (`payment.succeeded`, `payment.failed`, `payment.cancelled`); a failed attempt with retries left raises `payment.attempt_failed`. `Payment.fail(code)` ends a payment that has no attempt in flight (notification failed, mandate not active).
+
+### 18.2 Merchant API
+
+| Endpoint | Rules |
+|---|---|
+| `POST /v1/mandates` | `instrument`, `max_amount` (₹1 to the PSP's maximum for the instrument), `currency` INR, `frequency`, optional `start_at`/`end_at`, `description`, `customer` (email and phone required), `metadata`, `return_url`. Picks the first linked, available provider supporting the instrument (422 `unsupported_payment_method` if none, 503 `no_provider_available` if all are down). Returns 201 with `pending_authorization` and `next_action`, or `failed` |
+| `GET /v1/mandates/{id}` | |
+| `POST /v1/mandates/{id}/revoke` | Revokes at the PSP first, then locally; replays as success once `revoked`. 409 `mandate_invalid_state` when expired or failed; 503 when the PSP call fails (retry with the same key) |
+| `POST /v1/mandates/{id}/debits` | `amount`, `merchant_debit_id`, optional `due_at` (default: now + 25 h for UPI and card, now for eNACH; within the mandate's term), `description`. Requires `ACTIVE` (409 `mandate_invalid_state`) and no other debit in progress (409). `amount ≤ max_amount` and, for UPI and card, `≤ frictionless limit` (merchant override, else ₹15,000), else 422 `amount_exceeds_mandate_limit`. A reused `merchant_debit_id` → 409 `mandate_debit_already_exists` |
+| `GET /v1/mandates/{id}/debits` · `GET …/debits/{debit_id}` | List oldest first; one debit |
+| `POST /v1/mandates/{id}/debits/{debit_id}/cancel` | Only before execution (`scheduled`, `notifying`, `ready`); cancels the payment too |
+
+`POST /v1/payments/{id}/confirm` and `/cancel` refuse payments with a `mandate_id` (409 `payment_invalid_state`).
+
+### 18.3 Provider SPI
+
+`ProviderCapabilities.mandates`: `MandateInstrument → MandateSupport(registrationAmount, maxAmount)`. Default methods throw `UnsupportedOperationException` and are only called for supported instruments. Each call is idempotent per our id, so a timeout is recovered by retrying or looking it up:
+
+| Method | Keyed by | Returns |
+|---|---|---|
+| `createMandate(account, CreateMandateRequest)` | mandate id | `ProviderMandateResult`: status `PENDING`/`ACTIVE`/`PAUSED`/`REVOKED`/`EXPIRED`/`FAILED`/`NOT_FOUND`, references, `next_action`, the registration payment's reference |
+| `fetchMandate(account, MandateQuery)` | mandate id or references | `ProviderMandateResult` |
+| `revokeMandate(account, MandateQuery)` | references | `ProviderMandateResult` (`REVOKED` or `PENDING` while the PSP cancels) |
+| `notifyDebit(account, DebitNotificationRequest)` | notification id `<debit id>.<cycle>` | `ProviderNotificationResult`: `PENDING`/`DELIVERED`/`FAILED`/`NOT_FOUND`, reference, `delivered_at` |
+| `fetchDebitNotification(account, DebitNotificationQuery)` | notification id or reference | `ProviderNotificationResult` |
+| `executeDebit(account, ExecuteDebitRequest)` | attempt id | `ProviderPaymentResult` (usually `PENDING`) |
+
+Debit attempts reuse `fetchPaymentStatus` and payment webhooks. Their provider reference is set when the attempt starts: the cycle's notification reference (one PSP order per cycle), or the adapter's own reference for eNACH. `ProviderEvent` gains `MANDATE` and `NOTIFICATION` kinds.
+
+### 18.4 Registration
+
+```text
+create(merchant, request):
+  provider = first linked provider supporting the instrument with a closed circuit
+  tx1: insert mandate CREATED (authorization window: pg.mandates.authorization-window)
+       if capability.registrationAmount > 0: payment(amount, mandate_id, attempt_limit 1) + attempt INITIATED (method mandate)
+  result = providerClient.createMandate(...)              -- outside tx
+    unavailable → mandate FAILED (provider_unavailable), registration attempt FAILED
+    timeout     → mandate stays CREATED with next_check_at soon; the poller looks it up by mandate id
+  tx2: mandate.apply(result, PROVIDER_RESPONSE)            -- PENDING_AUTHORIZATION + next_action
+  registration attempt ← REQUIRES_ACTION (reference, next_action) through PaymentOutcomeService
+customer authorizes at the PSP → webhooks: payment (registration charge) and mandate (ACTIVE)
+poller: CREATED/PENDING_AUTHORIZATION mandates are checked with backoff (1, 5, 15 min, then hourly);
+        after the window, a last check, then FAILED (authorization_expired) and the registration is cancelled at the PSP
+```
+
+### 18.5 Debit cycle
+
+`MandateScheduler` runs every 5 s on worker tasks. It claims due debits by `next_action_at` and due mandates by `next_check_at`, with a lease (`FOR UPDATE SKIP LOCKED`, as in §10).
+
+| Debit status | Action when due |
+|---|---|
+| `SCHEDULED` (`next_action_at = max(now, not_before − notify-ahead)`) | `notifyDebit` → `PENDING`: `NOTIFYING`; `DELIVERED`: `READY`; `FAILED`: debit and payment fail (`notification_failed`). PSP errors: retry later |
+| `NOTIFYING` (checks every `notification-check-interval`) | `fetchDebitNotification` (or webhook) → `READY` / `FAILED`; still pending after `notification-timeout` → `FAILED` (`notification_not_delivered`) |
+| `READY` (`next_action_at = execute_after = max(not_before, notified_at + 24 h)`) | tx: lock mandate (share), payment, debit. Mandate not `ACTIVE` → debit and payment fail (`mandate_<status>`). Otherwise start the attempt and set `last_executed_at`; after commit `executeDebit` and apply the result. Unavailable → attempt fails (no failover); timeout → `UNKNOWN`, resolved by the status resolver |
+| `EXECUTING` | Nothing: the attempt's outcome arrives by webhook or status check |
+
+On every save of a payment with a `mandate_id`, its debit (if any) follows the payment in the same transaction:
+- `SUCCEEDED` → `SUCCEEDED`.
+- Back to `requires_payment_method` (attempt failed) → next cycle with `not_before = now + retry-interval`: `SCHEDULED` for UPI and card (new notification), `READY` for eNACH.
+- `FAILED`/`EXPIRED` → `FAILED`; `CANCELLED` → `CANCELLED`.
+
+Lock order everywhere: mandate → payment → debit. Webhooks and status checks lock payment → debit; revocation locks the mandate, then each debit's payment and debit.
+
+### 18.6 Schema (`V14__mandates.sql`)
+
+- `mandates`, `mandate_debits` and the append-only `mandate_transitions` (`MANDATE` and `DEBIT` entities; the app may not update or delete it).
+- `payments.mandate_id` (FK) and `attempt_limit`; `payment_attempts.method_type` accepts `MANDATE`; `merchants.mandate_debit_limit`.
+- Database rules for debits (NFR-19):
+  - `amount ≤ max_amount`, and `amount ≤ frictionless_limit` when set;
+  - a trigger checks on insert that `max_amount` equals the mandate's;
+  - when `last_executed_at` changes, the trigger requires the mandate to be `ACTIVE`;
+  - `CHECK`: a notified debit executes only if `last_executed_at ≥ notified_at + 24 hours` (written with `CASE … coalesce(…, false)` so that NULL cannot pass);
+  - partial unique index: one debit in progress per mandate.
+
+### 18.7 Configuration (`pg.mandates.*`)
+
+| Property | Default | Meaning |
+|---|---|---|
+| `max-retries` | 3 | Retries after the first attempt (attempt limit 4) |
+| `retry-interval` | 24h | Earliest next cycle after a failed attempt |
+| `notification-lead` | 24h | Time between delivery and debit; values below 24h are rejected at startup |
+| `notify-ahead` | 26h | When to notify, relative to the cycle's earliest execution |
+| `notification-check-interval` / `notification-timeout` | 5m / 48h | Delivery polling |
+| `authorization-window` | 24h | Time the customer has to authorize a registration |
+| `frictionless-debit-limit` | 1500000 | ₹15,000; a merchant's `mandate_debit_limit` (≤ ₹1,00,000) overrides it |
+| `default-term` | 3650d | `end_at` when the merchant gives none |
+
+### 18.8 Mock PSP
+
+- **Registration:** charges ₹1 for UPI and card, nothing for eNACH. The `max_amount` suffix picks the scenario: `01` timeout but processed, `05` timeout and never processed; anything else returns `PENDING` with a redirect to `/simulator/{provider}/mandates/{reference}` (Approve / Reject).
+- **Simulator:** `POST /simulator/{provider}/mandates/{reference}/complete {outcome}` authorizes or rejects the registration and sends the payment and mandate webhooks. `POST …/mandates/{reference}/status {status: paused|active|revoked}` plays the customer's actions in their UPI app.
+- **Notifications:** `notifyDebit` returns `PENDING`, and the status check then reports `DELIVERED` at the time of the request. A debit amount ending in `06` is never delivered (`FAILED`).
+- **Debits:** `executeDebit` refuses a mandate that is not active. Amount suffixes `01`, `03`, `04` and `05` behave as for payments; anything else is `PENDING` until `/simulator/{provider}/payments/{reference}/complete`.
+
+### 18.9 Razorpay mapping
+
+| Gateway | Razorpay |
+|---|---|
+| `createMandate` | `POST /subscription_registration/auth_links`: method `upi`/`card`/`emandate`, `max_amount`, `expire_at` = `end_at`, `frequency`, `receipt` = mandate id, amount ₹1 (₹0 for eNACH), `expire_by` = the authorization window. Reference = invoice id; the registration payment's reference is the invoice's order id; `next_action` redirects to `short_url` |
+| `fetchMandate` | invoice → paid payment → `token_id`; token status from `GET /customers/{customer}/tokens` |
+| `revokeMandate` | before activation `POST /invoices/{id}/cancel`, after it `PUT /customers/{customer}/tokens/{token}/cancel` |
+| `notifyDebit` | `POST /orders` with `receipt` = notification id and `notification{token_id, payment_after}`. Idempotent through `GET /orders?receipt=` |
+| `fetchDebitNotification` | `GET /orders/{id}`: `notification.status`, `delivered_at` |
+| `executeDebit` | `POST /payments/create/recurring` on the cycle's order, with notes `{attempt_id}` |
+| Webhooks | `token.confirmed`/`rejected`/`cancelled`/`paused` → `MANDATE`; `invoice.paid` → payment (registration) and `MANDATE` (token reference); `invoice.expired` → `MANDATE FAILED`; `order.notification.delivered`/`failed` → `NOTIFICATION`; debit payments use the existing `payment.*` handling by `order_id` |
+

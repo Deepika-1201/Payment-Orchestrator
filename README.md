@@ -23,7 +23,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-034 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-035 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | V1 close-out and V2 phases 18–28: exit criteria, sizes, and how progress is measured |
 
@@ -236,7 +236,7 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 16 | Terraform: two regions from one module, WAF, TLS 1.3, Aurora Global Database, least-privilege IAM, ephemeral secrets; mocked `terraform test`, Trivy in CI (ADR-028) | Done (not yet applied to an account) |
 | 17 | Load tests (k6): smoke in CI, steady, peak 1,000/s, spike; thresholds from NFR-1/2/3 (ADR-029). Local baseline: 100 payments/s with zero errors and p99 create 20 ms | Done (peak run needs AWS) |
 
-**Next: V2, phases 18–28**, proposed in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
+**Next: V2, phases 18–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
 - recurring payments and mandates;
 - partial capture;
 - wallets, EMI and pay later;

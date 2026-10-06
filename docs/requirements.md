@@ -5,7 +5,7 @@
 | Phase | 2 — Requirements (baseline) |
 | Status | Approved: Phase 1 defaults accepted on 2026-09-26 |
 | Next | [architecture.md](architecture.md) (HLD) → [low-level-design.md](low-level-design.md) (LLD) → [decisions/](decisions/README.md) (ADRs) |
-| V2 | Draft (§8, 2026-10-06), proposed in [ADR-034](decisions/ADR-034-post-v1-scope.md); phases in [implementation-plan.md](implementation-plan.md) |
+| V2 | §8: scope accepted in [ADR-034](decisions/ADR-034-post-v1-scope.md) (2026-10-06); each phase confirms its section before code; phases in [implementation-plan.md](implementation-plan.md) |
 
 Items marked **(assumed)** were not explicitly discussed and stay open for challenge.
 
@@ -154,20 +154,20 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 
 Holding funds and paying out settlements (PA mode) · recurring/mandates · EMI, BNPL, wallets, bank transfer, international cards, FX · partial capture · dispute evidence workflow · merchant dashboard UI · card vault/CDE · direct acquirer (ISO 8583) integrations · ML-based fraud · multi-region active-active · merchant billing/invoicing.
 
-After V1 ([ADR-034](decisions/ADR-034-post-v1-scope.md), proposed):
+After V1 ([ADR-034](decisions/ADR-034-post-v1-scope.md)):
 - **Planned for V2 (§8):** PA mode, recurring/mandates, EMI, BNPL, wallets, bank transfer, international cards, FX, partial capture, the dispute evidence workflow, and merchant billing.
 - **Not planned:** the merchant dashboard UI, card vault/CDE, direct acquirer integrations, ML-based fraud and multi-region active-active. ADR-034 gives the reasons and when to revisit each.
 
 ## 8. Post-V1 requirements (V2, draft)
 
-The V2 scope proposed in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased in [implementation-plan.md](implementation-plan.md). Each phase confirms the current RBI and NPCI rules cited here, and refines its requirements in its LLD section before any code. Values marked **(assumed)** are configurable defaults.
+The V2 scope accepted in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased in [implementation-plan.md](implementation-plan.md). Each phase confirms the current RBI and NPCI rules cited here, and refines its requirements in its LLD section before any code. Values marked **(assumed)** are configurable defaults.
 
 ### 8.1 Recurring payments and mandates (phase 18)
-- **FR-MD1** A merchant creates a mandate for a customer: the instrument (UPI AutoPay, a card e-mandate on the PSP's card token, or eNACH), the maximum per debit, the frequency (or "as presented"), and start and end dates. The customer authorizes it at the PSP with an additional factor of authentication.
+- **FR-MD1** A merchant creates a mandate for a customer: the instrument (UPI AutoPay, a card e-mandate on the PSP's card token, or eNACH), the maximum per debit, the frequency (or "as presented"), and start and end dates. The customer's email and phone are required. The customer authorizes the mandate at the PSP with an additional factor of authentication. Where the PSP charges for that authorization (₹1 for UPI and cards), the charge is the mandate's registration payment ([ADR-035](decisions/ADR-035-mandates.md)).
 - **FR-MD2** Mandate lifecycle: `CREATED → PENDING_AUTHORIZATION → ACTIVE ⇄ PAUSED`, ending in `REVOKED` or `EXPIRED`, or in `FAILED` before activation. Transitions are monotonic and logged with their source (FR-P9). A customer's pause or revocation in their bank or UPI app arrives by PSP webhook or status check.
-- **FR-MD3** Each debit is a payment with attempts (FR-P1 to FR-P9), idempotent per mandate and merchant debit id. For card and UPI mandates, the gateway sends the pre-debit notification through the PSP at least 24 h before the debit **(assumed)**; eNACH follows its scheme's rules. A debit executes on its due date only if the mandate is still `ACTIVE`.
-- **FR-MD4** A debit never exceeds the mandate's maximum. Card and UPI debits above the limit for debits without an additional factor (₹15,000, higher for categories the RBI allows) **(assumed)** are not executed automatically; the merchant is told to collect a normal payment instead.
-- **FR-MD5** A failed debit is retried within the scheme's limits, at most 3 times **(assumed)**, then fails with `payment.failed`. Merchant events: `mandate.activated`, `mandate.paused`, `mandate.resumed`, `mandate.revoked`, `mandate.expired`, `mandate.failed`.
+- **FR-MD3** Each debit is a payment with attempts (FR-P1 to FR-P9), idempotent per mandate and merchant debit id. Every execution cycle of a card or UPI debit, including each retry, gets its own pre-debit notification through the PSP, and the debit runs no earlier than 24 h after that notification is delivered. eNACH follows its own scheme's rules. A debit executes only if the mandate is still `ACTIVE` at that moment.
+- **FR-MD4** A debit never exceeds the mandate's maximum. Card and UPI debits above the limit for debits without an additional factor are refused, and the merchant collects a normal payment instead. The limit is ₹15,000 by default. An operator can raise it per merchant up to ₹1,00,000, the limit for mutual funds, insurance premiums and credit card bills.
+- **FR-MD5** A failed debit is retried at most 3 times, a day apart (configurable), then fails with `payment.failed`. A mandate has at most one debit in progress. Merchant events: `mandate.activated`, `mandate.paused`, `mandate.resumed`, `mandate.revoked`, `mandate.expired`, `mandate.failed`.
 - **FR-MD6** Mandate operations are optional provider capabilities (create, status, notify, debit, revoke), with mock PSP scenarios for every outcome and one real PSP adapter.
 
 ### 8.2 Partial capture (phase 19)

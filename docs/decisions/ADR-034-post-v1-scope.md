@@ -1,6 +1,6 @@
 # ADR-034: Post-V1 scope, order and progress measure
 
-**Status:** Proposed (2026-10-06)
+**Status:** Accepted (2026-10-06)
 
 ## Context
 V1, phases 1–17, is built and tested. What is left of it needs PSP sandbox keys or an AWS account. The requirements put many capabilities after V1:

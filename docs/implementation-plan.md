@@ -1,6 +1,6 @@
 # Implementation plan
 
-V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists its scope. This plan closes V1 out, adds V2 (phases 18–28) from the [post-V1 requirements](requirements.md#8-post-v1-requirements-v2-draft), and defines how progress is measured. [ADR-034](decisions/ADR-034-post-v1-scope.md) (Proposed) records what V2 includes, what it leaves out, and why.
+V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists its scope. This plan closes V1 out, adds V2 (phases 18–28) from the [post-V1 requirements](requirements.md#8-post-v1-requirements-v2-draft), and defines how progress is measured. [ADR-034](decisions/ADR-034-post-v1-scope.md) records what V2 includes, what it leaves out, and why.
 
 **Working agreement (V2):**
 
@@ -67,7 +67,7 @@ These items belong to the phases above but need access the project does not have
 
 | # | Phase | Requirements | Depends on | Units | Exit criteria | Status |
 |---|---|---|---|---|---|---|
-| 18 | Recurring payments and mandates | [§8.1](requirements.md#81-recurring-payments-and-mandates-phase-18) | — | 3 | UPI AutoPay, card and eNACH mandates each register, notify and debit end to end on the mock PSP, and through one real adapter against its stub. A debit without an active mandate or a required notification, or above a limit, is refused (NFR-19). A revocation arriving by webhook stops the next debit | |
+| 18 | Recurring payments and mandates | [§8.1](requirements.md#81-recurring-payments-and-mandates-phase-18) | — | 3 | UPI AutoPay, card and eNACH mandates each register, notify and debit end to end on the mock PSP, and through one real adapter against its stub. A debit without an active mandate or a required notification, or above a limit, is refused (NFR-19). A revocation arriving by webhook stops the next debit | In progress: design in [ADR-035](decisions/ADR-035-mandates.md) and [LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035) |
 | 19 | Partial capture | [§8.2](requirements.md#82-partial-capture-phase-19) | — | 0.5 | Capturing less than the authorization releases the rest at the PSP; refunds, disputes and the ledger use the captured amount; capturing more is refused | |
 | 20 | Wallets, EMI and pay later | [§8.3](requirements.md#83-wallets-emi-and-pay-later-phase-20) | — | 1.5 | Each method pays end to end on the mock PSP and through a real adapter's stub, and the hosted checkout offers it when routable. The phase changes nothing in `payment/domain` (NFR-11) | |
 | 21 | Bank transfers and virtual accounts | [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) | — | 1.5 | An exact transfer pays the payment. Short, excess, repeated and unmatched credits follow the policy. Credits reconcile against settlement reports | |
@@ -86,3 +86,4 @@ These items belong to the phases above but need access the project does not have
 | Date | Change | Progress |
 |---|---|---|
 | 2026-10-06 | Plan drafted: V1 baseline, close-out C1–C3, V2 phases 18–28 ([ADR-034](decisions/ADR-034-post-v1-scope.md)) | 22 of 38.5 units (57%) |
+| 2026-10-06 | ADR-034 accepted; phase 18 started with its design ([ADR-035](decisions/ADR-035-mandates.md)) | 22 of 38.5 units (57%) |
