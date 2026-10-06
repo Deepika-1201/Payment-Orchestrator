@@ -5,6 +5,7 @@
 | Phase | 2 — Requirements (baseline) |
 | Status | Approved: Phase 1 defaults accepted on 2026-09-26 |
 | Next | [architecture.md](architecture.md) (HLD) → [low-level-design.md](low-level-design.md) (LLD) → [decisions/](decisions/README.md) (ADRs) |
+| V2 | Draft (§8, 2026-10-06), proposed in [ADR-034](decisions/ADR-034-post-v1-scope.md); phases in [implementation-plan.md](implementation-plan.md) |
 
 Items marked **(assumed)** were not explicitly discussed and stay open for challenge.
 
@@ -24,7 +25,7 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 | Q2 | Money flow | **Orchestrator** — merchants hold their own PSP accounts, funds flow PSP → merchant, the platform never holds funds. Payment-Aggregator mode (escrow, settlement, merchant balances) is a designed-for extension |
 | Q3 | Surfaces | Server-to-server REST API returning `next_action`, specified in [openapi.yaml](openapi.yaml); minimal hosted checkout (server-rendered, no JavaScript; [ADR-013](decisions/ADR-013-hosted-checkout.md)); RBAC-protected admin APIs instead of dashboards |
 | Q4 | V1 methods | UPI (Intent, QR; Collect optional), cards (one-time, 3DS via PSP, auth/capture/void), netbanking. Wallets, EMI, BNPL, bank transfer/virtual accounts, international: designed for, not built |
-| Q5 | Recurring | Modeled in the domain, built after V1 |
+| Q5 | Recurring | Built after V1: V2 phase 18 (§8.1) |
 | Q6 | Lifecycle | No partial capture; multiple partial refunds; disputes = ingest + track + ledger impact |
 | Q7 | Scale | ~1M payments/day at launch; 1,000 TPS peak design point; shard-ready keys for 10× growth; API overhead p99 ≤ 150 ms excluding PSP time |
 | Q8 | Card data | PAN never touches V1 (PSP-hosted fields/redirects, network tokens); card-data-service (CDE) boundary reserved |
@@ -153,7 +154,72 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 
 Holding funds and paying out settlements (PA mode) · recurring/mandates · EMI, BNPL, wallets, bank transfer, international cards, FX · partial capture · dispute evidence workflow · merchant dashboard UI · card vault/CDE · direct acquirer (ISO 8583) integrations · ML-based fraud · multi-region active-active · merchant billing/invoicing.
 
-## 8. Open assumptions (defaults applied until challenged)
+After V1 ([ADR-034](decisions/ADR-034-post-v1-scope.md), proposed):
+- **Planned for V2 (§8):** PA mode, recurring/mandates, EMI, BNPL, wallets, bank transfer, international cards, FX, partial capture, the dispute evidence workflow, and merchant billing.
+- **Not planned:** the merchant dashboard UI, card vault/CDE, direct acquirer integrations, ML-based fraud and multi-region active-active. ADR-034 gives the reasons and when to revisit each.
+
+## 8. Post-V1 requirements (V2, draft)
+
+The V2 scope proposed in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased in [implementation-plan.md](implementation-plan.md). Each phase confirms the current RBI and NPCI rules cited here, and refines its requirements in its LLD section before any code. Values marked **(assumed)** are configurable defaults.
+
+### 8.1 Recurring payments and mandates (phase 18)
+- **FR-MD1** A merchant creates a mandate for a customer: the instrument (UPI AutoPay, a card e-mandate on the PSP's card token, or eNACH), the maximum per debit, the frequency (or "as presented"), and start and end dates. The customer authorizes it at the PSP with an additional factor of authentication.
+- **FR-MD2** Mandate lifecycle: `CREATED → PENDING_AUTHORIZATION → ACTIVE ⇄ PAUSED`, ending in `REVOKED` or `EXPIRED`, or in `FAILED` before activation. Transitions are monotonic and logged with their source (FR-P9). A customer's pause or revocation in their bank or UPI app arrives by PSP webhook or status check.
+- **FR-MD3** Each debit is a payment with attempts (FR-P1 to FR-P9), idempotent per mandate and merchant debit id. For card and UPI mandates, the gateway sends the pre-debit notification through the PSP at least 24 h before the debit **(assumed)**; eNACH follows its scheme's rules. A debit executes on its due date only if the mandate is still `ACTIVE`.
+- **FR-MD4** A debit never exceeds the mandate's maximum. Card and UPI debits above the limit for debits without an additional factor (₹15,000, higher for categories the RBI allows) **(assumed)** are not executed automatically; the merchant is told to collect a normal payment instead.
+- **FR-MD5** A failed debit is retried within the scheme's limits, at most 3 times **(assumed)**, then fails with `payment.failed`. Merchant events: `mandate.activated`, `mandate.paused`, `mandate.resumed`, `mandate.revoked`, `mandate.expired`, `mandate.failed`.
+- **FR-MD6** Mandate operations are optional provider capabilities (create, status, notify, debit, revoke), with mock PSP scenarios for every outcome and one real PSP adapter.
+
+### 8.2 Partial capture (phase 19)
+- **FR-P10** An authorized card payment can be captured once for less than the authorized amount; the PSP releases the rest. Refunds, disputes and the ledger use the captured amount, and capturing more than the authorization is refused. This replaces "full amount only" in FR-P5.
+
+### 8.3 Wallets, EMI and pay later (phase 20)
+- **FR-PM5** Wallets (PSP redirect or app intent), card EMI (the customer picks a tenure the PSP offers), cardless EMI, and pay later. The PSP or the lender makes any credit decision; the gateway keeps only the method, the plan and the outcome.
+- **FR-PM6** Each method is a new `MethodType` with provider capabilities (amount range, tenures) and adapter support, and changes nothing in the payment domain (FR-PM4, NFR-11). The hosted checkout offers a method when it is routable.
+
+### 8.4 Bank transfers and virtual accounts (phase 21)
+- **FR-VA1** A payment can be paid by bank transfer (NEFT, RTGS, IMPS) or UPI to a virtual account or VPA that a PSP issues for it. `next_action` carries the account details.
+- **FR-VA2** Credits are matched to the payment by virtual account, and an exact amount pays it. Defaults, configurable per merchant **(assumed)**: several credits add up; a payment still short at expiry is refunded; an excess is refunded.
+- **FR-VA3** A credit to an expired or unknown virtual account is refunded to its source, or queued for review if that fails. Reconciliation matches credits against settlement reports (FR-RC2).
+
+### 8.5 Dispute evidence (phase 22)
+- **FR-D2** A merchant submits evidence (documents and a statement) for an open dispute through the API, or accepts the dispute. The gateway forwards it to the PSP where the PSP supports it, and tracks the submission and the PSP's deadline.
+- **FR-D3** A `dispute.evidence_due` event and an operator alert fire 3 days before the deadline **(assumed)**. Evidence files are stored encrypted and kept as long as the dispute record (NFR-16).
+
+### 8.6 International cards and multi-currency (phase 23)
+- **FR-FX1** A merchant can enable international cards and charge in the currencies its PSPs support; it is off by default. Amounts are integers in each currency's ISO 4217 minor unit (0, 2 or 3 decimals).
+- **FR-FX2** Settlement stays in INR. The PSP's conversion rate and the settled INR amount are stored for every capture, refund and chargeback. The shadow ledger keeps both currencies and books the difference to an FX account. Reconciliation matches in the settlement currency.
+- **FR-FX3** Refunds are made in the original currency and are limited by the amount captured in that currency.
+
+### 8.7 Cost-aware and adaptive routing (phase 24)
+- **FR-R5** A `COST` strategy ranks candidates by expected cost: the fee from the merchant PSP account's fee schedule divided by the predicted success rate. Fee schedules are checked against the fees PSPs withheld in settlement reports (ADR-032).
+- **FR-R6** An `ADAPTIVE` strategy picks candidates by sampling their observed success rates per method, and per bank where known (Thompson sampling). It never explores an unhealthy candidate, and exploration is capped at 10% of traffic **(assumed)**.
+- **FR-R7** A new strategy can run in shadow mode: it records the decision it would have made next to the one used, without changing routing.
+
+### 8.8 Merchant billing (phase 25)
+- **FR-B1** Each merchant has a pricing plan, versioned with effective dates: a fee per successful payment by method (fixed plus percentage), and an optional monthly minimum.
+- **FR-B2** A monthly invoice per merchant is computed from its billable events (successful payments, and refunds where the plan charges them), with GST at 18% **(assumed)**. Issued invoices never change; corrections are credit notes. Invoice numbers are sequential and unique within a financial year.
+- **FR-B3** In orchestrator mode the merchant pays the invoice. In aggregator mode the fees are deducted from settlements (FR-PA4).
+
+### 8.9 Payment Aggregator mode (phases 26 to 28)
+- **FR-PA1** Before a merchant may use aggregator mode, onboarding completes due diligence: business KYC (PAN, GSTIN, a verified bank account), beneficial owners, and a risk category with limits. A second operator approves the activation. KYC is refreshed periodically, by risk category **(assumed)**.
+- **FR-PA2** The mode is set per merchant: `ORCHESTRATOR` (V1) or `AGGREGATOR`. In aggregator mode, payments are collected on the platform's PSP accounts, and the funds land in an escrow account at a scheduled commercial bank.
+- **FR-PA3** The ledger becomes the book of record for held funds: escrow, merchant payable, reserves, platform fee income and GST payable. Every capture, refund, chargeback and fee posts in the same transaction as its state change, as in V1.
+- **FR-PA4** Settlement batches run per merchant on its cycle, T+1 business days by default **(assumed)**: captures minus refunds, chargebacks, fees with GST, and reserve changes. Approved batches are immutable, and settlement is held for merchants under review.
+- **FR-PA5** Payouts go to the merchant's verified bank account through a payout provider SPI (mock and one real provider), idempotent on our payout id. Unknown outcomes are resolved by status checks, never by resending. A returned payout credits the merchant payable back and raises an exception.
+- **FR-PA6** The escrow bank statement is reconciled against the ledger daily. A merchant whose refunds and chargebacks exceed its receipts goes negative; the balance is recovered from later settlements or the reserve, and finance is alerted.
+- **FR-PA7** In production, the gateway refuses `AGGREGATOR` merchants unless the deployment declares an RBI Payment Aggregator authorization (production guard, ADR-022).
+
+### 8.10 Non-functional requirements (V2)
+
+| ID | Category | Requirement |
+|---|---|---|
+| NFR-17 | Held funds | The ledger's escrow account always equals merchant payables plus reserves plus platform accounts, and each day it matches the escrow bank statement after items in transit. Any difference raises a critical alert the same day |
+| NFR-18 | Payout safety | No payout is ever sent twice, whatever the retries, timeouts or restarts: payout ids are unique in the database and at the provider |
+| NFR-19 | Debit safety | No mandate debit executes without an `ACTIVE` mandate, a delivered pre-debit notification where the scheme requires one, and an amount within the mandate's limits. Enforced by database constraints and tests |
+| NFR-20 | Currency | Amounts in every currency are integers in minor units. Conversion rates are stored as the PSP's decimals and never computed in floating point |
+
+## 9. Open assumptions (defaults applied until challenged)
 
 | Topic | Default |
 |---|---|
@@ -164,7 +230,7 @@ Holding funds and paying out settlements (PA mode) · recurring/mandates · EMI,
 | Currencies | INR only in V1; the model stores ISO 4217 codes and integer minor units throughout |
 | Limits | Per payment ₹1 – ₹10,00,000 at the API; per-method limits come from provider capabilities (e.g. UPI ₹1,00,000 by default) |
 
-## 9. Glossary
+## 10. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -182,3 +248,9 @@ Holding funds and paying out settlements (PA mode) · recurring/mandates · EMI,
 | CDE | Cardholder data environment (PCI DSS scope) |
 | TAT | RBI turnaround time for resolving failed transactions |
 | Paise | Minor unit of INR; all amounts are integers in minor units |
+| Mandate | A customer's standing authorization for a merchant to debit them repeatedly within limits: UPI AutoPay, card e-mandate or eNACH |
+| Pre-debit notification | The notice a customer must receive before each card or UPI mandate debit |
+| eNACH | NPCI's electronic mandates on the National Automated Clearing House, authorized online by netbanking or debit card |
+| Virtual account | An account number or VPA a PSP issues so that a transfer to it matches one payment |
+| Escrow account | In aggregator mode, the account at a scheduled commercial bank that holds customer funds until they are settled to merchants |
+| Payout | A transfer from the escrow account to a merchant's bank account |

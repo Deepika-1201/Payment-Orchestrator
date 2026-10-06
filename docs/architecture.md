@@ -464,3 +464,5 @@ flowchart TB
 | BIN routing, saved cards across PSPs | Card-data service in an isolated CDE (PCI DSS Level 1) with network tokenization |
 | Recurring | Mandate aggregate, pre-debit notification scheduler |
 | Better routing | Cost-aware scoring, contextual bandits |
+
+Holding funds, recurring payments and better routing are scheduled as V2 phases in the [implementation plan](implementation-plan.md). BIN routing and saved cards across PSPs are not planned ([ADR-034](decisions/ADR-034-post-v1-scope.md)). The other rows wait for their triggers.

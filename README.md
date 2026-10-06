@@ -12,17 +12,20 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 > - observability (ADR-027): SLO burn-rate alerts, a Grafana dashboard, runbooks, and a local Prometheus/Grafana/Tempo stack ([screenshots](#screenshots)).
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
+>
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 57% done (22 of 38.5).
 
 ## Documentation
 
 | Doc | Contents |
 |---|---|
-| [docs/requirements.md](docs/requirements.md) | Scope decisions, functional and non-functional requirements, compliance constraints |
+| [docs/requirements.md](docs/requirements.md) | Scope decisions, functional and non-functional requirements, compliance constraints; draft V2 requirements (§8) |
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-033 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-034 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
+| [docs/implementation-plan.md](docs/implementation-plan.md) | V1 close-out and V2 phases 18–28: exit criteria, sizes, and how progress is measured |
 
 ## Quick start
 
@@ -232,3 +235,16 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 15 | Observability: SLO burn-rate alerts, dashboard, runbooks, OTel collector and Tempo in compose, promtool tests (ADR-027) | Done |
 | 16 | Terraform: two regions from one module, WAF, TLS 1.3, Aurora Global Database, least-privilege IAM, ephemeral secrets; mocked `terraform test`, Trivy in CI (ADR-028) | Done (not yet applied to an account) |
 | 17 | Load tests (k6): smoke in CI, steady, peak 1,000/s, spike; thresholds from NFR-1/2/3 (ADR-029). Local baseline: 100 payments/s with zero errors and p99 create 20 ms | Done (peak run needs AWS) |
+
+**Next: V2, phases 18–28**, proposed in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
+- recurring payments and mandates;
+- partial capture;
+- wallets, EMI and pay later;
+- bank transfers;
+- dispute evidence;
+- international cards;
+- cost-aware routing;
+- merchant billing;
+- Payment Aggregator mode: onboarding, escrow and settlement, payouts.
+
+The [implementation plan](docs/implementation-plan.md) gives each phase's exit criteria and size, and measures progress.
