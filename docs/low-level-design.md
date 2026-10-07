@@ -74,6 +74,7 @@ classDiagram
       +String providerReference
       +NextAction nextAction
       +Failure failure
+      +Money captureAmount
       +boolean voidRequested
       +Instant nextStatusCheckAt
     }
@@ -217,7 +218,7 @@ Rules applied by `PaymentAttempt.transition(...)`:
 - **Stale update → no-op.** For example `PENDING` arriving after `SUCCEEDED`. Transitions are monotonic by rank.
 - **Contradiction → conflict, not applied.** For example the PSP says `FAILED` after `SUCCEEDED`. The event is logged, counted in a metric, and left for reconciliation.
 - `FAILED → SUCCEEDED/AUTHORIZED` is accepted **only** from PSP-sourced evidence (`PROVIDER_WEBHOOK`, `STATUS_CHECK`, `RECONCILIATION`), never from an API call.
-- A reported success whose amount or currency differs from the attempt is **not applied** (flagged `amount_mismatch`).
+- A reported success whose amount or currency differs from the attempt is **not applied** (flagged `amount_mismatch`). Once a capture is requested, a success must report the capture amount ([§19.2](#192-capture-amount-of-an-attempt)).
 
 **Late and duplicate success** (attempt reaches `SUCCEEDED` while the payment cannot take it):
 
@@ -229,7 +230,7 @@ Rules applied by `PaymentAttempt.transition(...)`:
 | `EXPIRED` / `FAILED`, policy `AUTO_REFUND` | Payment stays terminal → system refund (`SYSTEM_LATE_SUCCESS`) |
 | `CANCELLED` | Always a system refund (the merchant explicitly declined) |
 
-A late or duplicate **authorization** (no money has moved yet) is always voided, whatever the policy.
+A late or duplicate **authorization** (no money has moved yet) is always voided, whatever the policy. That includes one arriving while another attempt is being captured.
 
 ### 3.3 Refund
 
@@ -249,7 +250,7 @@ stateDiagram-v2
     SUCCEEDED --> [*]
 ```
 
-Invariant (per attempt): `Σ amount(refunds where status ≠ FAILED) ≤ attempt amount` for succeeded attempts. `payments.amount_refunded` counts `SUCCEEDED` refunds of the winning attempt only, and a database `CHECK (amount_refunded <= amount_captured)` backs it up.
+Invariant (per attempt): `Σ amount(refunds where status ≠ FAILED) ≤ captured amount` for succeeded attempts (the attempt's `capture_amount`, [§19](#19-partial-capture-phase-19-adr-036)). `payments.amount_refunded` counts `SUCCEEDED` refunds of the winning attempt only, and a database `CHECK (amount_refunded <= amount_captured)` backs it up.
 
 ### 3.4 Merchant webhook delivery
 
@@ -345,7 +346,7 @@ public interface PaymentProvider {
 - **Status:** accounts resolve whatever their status, because work already in flight on a disabled account must finish.
 - **Logging:** `MerchantAccount.toString()` omits credential values.
 
-**Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture`, `voidSupported`, `partialRefunds`, `statusQuery`, and `requiresCustomerPhone`, which routing checks against the payment's customer (ADR-031). The orchestrator checks a capability before invoking an optional operation.
+**Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture` and `partialCapture` ([§19](#19-partial-capture-phase-19-adr-036)), `voidSupported`, `partialRefunds`, `statusQuery`, and `requiresCustomerPhone`, which routing checks against the payment's customer (ADR-031). The orchestrator checks a capability before invoking an optional operation.
 
 **Normalized outcomes:** `ProviderPaymentOutcome = REQUIRES_ACTION | PENDING | AUTHORIZED | SUCCEEDED | FAILED | VOIDED | NOT_FOUND`; `ProviderRefundOutcome = PENDING | SUCCEEDED | FAILED | NOT_FOUND`. Each result carries `providerReference`, `nextAction`, `failure (code, message, category)`, and the raw PSP status.
 
@@ -365,7 +366,7 @@ public interface PaymentProvider {
 
 ### Mock providers (Phase 8)
 
-`MOCK_ALPHA` supports UPI (intent, QR, collect), cards, and netbanking. `MOCK_BETA` supports UPI and cards. Both support manual capture, void, and partial refunds. PSP state is in memory (`MockPsp`), keyed by provider reference and by merchant reference (attempt id).
+`MOCK_ALPHA` supports UPI (intent, QR, collect), cards, and netbanking. `MOCK_BETA` supports UPI and cards. Both support manual capture, void, and partial refunds; only `MOCK_ALPHA` captures less than the authorization ([§19.5](#195-mock-psp)). PSP state is in memory (`MockPsp`), keyed by provider reference and by merchant reference (attempt id).
 
 Deterministic scenarios by **amount paise suffix** (like PSP test cards):
 
@@ -597,6 +598,7 @@ erDiagram
         text provider_reference
         jsonb next_action
         text failure_category
+        bigint capture_amount
         boolean void_requested
         timestamptz next_status_check_at
         boolean needs_review
@@ -625,6 +627,7 @@ Key constraints and indexes:
 | `payments` | `CHECK amount_refunded <= amount_captured <= amount` | Money invariants in the DB |
 | `payments` | `(merchant_id, created_at DESC)`, `(merchant_id, merchant_order_id)` | Merchant queries |
 | `payments` | Partial `(expires_at)` for active statuses; `(authorization_expires_at)` for `AUTHORIZED` | Expiry job |
+| `payment_attempts` | `CHECK` `capture_amount` between 1 and `amount` when `CAPTURE_PENDING` or `SUCCEEDED`, else empty ([§19.4](#194-schema-v15__partial_capturesql)) | The captured amount never exceeds the authorization |
 | `payment_attempts` | `UNIQUE (payment_id, attempt_number)` | Ordering, no duplicate attempts |
 | `payment_attempts` | Partial `UNIQUE (provider_code, provider_reference)` | Webhook lookup; one PSP txn per attempt |
 | `payment_attempts` | Partial `(next_status_check_at)` | Resolver claims |
@@ -657,7 +660,7 @@ The merchant API contract is [openapi.yaml](openapi.yaml) (OpenAPI 3.1, contract
 | `POST /v1/payments` | Create payment | `201` payment |
 | `GET /v1/payments/{id}` | Retrieve | `200` payment |
 | `POST /v1/payments/{id}/confirm` | Attach method, start attempt | `200` payment (+ `next_action`) |
-| `POST /v1/payments/{id}/capture` | Capture an authorized payment | `200` payment |
+| `POST /v1/payments/{id}/capture` | Capture an authorized payment, in full or in part ([§19.1](#191-rules)) | `200` payment |
 | `POST /v1/payments/{id}/cancel` | Cancel / void | `200` payment |
 | `POST /v1/payments/{id}/refunds` | Create refund | `201` refund |
 | `GET /v1/payments/{id}/refunds` | List refunds of a payment | `200` list |
@@ -1144,4 +1147,53 @@ Mandates are offered only with `pg.providers.razorpay.mandates=true`, once Razor
 | Webhooks | `token.confirmed`/`rejected`/`cancelled`/`paused`/`resumed` → `MANDATE` by token; `invoice.paid` → the registration charge's payment event and a `MANDATE` event with the token (`PENDING` until the token is confirmed), with distinct event ids; `invoice.expired` → `MANDATE FAILED`; `order.notification.delivered`/`failed` → `NOTIFICATION`; debit payments use the existing `payment.*` handling by `order_id` |
 
 Settlement recon lines take the attempt id from the payment's notes before the order's receipt, because a debit's order receipt is its notification id.
+
+## 19. Partial capture (phase 19, ADR-036)
+
+Requirements: [§8.2](requirements.md#82-partial-capture-phase-19). The change stays in the payment module's capture path, the mock PSP, and the code that reads a captured amount.
+
+### 19.1 Rules
+
+`POST /v1/payments/{id}/capture {amount?}` checks, in this order:
+
+| Check | Refusal |
+|---|---|
+| The payment is `authorized` | 409 `payment_invalid_state`; after a capture the payment is `processing` or `succeeded` |
+| `amount`, if sent, is at least 1 | 400 `validation_error` |
+| `amount` is at most the authorized amount | 422 `capture_amount_mismatch` |
+| For less than the authorized amount: the PSP declares `partialCapture` for the attempt's method | 422 `unsupported_payment_method` |
+
+The attempt then goes to `CAPTURE_PENDING` with its capture amount, and the PSP is asked to capture that amount; without `amount`, the full amount. The PSP releases the rest of the authorization as part of the capture, and the gateway sends no void. Once the PSP confirms, the payment is `succeeded` with `amount_captured` equal to the capture amount. If the PSP refuses the capture, the payment returns to `authorized` with the PSP's failure code. The merchant may then capture again, with any allowed amount, until the authorization lapses (FR-P7).
+
+### 19.2 Capture amount of an attempt
+
+`PaymentAttempt.captureAmount` (`payment_attempts.capture_amount`) is:
+- set by `requestCapture(amount)`: the merchant's capture, or the full amount for automatic capture;
+- set to the full amount when a success arrives without a capture request, from a PSP that captured on its own;
+- cleared when the PSP rejects the capture.
+
+The amount a PSP report must carry: `AUTHORIZED` reports the attempt's `amount`; `SUCCEEDED` reports `capture_amount` if set, else `amount`. A report with any other amount is not applied and flags the attempt `amount_mismatch`, as in V1. `performCapture` sends `capture_amount`, so when the status resolver retries a `CAPTURE_PENDING` attempt, it repeats the same amount under the same idempotency key (the attempt id).
+
+### 19.3 Readers of the captured amount
+
+| Reader | Amount |
+|---|---|
+| `payments.amount_captured` (`markSucceeded`) | The winning attempt's `capture_amount` |
+| Ledger posting `PAYMENT_CAPTURED` (funds movement `CAPTURE`) | `capture_amount` |
+| Refundable amount (FR-RF1) | `amount_captured` − active refunds − disputes holding funds (unchanged) |
+| System refund of a late or duplicate success | `capture_amount` − active refunds |
+| A new dispute larger than the net captured amount (`exceeds_net_captured`) | `capture_amount` − active refunds − disputes holding funds |
+| Reconciliation: the gateway's side of a report line, and "missing at PSP" | `capture_amount` once set, else `amount` |
+
+### 19.4 Schema (`V15__partial_capture.sql`)
+
+- New column `payment_attempts.capture_amount bigint`. Attempts already `CAPTURE_PENDING` or `SUCCEEDED` are backfilled with their `amount`, since V1 captured only full amounts.
+- `CHECK (CASE WHEN status IN ('CAPTURE_PENDING', 'SUCCEEDED') THEN coalesce(capture_amount BETWEEN 1 AND amount, false) ELSE capture_amount IS NULL END)`.
+- Unchanged: `payments` keeps `amount_refunded ≤ amount_captured ≤ amount`.
+
+### 19.5 Mock PSP
+
+- `MOCK_ALPHA` cards declare `partialCapture`. `MOCK_BETA` cards support manual capture only, and fail a smaller capture with `partial_capture_not_supported`; the gateway never sends one.
+- A capture above the authorization fails with `amount_exceeds_authorization`.
+- A capture records the captured amount and releases the rest. Status checks, webhooks, settlement report lines, refund limits and simulator disputes then use the captured amount. Capturing a transaction that is already captured returns the captured amount.
 

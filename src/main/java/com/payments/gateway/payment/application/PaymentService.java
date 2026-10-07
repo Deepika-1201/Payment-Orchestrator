@@ -13,7 +13,9 @@ import com.payments.gateway.payment.domain.RiskAssessment;
 import com.payments.gateway.payment.domain.TransitionSource;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.provider.ProviderClient;
+import com.payments.gateway.provider.ProviderRegistry;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderTimeoutException;
@@ -72,6 +74,7 @@ public class PaymentService {
     private final RiskProperties riskProperties;
     private final RoutingEngine routing;
     private final ProviderClient providerClient;
+    private final ProviderRegistry providers;
     private final PaymentProperties properties;
     private final TransactionTemplate tx;
     private final Clock clock;
@@ -79,8 +82,8 @@ public class PaymentService {
 
     public PaymentService(PaymentRepository payments, PaymentStore store, PaymentOutcomeService outcomes,
                           MerchantDirectory merchants, RiskEngine risk, RiskProperties riskProperties,
-                          RoutingEngine routing, ProviderClient providerClient, PaymentProperties properties,
-                          TransactionTemplate tx, Clock clock, MeterRegistry meters) {
+                          RoutingEngine routing, ProviderClient providerClient, ProviderRegistry providers,
+                          PaymentProperties properties, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
         this.payments = payments;
         this.store = store;
         this.outcomes = outcomes;
@@ -89,6 +92,7 @@ public class PaymentService {
         this.riskProperties = riskProperties;
         this.routing = routing;
         this.providerClient = providerClient;
+        this.providers = providers;
         this.properties = properties;
         this.tx = tx;
         this.clock = clock;
@@ -167,11 +171,17 @@ public class PaymentService {
         String attemptId = tx.execute(status -> {
             Payment payment = payments.lockForMerchant(merchantId, paymentId)
                     .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
-            PaymentAttempt attempt = payment.requestCapture(amount, now);
+            PaymentAttempt attempt = payment.requestCapture(amount, this::partialCaptureSupported, now);
             store.save(payment);
             return attempt.id();
         });
         return outcomes.performCapture(paymentId, attemptId);
+    }
+
+    private boolean partialCaptureSupported(PaymentAttempt attempt) {
+        MethodSupport support = providers.require(attempt.providerCode()).capabilities().methods()
+                .get(attempt.method().type());
+        return support != null && support.partialCapture();
     }
 
     public Payment cancel(String merchantId, String paymentId, String reason) {

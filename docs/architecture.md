@@ -213,13 +213,13 @@ sequenceDiagram
     C->>PSP: enter card on PSP page, 3DS challenge
     PSP-->>PG: webhook authorized
     PG-->>M: webhook payment.authorized (status AUTHORIZED)
-    M->>PG: POST /capture (Idempotency-Key)
-    PG->>PSP: capture (idempotent at PSP)
-    PSP-->>PG: captured
+    M->>PG: POST /capture {amount?} (Idempotency-Key)
+    PG->>PSP: capture amount (idempotent at PSP)
+    PSP-->>PG: captured, rest of the authorization released
     PG-->>M: 200 SUCCEEDED + webhook payment.succeeded
 ```
 
-The PAN never reaches the gateway; see [ADR-008](decisions/ADR-008-card-data-scope.md).
+The PAN never reaches the gateway; see [ADR-008](decisions/ADR-008-card-data-scope.md). A capture may take less than the authorization where the PSP supports it, once per payment ([ADR-036](decisions/ADR-036-partial-capture.md)).
 
 ### 4.4 Timeout → unknown outcome → resolution
 

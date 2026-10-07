@@ -16,8 +16,8 @@ V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists it
 | Scope | Planned units | Done | Progress |
 |---|---|---|---|
 | V1 (phases 1–17) | 23 | 22 | 96% |
-| V2 (phases 18–28) | 15.5 | 3 | 19% |
-| **Project** | **38.5** | **25** | **65%** |
+| V2 (phases 18–28) | 15.5 | 3.5 | 23% |
+| **Project** | **38.5** | **25.5** | **66%** |
 
 *As of 2026-10-07.*
 
@@ -68,7 +68,7 @@ These items belong to the phases above but need access the project does not have
 | # | Phase | Requirements | Depends on | Units | Exit criteria | Status |
 |---|---|---|---|---|---|---|
 | 18 | Recurring payments and mandates | [§8.1](requirements.md#81-recurring-payments-and-mandates-phase-18) | — | 3 | UPI AutoPay, card and eNACH mandates each register, notify and debit end to end on the mock PSP, and through one real adapter against its stub. A debit without an active mandate or a required notification, or above a limit, is refused (NFR-19). A revocation arriving by webhook stops the next debit | Done: [ADR-035](decisions/ADR-035-mandates.md), [LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035), [steps](#phase-18-steps). The Razorpay sandbox check needs keys, as C1 does |
-| 19 | Partial capture | [§8.2](requirements.md#82-partial-capture-phase-19) | — | 0.5 | Capturing less than the authorization releases the rest at the PSP; refunds, disputes and the ledger use the captured amount; capturing more is refused | |
+| 19 | Partial capture | [§8.2](requirements.md#82-partial-capture-phase-19) | — | 0.5 | Capturing less than the authorization releases the rest at the PSP; refunds, disputes and the ledger use the captured amount; capturing more is refused | Done: [ADR-036](decisions/ADR-036-partial-capture.md), [LLD §19](low-level-design.md#19-partial-capture-phase-19-adr-036). Only the mock PSPs capture partially: Razorpay requires the full amount, and the Cashfree adapter captures automatically |
 | 20 | Wallets, EMI and pay later | [§8.3](requirements.md#83-wallets-emi-and-pay-later-phase-20) | — | 1.5 | Each method pays end to end on the mock PSP and through a real adapter's stub, and the hosted checkout offers it when routable. The phase changes nothing in `payment/domain` (NFR-11) | |
 | 21 | Bank transfers and virtual accounts | [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) | — | 1.5 | An exact transfer pays the payment. Short, excess, repeated and unmatched credits follow the policy. Credits reconcile against settlement reports | |
 | 22 | Dispute evidence | [§8.5](requirements.md#85-dispute-evidence-phase-22) | — | 1 | Evidence reaches the PSP (mock and a real adapter's stub) before the deadline. An approaching deadline raises the event and the alert. Accepting a dispute books the loss | |
@@ -81,7 +81,7 @@ These items belong to the phases above but need access the project does not have
 
 **Not planned:** a merchant dashboard UI, a card vault, direct acquirer integrations, ML-based fraud and multi-region active-active. [ADR-034](decisions/ADR-034-post-v1-scope.md) gives the reasons and when to revisit each. The scale-driven changes in [architecture §11](architecture.md#11-evolution-path) wait for their triggers and are not counted.
 
-**Order of work:** phases 19 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 13.5 units, 12.5 in V2 and 1 in the close-out.
+**Order of work:** phases 20 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 13 units, 12 in V2 and 1 in the close-out.
 
 ### Phase 18 steps
 
@@ -107,3 +107,4 @@ No partial credit: the phase's 3 units count when all nine steps are done. Steps
 | 2026-10-06 | ADR-034 accepted; phase 18 started with its design ([ADR-035](decisions/ADR-035-mandates.md)) | 22 of 38.5 units (57%) |
 | 2026-10-07 | Phase 18 split into steps and the order of the remaining work recorded; [LLD §18.5](low-level-design.md#185-debit-cycle) gains the defaults for paused mandates and open circuits | 22 of 38.5 units (57%) |
 | 2026-10-07 | Phase 18 done: mandates and debits on the mock PSP and the Razorpay adapter, NFR-19 enforced in the database. Decided while building ([LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035)): the authorization window ends only registrations the customer has not acted on; a failed debit has its mandate checked at the PSP. Also fixed: merchants without a webhook URL could not change other settings | 25 of 38.5 units (65%) |
+| 2026-10-07 | Phase 19 done: one partial capture per payment on PSPs that declare it per method, so far the mock PSPs (Razorpay requires the full amount; the Cashfree adapter captures automatically). Refunds, disputes, the ledger and reconciliation use the attempt's capture amount, which a database check keeps within the authorization. 36 mutants, all killed. Also fixed: a late authorization of another attempt during a capture moved the payment back to `authorized` instead of being voided | 25.5 of 38.5 units (66%) |

@@ -168,11 +168,12 @@ public class SimulatorController {
         if (txn.state() != MockPsp.TxnState.CAPTURED) {
             throw GatewayException.invalidState("Only captured transactions can be disputed; " + reference + " is " + txn.state());
         }
-        long amount = request.amount() == null ? txn.amount().amount() : request.amount();
-        if (amount <= 0 || amount > txn.amount().amount()) {
-            throw GatewayException.validation("amount", "must be between 1 and the transaction amount");
+        Money captured = txn.capturedAmount();
+        long amount = request.amount() == null ? captured.amount() : request.amount();
+        if (amount <= 0 || amount > captured.amount()) {
+            throw GatewayException.validation("amount", "must be between 1 and the captured amount");
         }
-        MockPsp.DisputeTxn dispute = mock.psp().openDispute(txn, Money.of(amount, txn.amount().currency()),
+        MockPsp.DisputeTxn dispute = mock.psp().openDispute(txn, Money.of(amount, captured.currency()),
                 request.reason() == null ? "fraudulent" : request.reason(), clock.instant());
         notifyDispute(mock, dispute, request.sendWebhook());
         return Map.of("dispute_id", dispute.reference(), "status", "open");

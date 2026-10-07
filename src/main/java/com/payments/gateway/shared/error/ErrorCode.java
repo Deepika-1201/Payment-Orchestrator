@@ -22,7 +22,7 @@ public enum ErrorCode {
     IDEMPOTENCY_KEY_REUSE(422, "Idempotency-Key was already used with a different request"),
     AMOUNT_EXCEEDS_REFUNDABLE(422, "Refund amount exceeds the refundable amount"),
     AMOUNT_EXCEEDS_MANDATE_LIMIT(422, "Debit amount exceeds the mandate's limits"),
-    CAPTURE_AMOUNT_MISMATCH(422, "Capture amount must equal the authorized amount"),
+    CAPTURE_AMOUNT_MISMATCH(422, "Capture amount exceeds the authorized amount"),
     UNSUPPORTED_PAYMENT_METHOD(422, "No linked provider supports this payment"),
     UNSUPPORTED_CURRENCY(422, "Currency is not supported"),
     RATE_LIMITED(429, "Too many requests"),

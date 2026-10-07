@@ -11,6 +11,7 @@ import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
@@ -159,20 +160,26 @@ public class MockPaymentProvider implements PaymentProvider {
             return ProviderPaymentResult.failed(request.providerReference(),
                     new ProviderFailure("payment_not_found", "Unknown payment", FailureCategory.VALIDATION), "error");
         }
-        if (!txn.amount().equals(request.amount())) {
-            return ProviderPaymentResult.failed(txn.reference(),
-                    new ProviderFailure("amount_mismatch", "Capture amount differs", FailureCategory.VALIDATION), "error");
+        Money requested = request.amount();
+        if (!requested.currency().equals(txn.amount().currency()) || requested.amount() > txn.amount().amount()) {
+            return ProviderPaymentResult.failed(txn.reference(), new ProviderFailure("amount_exceeds_authorization",
+                    "Capture amount exceeds the authorization", FailureCategory.VALIDATION), "error");
         }
-        synchronized (txn) {
-            if (txn.state() == TxnState.AUTHORIZED) {
-                txn.moveTo(TxnState.CAPTURED, null, clock.instant());
-            }
+        if (requested.amount() < txn.amount().amount() && !partialCapture(txn)) {
+            return ProviderPaymentResult.failed(txn.reference(), new ProviderFailure("partial_capture_not_supported",
+                    "Capture amount must equal the authorization", FailureCategory.VALIDATION), "error");
         }
+        txn.capture(requested, clock.instant());
         if (txn.state() == TxnState.CAPTURED) {
-            return ProviderPaymentResult.succeeded(txn.reference(), txn.amount(), "captured");
+            return ProviderPaymentResult.succeeded(txn.reference(), txn.capturedAmount(), "captured");
         }
         return ProviderPaymentResult.failed(txn.reference(),
                 new ProviderFailure("invalid_state", "Payment is " + txn.state(), FailureCategory.VALIDATION), "error");
+    }
+
+    private boolean partialCapture(Txn txn) {
+        MethodSupport support = capabilities.methods().get(txn.method().type());
+        return support != null && support.partialCapture();
     }
 
     @Override
@@ -481,8 +488,9 @@ public class MockPaymentProvider implements PaymentProvider {
             default -> "pending";
         };
         CardDetails card = cardOf(txn);
+        Money amount = txn.state() == TxnState.CAPTURED ? txn.capturedAmount() : txn.amount();
         return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.PAYMENT_UPDATED, txn.reference(),
-                txn.merchantReference(), status, txn.amount().amount(), txn.amount().currency(), txn.failureCode(),
+                txn.merchantReference(), status, amount.amount(), amount.currency(), txn.failureCode(),
                 txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode(),
                 card == null ? null : card.network(), card == null ? null : card.last4(), null, null, null, null, null,
                 null);
@@ -641,7 +649,7 @@ public class MockPaymentProvider implements PaymentProvider {
             case REQUIRES_ACTION -> ProviderPaymentResult.requiresAction(txn.reference(), null, "requires_action");
             case PENDING -> ProviderPaymentResult.pending(txn.reference(), "pending");
             case AUTHORIZED -> ProviderPaymentResult.authorized(txn.reference(), txn.amount(), "authorized");
-            case CAPTURED -> ProviderPaymentResult.succeeded(txn.reference(), txn.amount(), "captured");
+            case CAPTURED -> ProviderPaymentResult.succeeded(txn.reference(), txn.capturedAmount(), "captured");
             case VOIDED -> ProviderPaymentResult.voided(txn.reference(), "voided");
             case FAILED -> ProviderPaymentResult.failed(txn.reference(), new ProviderFailure(txn.failureCode(),
                     "Simulated failure: " + txn.failureCode(), failureCategory(txn.failureCode())), "failed");

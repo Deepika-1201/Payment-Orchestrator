@@ -10,7 +10,10 @@ import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.model.UpiFlow;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -66,6 +69,8 @@ class PaymentTest {
         assertThat(result.kind()).isEqualTo(AttemptApplyResult.Kind.APPLIED);
         assertThat(payment.status()).isEqualTo(PaymentStatus.SUCCEEDED);
         assertThat(payment.amountCaptured()).isEqualTo(49_900);
+        assertThat(attempt.snapshot().captureAmount()).as("captured without a capture request: the full amount")
+                .isEqualTo(AMOUNT);
         assertThat(payment.succeededAttemptId()).isEqualTo("att_1");
         assertThat(attempt.nextStatusCheckAt()).isNull();
         assertThat(payment.pullEvents()).extracting(PaymentEvent::type).containsExactly(PaymentEvent.Type.PAYMENT_SUCCEEDED);
@@ -207,6 +212,17 @@ class PaymentTest {
     @Nested
     class Capture {
 
+        private static final Predicate<PaymentAttempt> PARTIAL = attempt -> true;
+        private static final Predicate<PaymentAttempt> NO_PARTIAL = attempt -> false;
+
+        private Payment authorizedManualPayment() {
+            Payment payment = newPayment(CaptureMethod.MANUAL);
+            start(payment, "att_1");
+            payment.applyAttemptUpdate("att_1", new AttemptUpdate(AttemptStatus.AUTHORIZED, "psp_ref", null, null, AMOUNT),
+                    TransitionSource.PROVIDER_WEBHOOK, AUTO_REFUND, T0);
+            return payment;
+        }
+
         @Test
         void manualCaptureFlow() {
             Payment payment = newPayment(CaptureMethod.MANUAL);
@@ -216,9 +232,10 @@ class PaymentTest {
             assertThat(payment.status()).isEqualTo(PaymentStatus.AUTHORIZED);
             assertThat(payment.authorizationExpiresAt()).isEqualTo(T0.plus(Duration.ofDays(5)));
 
-            payment.requestCapture(null, T0);
+            payment.requestCapture(null, NO_PARTIAL, T0);
             assertThat(payment.status()).isEqualTo(PaymentStatus.PROCESSING);
             assertThat(attempt.status()).isEqualTo(AttemptStatus.CAPTURE_PENDING);
+            assertThat(attempt.snapshot().captureAmount()).isEqualTo(AMOUNT);
 
             payment.applyAttemptUpdate("att_1", AttemptUpdate.of(AttemptStatus.AUTHORIZED), TransitionSource.PROVIDER_WEBHOOK, AUTO_REFUND, T0);
             assertThat(attempt.status()).as("stale authorized webhook must not undo the capture request")
@@ -226,18 +243,125 @@ class PaymentTest {
 
             payment.applyAttemptUpdate("att_1", succeeded(AMOUNT), TransitionSource.PROVIDER_RESPONSE, AUTO_REFUND, T0);
             assertThat(payment.status()).isEqualTo(PaymentStatus.SUCCEEDED);
+            assertThat(payment.amountCaptured()).isEqualTo(49_900);
         }
 
         @Test
-        void partialCaptureIsRejected() {
-            Payment payment = newPayment(CaptureMethod.MANUAL);
-            start(payment, "att_1");
-            payment.applyAttemptUpdate("att_1", AttemptUpdate.of(AttemptStatus.AUTHORIZED), TransitionSource.PROVIDER_WEBHOOK, AUTO_REFUND, T0);
+        void partialCaptureCapturesLessThanTheAuthorization() {
+            Payment payment = authorizedManualPayment();
+            PaymentAttempt attempt = payment.attempt("att_1").orElseThrow();
+            Money partial = Money.of(30_000, "INR");
 
-            assertThatThrownBy(() -> payment.requestCapture(100L, T0))
+            payment.requestCapture(30_000L, PARTIAL, T0);
+            assertThat(attempt.status()).isEqualTo(AttemptStatus.CAPTURE_PENDING);
+            assertThat(attempt.capturedAmount()).isEqualTo(partial);
+            AttemptApplyResult lateAuthorization = payment.applyAttemptUpdate("att_1",
+                    new AttemptUpdate(AttemptStatus.AUTHORIZED, "psp_ref", null, null, AMOUNT),
+                    TransitionSource.PROVIDER_WEBHOOK, AUTO_REFUND, T0);
+            assertThat(lateAuthorization.kind()).as("an authorization still reports the authorized amount")
+                    .isEqualTo(AttemptApplyResult.Kind.NO_OP);
+
+            payment.applyAttemptUpdate("att_1", succeeded(partial), TransitionSource.PROVIDER_RESPONSE, AUTO_REFUND, T0);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.SUCCEEDED);
+            assertThat(payment.amountCaptured()).isEqualTo(30_000);
+            assertThat(attempt.needsReview()).isFalse();
+        }
+
+        @Test
+        void successForTheFullAmountAfterAPartialCaptureRequestIsNotApplied() {
+            Payment payment = authorizedManualPayment();
+            payment.requestCapture(30_000L, PARTIAL, T0);
+
+            AttemptApplyResult result = payment.applyAttemptUpdate("att_1", succeeded(AMOUNT),
+                    TransitionSource.PROVIDER_RESPONSE, AUTO_REFUND, T0);
+
+            assertThat(result.kind()).isEqualTo(AttemptApplyResult.Kind.AMOUNT_MISMATCH);
+            assertThat(payment.status()).isEqualTo(PaymentStatus.PROCESSING);
+        }
+
+        @Test
+        void captureAboveTheAuthorizationOrBelowOneIsRefused() {
+            Payment payment = authorizedManualPayment();
+
+            for (long amount : new long[] {49_901, 0}) {
+                assertThatThrownBy(() -> payment.requestCapture(amount, PARTIAL, T0))
+                        .isInstanceOf(GatewayException.class)
+                        .extracting(e -> ((GatewayException) e).code())
+                        .isEqualTo(ErrorCode.CAPTURE_AMOUNT_MISMATCH);
+            }
+            assertThat(payment.status()).isEqualTo(PaymentStatus.AUTHORIZED);
+        }
+
+        @Test
+        void captureOfOneUnitIsAllowed() {
+            Payment payment = authorizedManualPayment();
+
+            payment.requestCapture(1L, PARTIAL, T0);
+
+            assertThat(payment.attempt("att_1").orElseThrow().capturedAmount()).isEqualTo(Money.of(1, "INR"));
+        }
+
+        @Test
+        void partialCaptureNeedsAPspThatReleasesTheRest() {
+            Payment payment = authorizedManualPayment();
+            List<String> asked = new ArrayList<>();
+
+            assertThatThrownBy(() -> payment.requestCapture(30_000L, attempt -> {
+                asked.add(attempt.id());
+                return false;
+            }, T0))
                     .isInstanceOf(GatewayException.class)
                     .extracting(e -> ((GatewayException) e).code())
-                    .isEqualTo(ErrorCode.CAPTURE_AMOUNT_MISMATCH);
+                    .isEqualTo(ErrorCode.UNSUPPORTED_PAYMENT_METHOD);
+            assertThat(asked).containsExactly("att_1");
+            assertThat(payment.status()).isEqualTo(PaymentStatus.AUTHORIZED);
+        }
+
+        @Test
+        void captureOfTheAuthorizedAmountIsAFullCapture() {
+            Payment payment = authorizedManualPayment();
+
+            payment.requestCapture(49_900L, attempt -> {
+                throw new AssertionError("a full capture needs no partial-capture support");
+            }, T0);
+
+            assertThat(payment.attempt("att_1").orElseThrow().capturedAmount()).isEqualTo(AMOUNT);
+        }
+
+        @Test
+        void rejectedCaptureClearsTheAmountSoAnotherCanBeRequested() {
+            Payment payment = authorizedManualPayment();
+            PaymentAttempt attempt = payment.attempt("att_1").orElseThrow();
+            payment.requestCapture(30_000L, PARTIAL, T0);
+
+            payment.rejectCapture("att_1", new Failure("amount_refused", FailureCategory.VALIDATION, "Refused"), T0);
+            assertThat(attempt.status()).isEqualTo(AttemptStatus.AUTHORIZED);
+            assertThat(attempt.snapshot().captureAmount()).isNull();
+            assertThat(payment.status()).isEqualTo(PaymentStatus.AUTHORIZED);
+
+            payment.requestCapture(20_000L, PARTIAL, T0);
+            assertThat(attempt.capturedAmount()).isEqualTo(Money.of(20_000, "INR"));
+        }
+
+        @Test
+        void lateAuthorizationOfAnotherAttemptDuringACaptureIsVoided() {
+            Payment payment = newPayment(CaptureMethod.MANUAL);
+            PaymentAttempt first = start(payment, "att_1");
+            payment.applyAttemptUpdate("att_1", failed(), TransitionSource.PROVIDER_RESPONSE, AUTO_REFUND, T0);
+            start(payment, "att_2");
+            payment.applyAttemptUpdate("att_2", AttemptUpdate.of(AttemptStatus.AUTHORIZED), TransitionSource.PROVIDER_WEBHOOK,
+                    AUTO_REFUND, T0);
+            payment.requestCapture(30_000L, PARTIAL, T0);
+            payment.pullEvents();
+
+            AttemptApplyResult result = payment.applyAttemptUpdate("att_1", AttemptUpdate.of(AttemptStatus.AUTHORIZED),
+                    TransitionSource.PROVIDER_WEBHOOK, AUTO_REFUND, T0);
+
+            assertThat(result.voidRequired()).isTrue();
+            assertThat(first.voidRequested()).isTrue();
+            assertThat(payment.status()).as("the capture of att_2 is still in flight").isEqualTo(PaymentStatus.PROCESSING);
+            assertThat(payment.pullEvents()).isEmpty();
         }
 
         @Test
@@ -250,6 +374,7 @@ class PaymentTest {
 
             assertThat(result.captureRequired()).isTrue();
             assertThat(attempt.status()).isEqualTo(AttemptStatus.CAPTURE_PENDING);
+            assertThat(attempt.snapshot().captureAmount()).isEqualTo(AMOUNT);
             assertThat(payment.status()).isEqualTo(PaymentStatus.PROCESSING);
         }
 

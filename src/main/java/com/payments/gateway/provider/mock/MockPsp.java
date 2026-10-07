@@ -49,6 +49,7 @@ public final class MockPsp {
         private TxnState state;
         private String failureCode;
         private Instant capturedAt;
+        private Money captured;
         private long refunded;
 
         Txn(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
@@ -64,6 +65,7 @@ public final class MockPsp {
             this.returnUrl = returnUrl;
             this.state = state;
             this.capturedAt = state == TxnState.CAPTURED ? now : null;
+            this.captured = state == TxnState.CAPTURED ? amount : null;
         }
 
         public String reference() {
@@ -116,12 +118,28 @@ public final class MockPsp {
             return capturedAt;
         }
 
+        /** What was captured, or null before the capture; the rest of the authorization was released. */
+        public synchronized Money capturedAmount() {
+            return captured;
+        }
+
         synchronized void moveTo(TxnState newState, String newFailureCode, Instant now) {
             this.state = newState;
             this.failureCode = newFailureCode;
             if (newState == TxnState.CAPTURED && capturedAt == null) {
                 capturedAt = now;
+                captured = captured == null ? amount : captured;
             }
+        }
+
+        /** Captures an authorization for at most its amount, releasing the rest; false if it is not authorized. */
+        synchronized boolean capture(Money requested, Instant now) {
+            if (state != TxnState.AUTHORIZED) {
+                return false;
+            }
+            captured = requested;
+            moveTo(TxnState.CAPTURED, null, now);
+            return true;
         }
 
         /** Completes a transaction awaiting the customer; returns false if it is no longer awaiting. */
@@ -138,7 +156,7 @@ public final class MockPsp {
         }
 
         synchronized boolean reserveRefund(long refundAmount) {
-            if (state != TxnState.CAPTURED || refunded + refundAmount > amount.amount()) {
+            if (state != TxnState.CAPTURED || refunded + refundAmount > captured.amount()) {
                 return false;
             }
             refunded += refundAmount;
@@ -575,7 +593,7 @@ public final class MockPsp {
     }
 
     long reportedAmount(Txn txn) {
-        return reportedAmountOverrides.getOrDefault(txn.reference(), txn.amount().amount());
+        return reportedAmountOverrides.getOrDefault(txn.reference(), txn.capturedAmount().amount());
     }
 
     long settlementShortfall(String merchantId) {

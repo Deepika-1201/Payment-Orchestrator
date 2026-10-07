@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 has started: phase 18, recurring payments (UPI AutoPay, card and eNACH mandates), is built and tested. V1 includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 has started: phase 18, recurring payments (UPI AutoPay, card and eNACH mandates), and phase 19, partial capture, are built and tested. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 65% done (25 of 38.5).
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 66% done (25.5 of 38.5).
 
 ## Documentation
 
@@ -23,7 +23,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 | [docs/architecture.md](docs/architecture.md) | HLD: context, modules, flows (UPI, card, refund, webhooks, reconciliation, failure handling), deployment, DR |
 | [docs/low-level-design.md](docs/low-level-design.md) | Domain model, state machines, algorithms, provider SPI, routing, idempotency, schema, API, error codes |
 | [docs/openapi.yaml](docs/openapi.yaml) | Merchant API contract (OpenAPI 3.1), including webhook events; `ApiContractTest` keeps the code in line with it |
-| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-035 |
+| [docs/decisions/](docs/decisions/README.md) | ADR-001 … ADR-036 |
 | [docs/runbooks.md](docs/runbooks.md) | What to do for every alert: meaning, checks, actions |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | V1 close-out and V2 phases 18–28: exit criteria, sizes, and how progress is measured |
 
@@ -132,7 +132,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | Endpoint | Purpose |
 |---|---|
 | `POST /v1/payments` · `GET /v1/payments/{id}` | Create / retrieve |
-| `POST /v1/payments/{id}/confirm` · `/capture` · `/cancel` | Start an attempt / capture an authorization / cancel or void |
+| `POST /v1/payments/{id}/confirm` · `/capture` · `/cancel` | Start an attempt / capture an authorization, in full or for less where the PSP supports it (ADR-036) / cancel or void |
 | `POST /v1/payments/{id}/refunds` · `GET /v1/payments/{id}/refunds` · `GET /v1/refunds/{id}` | Refunds |
 | `GET /v1/payments/{id}/disputes` · `GET /v1/disputes/{id}` | Chargebacks and UPI disputes reported by the PSP (read-only; `dispute.*` webhooks) |
 | `POST /v1/mandates` · `GET /v1/mandates/{id}` · `POST /v1/mandates/{id}/revoke` | Recurring payments: register a UPI AutoPay, card or eNACH mandate (the customer authorizes it at the PSP), follow `mandate.*` webhooks, revoke (ADR-035) |
@@ -172,6 +172,8 @@ Mock PSP test scenarios are selected by the last two digits of the amount:
 | `max_amount` `01` / `05` | Registration times out, processed / never processed (the poller finds it, or fails it as `not_submitted`) |
 | debit `amount` `06` | The pre-debit notification is never delivered |
 | debit `amount` `01`, `03`, `04`, `05` | As for payments |
+
+Manual capture of `MOCK_ALPHA` cards may take any amount up to the authorization and releases the rest; `MOCK_BETA` cards capture only the full amount.
 
 ## Project layout
 
@@ -244,9 +246,9 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 16 | Terraform: two regions from one module, WAF, TLS 1.3, Aurora Global Database, least-privilege IAM, ephemeral secrets; mocked `terraform test`, Trivy in CI (ADR-028) | Done (not yet applied to an account) |
 | 17 | Load tests (k6): smoke in CI, steady, peak 1,000/s, spike; thresholds from NFR-1/2/3 (ADR-029). Local baseline: 100 payments/s with zero errors and p99 create 20 ms | Done (peak run needs AWS) |
 | 18 | Recurring payments (ADR-035): UPI AutoPay, card and eNACH mandates; debits scheduled by the gateway with a pre-debit notification per cycle, retries and revocation; NFR-19 rules in the database; mock PSP scenarios and the Razorpay adapter (behind `pg.providers.razorpay.mandates`) | Done (sandbox run needs keys) |
+| 19 | Partial capture (ADR-036): one capture of up to the authorized amount on PSPs that declare it (the mock PSPs; Razorpay requires the full amount); the PSP releases the rest; refunds, disputes, the ledger and reconciliation use the captured amount | Done |
 
-**Next: V2, phases 19–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- partial capture;
+**Next: V2, phases 20–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
 - wallets, EMI and pay later;
 - bank transfers;
 - dispute evidence;

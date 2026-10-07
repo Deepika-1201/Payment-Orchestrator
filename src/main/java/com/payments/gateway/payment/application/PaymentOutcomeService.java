@@ -156,7 +156,7 @@ public class PaymentOutcomeService {
         }
         try {
             ProviderPaymentResult result = providerClient.capture(payment.merchantId(), attempt.providerCode(),
-                    new CaptureRequest(attempt.id(), attempt.providerReference(), attempt.amount()));
+                    new CaptureRequest(attempt.id(), attempt.providerReference(), attempt.capturedAmount()));
             return switch (result.outcome()) {
                 case SUCCEEDED -> apply(paymentId, attemptId, ProviderResults.toUpdate(result), TransitionSource.PROVIDER_RESPONSE);
                 case FAILED -> rejectCapture(paymentId, attemptId, ProviderResults.toFailure(result.failure()));

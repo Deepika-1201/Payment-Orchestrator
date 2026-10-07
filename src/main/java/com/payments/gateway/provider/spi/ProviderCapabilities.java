@@ -34,10 +34,16 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
         this(methods, currencies, voidSupported, partialRefunds, settlementReports, false);
     }
 
-    public record MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture) {
+    /** {@code partialCapture}: a manual capture may take less than the authorization, and the PSP releases the rest (ADR-036). */
+    public record MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture,
+                                boolean partialCapture) {
 
         public MethodSupport {
             upiFlows = Set.copyOf(upiFlows);
+        }
+
+        public MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture) {
+            this(upiFlows, minAmount, maxAmount, manualCapture, false);
         }
     }
 

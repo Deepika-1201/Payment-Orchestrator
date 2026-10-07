@@ -107,7 +107,7 @@ public class RefundService {
     /** Creates a system refund for a late or duplicate success; must run inside the caller's locked transaction. */
     String createSystemRefund(Payment payment, String attemptId, RefundInitiator initiator, Instant now) {
         PaymentAttempt attempt = payment.attempt(attemptId).orElseThrow();
-        long refundable = attempt.amount().amount() - refunds.sumActiveForAttempt(attemptId);
+        long refundable = attempt.capturedAmount().amount() - refunds.sumActiveForAttempt(attemptId);
         if (refundable <= 0) {
             return null;
         }

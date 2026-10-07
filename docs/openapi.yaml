@@ -142,7 +142,11 @@ paths:
       tags: [Payments]
       operationId: capturePayment
       summary: Capture an authorized payment
-      description: For `capture_method=manual`. Partial capture is not supported; `amount`, if sent, must equal the payment amount.
+      description: >-
+        For `capture_method=manual`. Without `amount`, the full authorized amount is captured. A smaller `amount` is
+        captured only if the payment's PSP supports partial capture (otherwise `422 unsupported_payment_method`), and the
+        PSP releases the rest of the authorization. More than the authorized amount is refused with
+        `422 capture_amount_mismatch`. A payment is captured once.
       parameters:
         - $ref: '#/components/parameters/PaymentId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -783,7 +787,9 @@ components:
         metadata:
           type: object
           additionalProperties: {type: string}
-        amount_captured: {$ref: '#/components/schemas/Amount'}
+        amount_captured:
+          $ref: '#/components/schemas/Amount'
+          description: Below `amount` after a partial capture; the PSP released the difference.
         amount_refunded: {$ref: '#/components/schemas/Amount'}
         next_action: {$ref: '#/components/schemas/NextAction'}
         latest_attempt: {$ref: '#/components/schemas/Attempt'}
@@ -1111,7 +1117,7 @@ components:
     CapturePaymentRequest:
       type: object
       properties:
-        amount: {type: integer, format: int64, minimum: 1}
+        amount: {type: integer, format: int64, minimum: 1, description: 'At most the authorized amount; defaults to it.'}
     CancelPaymentRequest:
       type: object
       properties:

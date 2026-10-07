@@ -150,7 +150,7 @@ public class PaymentStore {
             if (change.entity() == StatusChange.Entity.ATTEMPT && AttemptStatus.SUCCEEDED.name().equals(change.toStatus())) {
                 payment.attempt(change.entityId()).ifPresent(attempt -> events.publishFundsMovement(new FundsMovement(
                         FundsMovement.Type.CAPTURE, payment.merchantId(), attempt.providerCode(), attempt.id(),
-                        payment.id(), attempt.amount(), change.occurredAt())));
+                        payment.id(), attempt.capturedAmount(), change.occurredAt())));
             }
         }
     }

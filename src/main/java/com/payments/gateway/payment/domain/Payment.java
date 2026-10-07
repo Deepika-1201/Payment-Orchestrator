@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 
 /**
  * Aggregate root for a merchant's payment intent and its attempts (ADR-007). Callers must hold the payment row
@@ -169,7 +170,8 @@ public final class Payment {
                                                  PaymentPolicy policy, Instant now) {
         PaymentAttempt attempt = requireAttempt(attemptId);
         boolean movesMoney = update.status() == AttemptStatus.SUCCEEDED || update.status() == AttemptStatus.AUTHORIZED;
-        if (movesMoney && update.reportedAmount() != null && !update.reportedAmount().equals(attempt.amount())) {
+        Money expected = update.status() == AttemptStatus.SUCCEEDED ? attempt.capturedAmount() : attempt.amount();
+        if (movesMoney && update.reportedAmount() != null && !update.reportedAmount().equals(expected)) {
             attempt.flagForReview(Review.AMOUNT_MISMATCH, now);
             markDirty(now);
             return AttemptApplyResult.amountMismatch(attemptId);
@@ -249,16 +251,26 @@ public final class Payment {
         events.add(new PaymentEvent(PaymentEvent.Type.PAYMENT_FAILED, id));
     }
 
-    public PaymentAttempt requestCapture(Long captureAmount, Instant now) {
+    /**
+     * Captures the authorization, in full when {@code captureAmount} is null (ADR-036). Less than the authorized amount
+     * needs a PSP that releases the rest, as {@code partialCaptureSupported} tells for the authorized attempt.
+     */
+    public PaymentAttempt requestCapture(Long captureAmount, Predicate<PaymentAttempt> partialCaptureSupported,
+                                         Instant now) {
         if (status != PaymentStatus.AUTHORIZED) {
             throw GatewayException.invalidState("Cannot capture a payment in status " + status);
         }
-        if (captureAmount != null && captureAmount != amount.amount()) {
+        long requested = captureAmount == null ? amount.amount() : captureAmount;
+        if (requested < 1 || requested > amount.amount()) {
             throw new GatewayException(ErrorCode.CAPTURE_AMOUNT_MISMATCH,
-                    "Partial capture is not supported; capture amount must be " + amount.amount());
+                    "Capture amount must be between 1 and the authorized amount " + amount.amount());
         }
         PaymentAttempt attempt = authorizedAttempt();
-        attempt.requestCapture(now);
+        if (requested < amount.amount() && !partialCaptureSupported.test(attempt)) {
+            throw new GatewayException(ErrorCode.UNSUPPORTED_PAYMENT_METHOD, "Provider " + attempt.providerCode()
+                    + " cannot capture less than the authorized amount " + amount.amount());
+        }
+        attempt.requestCapture(Money.of(requested, amount.currency()), now);
         record(StatusChange.Entity.ATTEMPT, attempt.id(), AttemptStatus.AUTHORIZED.name(),
                 AttemptStatus.CAPTURE_PENDING.name(), TransitionSource.API, "capture requested", now);
         changeStatus(PaymentStatus.PROCESSING, TransitionSource.API, "capture requested", now);
@@ -393,7 +405,7 @@ public final class Payment {
 
     private AttemptApplyResult onAttemptAuthorized(PaymentAttempt attempt, TransitionSource source, PaymentPolicy policy,
                                                    Instant now) {
-        if (status.isTerminal() || status == PaymentStatus.AUTHORIZED) {
+        if (status.isTerminal() || status == PaymentStatus.AUTHORIZED || capturing()) {
             attempt.requestVoid(now);
             return AttemptApplyResult.voidAuthorization(attempt.id());
         }
@@ -402,7 +414,7 @@ public final class Payment {
         failureMessage = null;
         changeStatus(PaymentStatus.AUTHORIZED, source, "attempt authorized", now);
         if (captureMethod == CaptureMethod.AUTOMATIC) {
-            attempt.requestCapture(now);
+            attempt.requestCapture(attempt.amount(), now);
             record(StatusChange.Entity.ATTEMPT, attempt.id(), AttemptStatus.AUTHORIZED.name(),
                     AttemptStatus.CAPTURE_PENDING.name(), TransitionSource.SYSTEM, "automatic capture", now);
             changeStatus(PaymentStatus.PROCESSING, TransitionSource.SYSTEM, "automatic capture", now);
@@ -440,7 +452,7 @@ public final class Payment {
     }
 
     private void markSucceeded(PaymentAttempt attempt, TransitionSource source, String reason, Instant now) {
-        amountCaptured = attempt.amount().amount();
+        amountCaptured = attempt.capturedAmount().amount();
         succeededAttemptId = attempt.id();
         failureCode = null;
         failureMessage = null;
@@ -455,6 +467,11 @@ public final class Payment {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** True while an attempt's capture is in flight: another authorization is then a duplicate. */
+    private boolean capturing() {
+        return attempts.stream().anyMatch(a -> a.status() == AttemptStatus.CAPTURE_PENDING);
+    }
 
     private PaymentAttempt authorizedAttempt() {
         return attempts.stream()

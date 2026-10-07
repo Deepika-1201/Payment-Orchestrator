@@ -29,6 +29,7 @@ public final class PaymentAttempt {
     private CardDetails card;
     private Instant authorizedAt;
     private Instant capturedAt;
+    private Money captureAmount;
     private boolean voidRequested;
     private Instant nextStatusCheckAt;
     private int statusCheckCount;
@@ -56,6 +57,7 @@ public final class PaymentAttempt {
         this.card = s.card();
         this.authorizedAt = s.authorizedAt();
         this.capturedAt = s.capturedAt();
+        this.captureAmount = s.captureAmount();
         this.voidRequested = s.voidRequested();
         this.nextStatusCheckAt = s.nextStatusCheckAt();
         this.statusCheckCount = s.statusCheckCount();
@@ -75,7 +77,7 @@ public final class PaymentAttempt {
                                    PaymentMethod method, Money amount, String routingRuleId, String providerReference,
                                    Instant now) {
         return new PaymentAttempt(new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method,
-                amount, AttemptStatus.INITIATED, providerReference, null, null, null, routingRuleId, null, null, false,
+                amount, AttemptStatus.INITIATED, providerReference, null, null, null, routingRuleId, null, null, null, false,
                 now.plus(INITIATED_CHECK_DELAY), 0, Review.NONE, null, 0, now, now), true);
     }
 
@@ -85,8 +87,8 @@ public final class PaymentAttempt {
 
     public AttemptSnapshot snapshot() {
         return new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method, amount, status,
-                providerReference, nextAction, failure, card, routingRuleId, authorizedAt, capturedAt, voidRequested,
-                nextStatusCheckAt, statusCheckCount, review, risk, version, createdAt, updatedAt);
+                providerReference, nextAction, failure, card, routingRuleId, authorizedAt, capturedAt, captureAmount,
+                voidRequested, nextStatusCheckAt, statusCheckCount, review, risk, version, createdAt, updatedAt);
     }
 
     TransitionOutcome apply(AttemptUpdate update, TransitionSource source, Instant now) {
@@ -122,6 +124,9 @@ public final class PaymentAttempt {
                 nextAction = null;
             }
             case SUCCEEDED -> {
+                if (captureAmount == null) {
+                    captureAmount = amount; // captured by the PSP without a capture request: the full amount
+                }
                 capturedAt = now;
                 failure = null;
                 nextAction = null;
@@ -143,10 +148,11 @@ public final class PaymentAttempt {
         return TransitionOutcome.APPLIED;
     }
 
-    void requestCapture(Instant now) {
+    void requestCapture(Money requested, Instant now) {
         if (status != AttemptStatus.AUTHORIZED) {
             throw new IllegalStateException("capture requires AUTHORIZED, was " + status);
         }
+        captureAmount = requested;
         status = AttemptStatus.CAPTURE_PENDING;
         nextStatusCheckAt = now.plus(Duration.ofSeconds(10));
         touch(now);
@@ -157,6 +163,7 @@ public final class PaymentAttempt {
             throw new IllegalStateException("capture rejection requires CAPTURE_PENDING, was " + status);
         }
         status = AttemptStatus.AUTHORIZED;
+        captureAmount = null;
         failure = rejection;
         nextStatusCheckAt = null;
         touch(now);
@@ -250,6 +257,11 @@ public final class PaymentAttempt {
 
     public Money amount() {
         return amount;
+    }
+
+    /** The amount captured, or being captured, once a capture is requested or reported (ADR-036); else {@link #amount()}. */
+    public Money capturedAmount() {
+        return captureAmount == null ? amount : captureAmount;
     }
 
     public AttemptStatus status() {

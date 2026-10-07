@@ -24,7 +24,7 @@ public class ReconciliationQueries {
     public List<SucceededItem> succeededBetween(String merchantId, String providerCode, Instant from, Instant to) {
         return jdbc.sql("""
                 SELECT t.entity, t.entity_id, t.payment_id, t.occurred_at,
-                       COALESCE(a.amount, r.amount) AS amount, COALESCE(a.currency, r.currency) AS currency
+                       COALESCE(a.capture_amount, r.amount) AS amount, COALESCE(a.currency, r.currency) AS currency
                   FROM payment_transitions t
                   LEFT JOIN payment_attempts a ON t.entity = 'ATTEMPT' AND a.id = t.entity_id
                   LEFT JOIN refunds r ON t.entity = 'REFUND' AND r.id = t.entity_id

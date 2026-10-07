@@ -57,7 +57,7 @@ V1 is a **reference implementation** (mock providers + PSP sandboxes, no real mo
 - **FR-P2** Confirm a payment with a payment method. The response carries `next_action` when the customer must act (redirect, UPI intent, QR, or waiting for collect approval).
 - **FR-P3** A payment can have several attempts (customer retries with another method, or platform failover). At most one attempt is active at a time, and the funds of at most one attempt are kept: extra successes are refunded automatically.
 - **FR-P4** Retrieve a payment with its attempts and refund totals.
-- **FR-P5** Manual capture of authorized card payments (full amount only in V1); automatic capture otherwise, including capturing on the merchant's behalf when a PSP only authorizes.
+- **FR-P5** Manual capture of authorized card payments (full amount only in V1; partial capture in V2, FR-P10); automatic capture otherwise, including capturing on the merchant's behalf when a PSP only authorizes.
 - **FR-P6** Cancel before success; an authorized payment is voided.
 - **FR-P7** Payments expire (default 15 min, configurable 1 min–24 h). A payment waiting on a PSP outcome gets a grace period (default 30 min) before expiring. Authorizations lapse after a TTL (default 5 days) and are voided.
 - **FR-P8** Late success (the PSP confirms after expiry or failure) follows the merchant's policy: `AUTO_REFUND` (default) or `ACCEPT`. After a merchant cancel the money is always refunded.

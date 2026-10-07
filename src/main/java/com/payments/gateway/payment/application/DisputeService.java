@@ -100,7 +100,7 @@ public class DisputeService {
             } else {
                 PaymentAttempt attempt = payment.attempt(locator.attemptId()).orElseThrow();
                 long netCaptured = attempt.status() != AttemptStatus.SUCCEEDED ? 0
-                        : attempt.amount().amount() - refunds.sumActiveForAttempt(attempt.id())
+                        : attempt.capturedAmount().amount() - refunds.sumActiveForAttempt(attempt.id())
                                 - disputes.sumHoldingFundsForAttempt(attempt.id());
                 dispute = Dispute.open(Ids.newId("dsp"), attempt, result.providerDisputeId(), result.amount(),
                         result.reason(), reported, result.respondBy(), source, now);

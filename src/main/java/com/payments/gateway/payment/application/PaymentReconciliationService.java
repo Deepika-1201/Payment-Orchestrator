@@ -105,7 +105,7 @@ public class PaymentReconciliationService {
     }
 
     private static InternalItem toItem(Payment payment, PaymentAttempt attempt) {
-        return new InternalItem(Kind.PAYMENT, attempt.id(), payment.id(), attempt.status().name(), attempt.amount());
+        return new InternalItem(Kind.PAYMENT, attempt.id(), payment.id(), attempt.status().name(), attempt.capturedAmount());
     }
 
     private static InternalItem toItem(Refund refund) {

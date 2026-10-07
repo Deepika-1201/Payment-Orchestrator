@@ -261,15 +261,15 @@ public class PaymentRepository {
                 INSERT INTO payment_attempts (id, payment_id, merchant_id, attempt_number, provider_code, method_type,
                                               method_details, amount, currency, status, provider_reference, next_action,
                                               failure_code, failure_category, failure_message, card_network, card_last4,
-                                              routing_rule_id, authorized_at, captured_at, void_requested,
+                                              routing_rule_id, authorized_at, captured_at, capture_amount, void_requested,
                                               next_status_check_at, status_check_count, needs_review, review_reason,
                                               flagged_at, risk_outcome, risk_reasons, version, created_at, updated_at)
                 VALUES (:id, :paymentId, :merchantId, :attemptNumber, :providerCode, :methodType,
                         CAST(:methodDetails AS jsonb), :amount, :currency, :status, :providerReference,
                         CAST(:nextAction AS jsonb), :failureCode, :failureCategory, :failureMessage, :cardNetwork,
-                        :cardLast4, :routingRuleId, :authorizedAt, :capturedAt, :voidRequested, :nextStatusCheckAt,
-                        :statusCheckCount, :needsReview, :reviewReason, :flaggedAt, :riskOutcome, :riskReasons, 0,
-                        :createdAt, :updatedAt)
+                        :cardLast4, :routingRuleId, :authorizedAt, :capturedAt, :captureAmount, :voidRequested,
+                        :nextStatusCheckAt, :statusCheckCount, :needsReview, :reviewReason, :flaggedAt, :riskOutcome,
+                        :riskReasons, 0, :createdAt, :updatedAt)
                 """)
                 .params(params)
                 .update();
@@ -283,7 +283,8 @@ public class PaymentRepository {
                    SET status = :status, provider_reference = :providerReference, next_action = CAST(:nextAction AS jsonb),
                        failure_code = :failureCode, failure_category = :failureCategory, failure_message = :failureMessage,
                        card_network = :cardNetwork, card_last4 = :cardLast4,
-                       authorized_at = :authorizedAt, captured_at = :capturedAt, void_requested = :voidRequested,
+                       authorized_at = :authorizedAt, captured_at = :capturedAt, capture_amount = :captureAmount,
+                       void_requested = :voidRequested,
                        next_status_check_at = :nextStatusCheckAt, status_check_count = :statusCheckCount,
                        needs_review = :needsReview, review_reason = :reviewReason, flagged_at = :flaggedAt,
                        risk_outcome = :riskOutcome, risk_reasons = :riskReasons,
@@ -310,6 +311,7 @@ public class PaymentRepository {
         params.put("cardLast4", s.card() == null ? null : s.card().last4());
         params.put("authorizedAt", Sql.ts(s.authorizedAt()));
         params.put("capturedAt", Sql.ts(s.capturedAt()));
+        params.put("captureAmount", s.captureAmount() == null ? null : s.captureAmount().amount());
         params.put("voidRequested", s.voidRequested());
         params.put("nextStatusCheckAt", Sql.ts(s.nextStatusCheckAt()));
         params.put("statusCheckCount", s.statusCheckCount());
@@ -358,6 +360,8 @@ public class PaymentRepository {
         String failureCategory = rs.getString("failure_category");
         Failure failure = failureCategory == null ? null
                 : new Failure(rs.getString("failure_code"), FailureCategory.valueOf(failureCategory), rs.getString("failure_message"));
+        String currency = rs.getString("currency");
+        Long captureAmount = rs.getObject("capture_amount", Long.class);
         return new AttemptSnapshot(
                 rs.getString("id"),
                 rs.getString("payment_id"),
@@ -365,7 +369,7 @@ public class PaymentRepository {
                 rs.getInt("attempt_number"),
                 rs.getString("provider_code"),
                 method,
-                Money.of(rs.getLong("amount"), rs.getString("currency")),
+                Money.of(rs.getLong("amount"), currency),
                 AttemptStatus.valueOf(rs.getString("status")),
                 rs.getString("provider_reference"),
                 nextAction == null ? null : json.read(nextAction, NextAction.class),
@@ -375,6 +379,7 @@ public class PaymentRepository {
                 rs.getString("routing_rule_id"),
                 Sql.instant(rs, "authorized_at"),
                 Sql.instant(rs, "captured_at"),
+                captureAmount == null ? null : Money.of(captureAmount, currency),
                 rs.getBoolean("void_requested"),
                 Sql.instant(rs, "next_status_check_at"),
                 rs.getInt("status_check_count"),
