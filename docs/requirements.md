@@ -174,7 +174,7 @@ The V2 scope accepted in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased i
 - **FR-P10** An authorized card payment can be captured once for less than the authorized amount; the PSP releases the rest. Refunds, disputes and the ledger use the captured amount, and capturing more than the authorization is refused. This replaces "full amount only" in FR-P5.
 
 ### 8.3 Wallets, EMI and pay later (phase 20)
-- **FR-PM5** Wallets (PSP redirect or app intent), card EMI (the customer picks a tenure the PSP offers), cardless EMI, and pay later. The PSP or the lender makes any credit decision; the gateway keeps only the method, the plan and the outcome.
+- **FR-PM5** Wallets (PSP redirect or app intent), card EMI (the customer picks a tenure the PSP offers), cardless EMI, and pay later. The PSP or the lender makes any credit decision; the gateway keeps only the method, the plan and the outcome. The plan is what the PSP reports: tenure, rate and issuer for card EMI; for cardless EMI and pay later, the provider ([LLD §20.3](low-level-design.md#203-the-plan)).
 - **FR-PM6** Each method is a new `MethodType` with provider capabilities (amount range, tenures) and adapter support, and changes nothing in the payment domain (FR-PM4, NFR-11). The hosted checkout offers a method when it is routable.
 
 ### 8.4 Bank transfers and virtual accounts (phase 21)

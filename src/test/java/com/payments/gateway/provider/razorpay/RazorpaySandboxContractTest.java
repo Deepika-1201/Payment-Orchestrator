@@ -50,7 +50,7 @@ class RazorpaySandboxContractTest {
 
     private RazorpayPaymentProvider provider(boolean mandates) {
         return new RazorpayPaymentProvider(new RazorpayProperties(true, api, false, Duration.ofMinutes(15), Duration.ofDays(5),
-                mandates),
+                mandates, java.util.Set.of()),
                 new RazorpayApi(api, Duration.ofSeconds(5), Duration.ofSeconds(20), "rzp_test_", json), Clock.systemUTC());
     }
 

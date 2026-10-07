@@ -3,9 +3,11 @@ package com.payments.gateway.provider.mock;
 import com.payments.gateway.provider.mock.MockPsp.MandateState;
 import com.payments.gateway.provider.mock.MockPsp.MandateTxn;
 import com.payments.gateway.provider.mock.MockPsp.Txn;
+import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
 import java.util.List;
@@ -42,7 +44,8 @@ public class SimulatorController {
         this.clock = clock;
     }
 
-    public record CompleteRequest(String outcome, Boolean duplicateWebhook) {
+    /** {@code emi_tenure_months}: the plan a card EMI customer picks (LLD §20.5); the shortest offered when absent. */
+    public record CompleteRequest(String outcome, Boolean duplicateWebhook, Integer emiTenureMonths) {
     }
 
     public record AvailabilityRequest(boolean available) {
@@ -209,7 +212,7 @@ public class SimulatorController {
                                         @RequestBody CompleteRequest request) {
         boolean success = !"failure".equalsIgnoreCase(request.outcome());
         int deliveries = Boolean.TRUE.equals(request.duplicateWebhook()) ? 2 : 1;
-        Txn txn = completeAndNotify(provider, reference, success, deliveries);
+        Txn txn = completeAndNotify(provider, reference, success, request.emiTenureMonths(), deliveries);
         return Map.of("provider_reference", txn.reference(), "state", txn.state().name().toLowerCase(java.util.Locale.ROOT));
     }
 
@@ -244,11 +247,19 @@ public class SimulatorController {
     public String checkoutPage(@PathVariable String provider, @PathVariable String reference) {
         Txn txn = transaction(provider, reference);
         String action = "/simulator/" + HtmlUtils.htmlEscape(provider) + "/checkout/" + HtmlUtils.htmlEscape(reference);
+        String instrument = txn.method().provider() == null ? "" : " &middot; " + HtmlUtils.htmlEscape(txn.method().provider());
+        StringBuilder tenures = new StringBuilder();
+        if (txn.method().type() == MethodType.EMI) {
+            tenures.append("<label>Plan <select name=\"emi_tenure_months\">");
+            emiTenures(provider(provider)).forEach(months -> tenures.append("<option value=\"").append(months).append("\">")
+                    .append(months).append(" months</option>"));
+            tenures.append("</select></label>");
+        }
         return page("Mock PSP checkout",
-                "<p>" + HtmlUtils.htmlEscape(provider) + " &middot; " + txn.method().type().name() + " &middot; "
+                "<p>" + HtmlUtils.htmlEscape(provider) + " &middot; " + txn.method().type().name() + instrument + " &middot; "
                         + txn.amount().currency() + " " + txn.amount().toDecimalString() + "</p>"
                         + "<form method=\"post\" action=\"" + action + "\"><input type=\"hidden\" name=\"outcome\" value=\"success\">"
-                        + "<button type=\"submit\">Pay</button></form>"
+                        + tenures + "<button type=\"submit\">Pay</button></form>"
                         + "<form method=\"post\" action=\"" + action + "\"><input type=\"hidden\" name=\"outcome\" value=\"failure\">"
                         + "<button type=\"submit\">Fail</button></form>");
     }
@@ -256,8 +267,9 @@ public class SimulatorController {
     @PostMapping(value = "/{provider}/checkout/{reference}", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE,
             produces = MediaType.TEXT_HTML_VALUE)
     public String submitCheckout(@PathVariable String provider, @PathVariable String reference,
-                                 @RequestParam String outcome) {
-        Txn txn = completeAndNotify(provider, reference, "success".equalsIgnoreCase(outcome), 1);
+                                 @RequestParam String outcome,
+                                 @RequestParam(name = "emi_tenure_months", required = false) Integer emiTenureMonths) {
+        Txn txn = completeAndNotify(provider, reference, "success".equalsIgnoreCase(outcome), emiTenureMonths, 1);
         return page("Payment " + txn.state().name().toLowerCase(java.util.Locale.ROOT), returnLink(txn.returnUrl()));
     }
 
@@ -268,10 +280,15 @@ public class SimulatorController {
         return "";
     }
 
-    private Txn completeAndNotify(String provider, String reference, boolean success, int deliveries) {
+    private Txn completeAndNotify(String provider, String reference, boolean success, Integer emiTenureMonths,
+                                  int deliveries) {
         MockPaymentProvider mock = provider(provider);
         Txn txn = transaction(provider, reference);
-        if (!txn.complete(success, clock.instant())) {
+        if (emiTenureMonths != null && (txn.method().type() != MethodType.EMI || !emiTenures(mock).contains(emiTenureMonths))) {
+            throw GatewayException.validation("emi_tenure_months", "must be one of " + emiTenures(mock)
+                    + " months, for a card EMI payment");
+        }
+        if (!txn.complete(success, emiTenureMonths, clock.instant())) {
             throw GatewayException.invalidState("Transaction " + reference + " is already " + txn.state());
         }
         String gatewayBaseUrl = ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
@@ -288,6 +305,11 @@ public class SimulatorController {
             throw new GatewayException(ErrorCode.RESOURCE_NOT_FOUND, "Unknown mock provider " + code);
         }
         return provider;
+    }
+
+    private static List<Integer> emiTenures(MockPaymentProvider mock) {
+        MethodSupport emi = mock.capabilities().methods().get(MethodType.EMI);
+        return emi == null ? List.of() : emi.tenures().stream().sorted().toList();
     }
 
     private Txn transaction(String provider, String reference) {

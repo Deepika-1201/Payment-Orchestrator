@@ -9,6 +9,7 @@ import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.model.UpiFlow;
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
+import java.util.List;
 import java.util.Optional;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -56,6 +57,7 @@ public class HostedCheckoutController {
                                       @RequestParam(required = false) String method,
                                       @RequestParam(required = false) String vpa,
                                       @RequestParam(required = false) String bank,
+                                      @RequestParam(required = false) String provider,
                                       HttpServletRequest request) {
         Optional<CheckoutService.Page> found = checkout.open(token);
         if (found.isEmpty()) {
@@ -86,6 +88,14 @@ public class HostedCheckoutController {
                     return backToPage(token, Notice.INVALID_BANK);
                 }
                 paymentMethod = PaymentMethod.netbanking(bank);
+            }
+            case EMI -> paymentMethod = PaymentMethod.emi();
+            case WALLET, CARDLESS_EMI, PAY_LATER -> {
+                // Only a provider the page offered: it was routable when the page was rendered.
+                if (provider == null || !page.providers().getOrDefault(option.get(), List.of()).contains(provider)) {
+                    return backToPage(token, Notice.METHOD_UNAVAILABLE);
+                }
+                paymentMethod = option.get().forProvider(provider);
             }
             default -> throw new IllegalStateException("unhandled option " + option.get());
         }

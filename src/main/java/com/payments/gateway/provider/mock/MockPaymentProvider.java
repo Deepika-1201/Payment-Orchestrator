@@ -42,6 +42,7 @@ import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
@@ -74,6 +75,9 @@ public class MockPaymentProvider implements PaymentProvider {
     private static final List<CredentialField> CREDENTIALS = List.of(
             new CredentialField(API_KEY, true, false), new CredentialField(WEBHOOK_SECRET, true, false));
     private static final CardDetails MOCK_CARD = new CardDetails("visa", "1111");
+    /** LLD §20.5: every simulated card EMI is at 15% a year on the issuer's plan. */
+    private static final int EMI_RATE_BPS = 1500;
+    private static final String EMI_ISSUER = "HDFC";
 
     private final String code;
     private final ProviderCapabilities capabilities;
@@ -388,7 +392,7 @@ public class MockPaymentProvider implements PaymentProvider {
             default -> ProviderPaymentResult.pending(payload.providerReference(), payload.status());
         };
         if (payload.cardNetwork() != null && payload.cardLast4() != null) {
-            result = result.withCard(new CardDetails(payload.cardNetwork(), payload.cardLast4()));
+            result = result.withCard(new CardDetails(payload.cardNetwork(), payload.cardLast4(), payload.emiPlan()));
         }
         return List.of(ProviderEvent.payment(payload.eventId(), payload.type(), payload.providerReference(),
                 payload.merchantReference(), result));
@@ -455,7 +459,7 @@ public class MockPaymentProvider implements PaymentProvider {
                 mandate.maxAmount().currency(), rejected ? "mandate_rejected" : null,
                 rejected ? "Simulated: the customer rejected the mandate" : null, null, null,
                 mandate.registration() == null ? null : mandate.registration().reference(), null, null,
-                mandate.mandateReference(), mandate.customerReference(), null);
+                mandate.mandateReference(), mandate.customerReference(), null, null);
     }
 
     /** Builds the webhook body the simulated PSP would send once a notification is delivered or has failed. */
@@ -466,7 +470,7 @@ public class MockPaymentProvider implements PaymentProvider {
                 notification.delivered() ? null : "notification_failed",
                 notification.delivered() ? null : "Simulated: the notification could not be delivered", null, null, null,
                 null, null, notification.mandateReference(), null,
-                notification.delivered() ? notification.requestedAt() : null);
+                notification.delivered() ? notification.requestedAt() : null, null);
     }
 
     /** Builds the webhook body the simulated PSP would send for a dispute's current state. */
@@ -475,7 +479,7 @@ public class MockPaymentProvider implements PaymentProvider {
         return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.DISPUTE_UPDATED, dispute.reference(),
                 txn.merchantReference(), dispute.state().name().toLowerCase(Locale.ROOT), dispute.amount().amount(),
                 dispute.amount().currency(), null, null, null, null, txn.reference(), dispute.reason(), dispute.respondBy(),
-                null, null, null);
+                null, null, null, null);
     }
 
     /** Builds the webhook body the simulated PSP would send for the current transaction state. */
@@ -493,13 +497,25 @@ public class MockPaymentProvider implements PaymentProvider {
                 txn.merchantReference(), status, amount.amount(), amount.currency(), txn.failureCode(),
                 txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode(),
                 card == null ? null : card.network(), card == null ? null : card.last4(), null, null, null, null, null,
-                null);
+                null, card == null ? null : card.emiPlan());
     }
 
     /** The simulated hosted page always "collects" the Visa test card; only its network and last 4 are reported. */
-    private static CardDetails cardOf(Txn txn) {
+    private CardDetails cardOf(Txn txn) {
         boolean paid = txn.state() == TxnState.AUTHORIZED || txn.state() == TxnState.CAPTURED || txn.state() == TxnState.VOIDED;
-        return txn.method() != null && txn.method().type() == MethodType.CARD && paid ? MOCK_CARD : null;
+        if (txn.method() == null || !paid) {
+            return null;
+        }
+        return switch (txn.method().type()) {
+            case CARD -> MOCK_CARD;
+            case EMI -> new CardDetails(MOCK_CARD.network(), MOCK_CARD.last4(), new EmiPlan(
+                    txn.emiTenureMonths() == null ? shortestEmiTenure() : txn.emiTenureMonths(), EMI_RATE_BPS, EMI_ISSUER));
+            default -> null;
+        };
+    }
+
+    private int shortestEmiTenure() {
+        return capabilities.methods().get(MethodType.EMI).tenures().stream().min(Integer::compare).orElseThrow();
     }
 
     /** Signs as the simulated PSP would for the transaction's account (platform secret if the account has none). */
@@ -626,7 +642,8 @@ public class MockPaymentProvider implements PaymentProvider {
 
     private NextAction nextAction(Txn txn) {
         return switch (txn.method().type()) {
-            case CARD, NETBANKING, MANDATE -> NextAction.redirect(properties.publicBaseUrl() + "/simulator/" + code
+            case CARD, NETBANKING, MANDATE, WALLET, EMI, CARDLESS_EMI, PAY_LATER -> NextAction.redirect(
+                    properties.publicBaseUrl() + "/simulator/" + code
                     + "/checkout/" + txn.reference());
             case UPI -> {
                 UpiFlow flow = txn.method().upiFlow();

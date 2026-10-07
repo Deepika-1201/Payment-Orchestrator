@@ -33,11 +33,13 @@ import com.payments.gateway.provider.spi.WebhookVerificationException;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
+import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.model.UpiFlow;
 import java.time.Clock;
 import java.time.Duration;
@@ -45,6 +47,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -66,6 +69,8 @@ import tools.jackson.databind.JsonNode;
  *   <li>Settlement reports come from Razorpay's settlement recon, read per settlement day (ADR-032).</li>
  *   <li>Mandates (ADR-035) register through a registration link (an invoice keyed by our mandate id); debits run on
  *       the token, each cycle on the order that carried its pre-debit notification.</li>
+ *   <li>Wallets, card EMI, cardless EMI and pay later (ADR-037) use the Payment Link, limited to the chosen
+ *       instrument; card EMI's plan is read from the payment's {@code emi} object.</li>
  * </ul>
  */
 public final class RazorpayPaymentProvider implements PaymentProvider {
@@ -84,6 +89,15 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             new CredentialField(WEBHOOK_SECRET, true, true));
     private static final long UPI_MAX = 10_000_000L;
     private static final long CARD_MAX = 100_000_000L;
+    /** LLD §20.2, offered once Razorpay has enabled them (amount ranges assumed; lenders enforce their own minimums). */
+    private static final Map<MethodType, MethodSupport> EXTRA_METHODS = Map.of(
+            MethodType.WALLET, MethodSupport.ofProviders(Set.of("phonepe", "amazonpay", "mobikwik", "payzapp", "olamoney",
+                    "airtelmoney", "jiomoney"), 100, UPI_MAX),
+            MethodType.EMI, MethodSupport.emi(Set.of(3, 6, 9, 12, 18, 24), 300_000, CARD_MAX),
+            MethodType.CARDLESS_EMI, MethodSupport.ofProviders(Set.of("hdfc", "icic", "idfb", "kkbk", "walnut369",
+                    "earlysalary", "zestmoney"), 300_000, 50_000_000),
+            MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay"), 100, UPI_MAX));
+    private static final String EXPAND_CARD_AND_EMI = "?expand%5B%5D=card&expand%5B%5D=emi";
     /** ₹1 authorization for UPI and card; eNACH registers without a charge and debits up to ₹1 crore. */
     private static final Map<MandateInstrument, MandateSupport> MANDATES = Map.of(
             MandateInstrument.UPI_AUTOPAY, new MandateSupport(100, UPI_MAX),
@@ -106,11 +120,13 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         this.api = api;
         this.clock = clock;
         Set<UpiFlow> upiFlows = properties.upiS2s() ? EnumSet.of(UpiFlow.INTENT, UpiFlow.QR) : EnumSet.of(UpiFlow.INTENT);
-        this.capabilities = new ProviderCapabilities(Map.of(
+        Map<MethodType, MethodSupport> methods = new EnumMap<>(Map.of(
                 MethodType.UPI, new MethodSupport(upiFlows, 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, false),
-                MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)),
-                Set.of("INR"), false, true, true).withMandates(properties.mandates() ? MANDATES : Map.of());
+                MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)));
+        properties.extraMethods().forEach(type -> methods.put(type, EXTRA_METHODS.get(type)));
+        this.capabilities = new ProviderCapabilities(methods, Set.of("INR"), false, true, true)
+                .withMandates(properties.mandates() ? MANDATES : Map.of());
     }
 
     @Override
@@ -205,6 +221,11 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             body.put("callback_url", request.returnUrl());
             body.put("callback_method", "get");
         }
+        instrument(request.method()).ifPresent(instrument -> body.put("options", Map.of("checkout", Map.of("config",
+                Map.of("display", Map.of(
+                        "blocks", Map.of("pg", Map.of("name", "Pay", "instruments", List.of(instrument))),
+                        "sequence", List.of("block.pg"),
+                        "preferences", Map.of("show_default_blocks", false)))))));
         JsonNode link;
         try {
             link = api.post(account, "/payment_links", body);
@@ -219,6 +240,17 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         }
         return ProviderPaymentResult.requiresAction(text(link, "id"), NextAction.redirect(text(link, "short_url")),
                 text(link, "status"));
+    }
+
+    /** The one instrument a Payment Link shows for the new methods (LLD §20.6); the others keep Razorpay's full page. */
+    private static Optional<Map<String, Object>> instrument(PaymentMethod method) {
+        return Optional.ofNullable(switch (method.type()) {
+            case WALLET -> Map.of("method", "wallet", "wallets", List.of(method.provider()));
+            case EMI -> Map.of("method", "emi");
+            case CARDLESS_EMI -> Map.of("method", "cardless_emi", "providers", List.of(method.provider()));
+            case PAY_LATER -> Map.of("method", "paylater", "providers", List.of(method.provider()));
+            default -> null;
+        });
     }
 
     @Override
@@ -252,7 +284,7 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         String orderId = text(order, "id");
         JsonNode payments = api.get(account, "/orders/" + orderId + "/payments", Map.of()).path("items");
         Instant windowEnds = Instant.ofEpochSecond(order.path("created_at").asLong(0)).plus(properties.hostedPageTtl());
-        return fromPayments(orderId, payments, clock.instant().isAfter(windowEnds));
+        return fromPayments(account, orderId, payments, clock.instant().isAfter(windowEnds));
     }
 
     private ProviderPaymentResult linkResult(MerchantAccount account, JsonNode link) {
@@ -261,7 +293,7 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         String orderId = text(link, "order_id");
         if (orderId != null) {
             JsonNode payments = api.get(account, "/orders/" + orderId + "/payments", Map.of()).path("items");
-            ProviderPaymentResult fromPayments = fromPayments(linkId, payments, false);
+            ProviderPaymentResult fromPayments = fromPayments(account, linkId, payments, false);
             if (fromPayments.outcome() == ProviderPaymentResult.Outcome.SUCCEEDED
                     || fromPayments.outcome() == ProviderPaymentResult.Outcome.AUTHORIZED) {
                 return fromPayments;
@@ -278,15 +310,18 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
      * Razorpay may capture a payment it earlier reported as failed (UPI retries in the customer's app), so a failure
      * is final only once the payment window has closed.
      */
-    private static ProviderPaymentResult fromPayments(String reference, JsonNode payments, boolean windowClosed) {
+    private ProviderPaymentResult fromPayments(MerchantAccount account, String reference, JsonNode payments,
+                                               boolean windowClosed) {
         JsonNode lastFailed = null;
         for (JsonNode payment : payments) {
             switch (status(payment)) {
                 case "captured", "refunded" -> {
-                    return withCard(ProviderPaymentResult.succeeded(reference, amount(payment), "captured"), payment);
+                    return withCard(ProviderPaymentResult.succeeded(reference, amount(payment), "captured"),
+                            withEmiPlan(account, payment));
                 }
                 case "authorized" -> {
-                    return withCard(ProviderPaymentResult.authorized(reference, amount(payment), "authorized"), payment);
+                    return withCard(ProviderPaymentResult.authorized(reference, amount(payment), "authorized"),
+                            withEmiPlan(account, payment));
                 }
                 case "failed" -> lastFailed = payment;
                 default -> {
@@ -1024,10 +1059,31 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         String normalized = network.toLowerCase(Locale.ROOT).replaceAll("[^a-z]+", "_").replaceAll("^_|_$", "");
         String digits = last4.length() < 4 ? "0".repeat(4 - last4.length()) + last4 : last4;
         try {
-            return result.withCard(new CardDetails(normalized, digits));
+            return result.withCard(new CardDetails(normalized, digits, emiPlan(payment.path("emi"))));
         } catch (IllegalArgumentException e) {
             return result;
         }
+    }
+
+    /** Razorpay's {@code emi} object: {@code duration} in months, {@code rate} in basis points, {@code issuer}. */
+    private static EmiPlan emiPlan(JsonNode emi) {
+        if (!emi.path("duration").canConvertToInt()) {
+            return null;
+        }
+        try {
+            return new EmiPlan(emi.path("duration").asInt(), emi.path("rate").canConvertToInt() ? emi.path("rate").asInt() : null,
+                    text(emi, "issuer"));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** An EMI payment as listed may lack its card and plan; fetching it with both expanded fills them in. */
+    private JsonNode withEmiPlan(MerchantAccount account, JsonNode payment) {
+        if (!"emi".equals(text(payment, "method")) || (payment.path("emi").isObject() && payment.path("card").isObject())) {
+            return payment;
+        }
+        return api.get(account, "/payments/" + RazorpayApi.segment(text(payment, "id")) + EXPAND_CARD_AND_EMI, Map.of());
     }
 
     private static ProviderFailure paymentFailure(JsonNode payment) {

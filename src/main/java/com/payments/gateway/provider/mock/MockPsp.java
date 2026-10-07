@@ -50,6 +50,7 @@ public final class MockPsp {
         private String failureCode;
         private Instant capturedAt;
         private Money captured;
+        private Integer emiTenureMonths;
         private long refunded;
 
         Txn(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
@@ -144,15 +145,26 @@ public final class MockPsp {
 
         /** Completes a transaction awaiting the customer; returns false if it is no longer awaiting. */
         synchronized boolean complete(boolean success, Instant now) {
+            return complete(success, null, now);
+        }
+
+        /** As {@link #complete(boolean, Instant)}, with the EMI tenure the customer picked on the page. */
+        synchronized boolean complete(boolean success, Integer tenureMonths, Instant now) {
             if (state != TxnState.REQUIRES_ACTION && state != TxnState.PENDING) {
                 return false;
             }
             if (success) {
+                emiTenureMonths = tenureMonths;
                 moveTo(manualCapture ? TxnState.AUTHORIZED : TxnState.CAPTURED, null, now);
             } else {
                 moveTo(TxnState.FAILED, "customer_declined", now);
             }
             return true;
+        }
+
+        /** The EMI tenure picked on the page, or null when none was (the PSP then uses its shortest). */
+        public synchronized Integer emiTenureMonths() {
+            return emiTenureMonths;
         }
 
         synchronized boolean reserveRefund(long refundAmount) {

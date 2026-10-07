@@ -1,5 +1,6 @@
 package com.payments.gateway.provider.mock;
 
+import com.payments.gateway.shared.model.EmiPlan;
 import java.time.Instant;
 
 /** Wire format of mock PSP webhooks (serialized with snake_case). */
@@ -7,7 +8,8 @@ public record MockWebhookPayload(String eventId, String type, String providerRef
                                  String status, Long amount, String currency, String failureCode,
                                  String failureMessage, String cardNetwork, String cardLast4,
                                  String paymentReference, String disputeReason, Instant respondBy,
-                                 String mandateReference, String customerReference, Instant deliveredAt) {
+                                 String mandateReference, String customerReference, Instant deliveredAt,
+                                 EmiPlan emiPlan) {
 
     public static final String PAYMENT_UPDATED = "payment.updated";
     public static final String REFUND_UPDATED = "refund.updated";

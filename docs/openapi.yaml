@@ -539,8 +539,9 @@ paths:
       operationId: createCheckoutSession
       summary: Create a hosted checkout session for a payment
       description: |
-        Redirect the customer to `url`. The page lets them choose UPI (app, UPI ID or QR code), card or netbanking; card
-        details are entered only on the PSP's own page. The URL is a bearer credential for this one payment, so
+        Redirect the customer to `url`. The page lets them choose UPI (app, UPI ID or QR code), card, netbanking, a
+        wallet, card EMI, cardless EMI or pay later, whichever can be routed for the payment; card details are entered
+        only on the PSP's own page. The URL is a bearer credential for this one payment, so
         send it only to the paying customer. It stops working at `expires_at`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -832,9 +833,10 @@ components:
         id: {type: string, pattern: '^att_'}
         attempt_number: {type: integer, minimum: 1}
         status: {$ref: '#/components/schemas/AttemptStatus'}
-        method: {type: string, enum: [upi, card, netbanking, mandate]}
+        method: {type: string, enum: [upi, card, netbanking, mandate, wallet, emi, cardless_emi, pay_later]}
         upi_flow: {type: string, enum: [intent, qr, collect]}
         bank_code: {type: string}
+        method_provider: {type: string, description: 'The wallet or lender, for `wallet`, `cardless_emi` and `pay_later`.'}
         card:
           type: object
           description: Card network and last 4 digits, once the customer has paid by card on the PSP's page. Nothing else about the card is ever stored.
@@ -842,6 +844,14 @@ components:
           properties:
             network: {type: string, examples: [visa, mastercard, rupay]}
             last4: {type: string, pattern: '^[0-9]{4}$'}
+        emi_plan:
+          type: object
+          description: The card EMI plan the customer chose on the PSP's page, as the PSP reported it with the card.
+          required: [tenure_months]
+          properties:
+            tenure_months: {type: integer, minimum: 1, maximum: 120}
+            interest_rate_bps: {type: integer, minimum: 0, maximum: 10000, description: Annual rate in basis points.}
+            issuer: {type: string, pattern: '^[A-Z0-9_]{2,16}$', description: The issuing bank's code.}
         provider: {type: string}
         provider_reference: {type: string}
         failure: {$ref: '#/components/schemas/PaymentError'}
@@ -1095,9 +1105,11 @@ components:
     PaymentMethodInput:
       type: object
       required: [type]
-      description: Card details are never sent here; card payments redirect to the PSP's page.
+      description: >-
+        Card details are never sent here; card and card EMI payments redirect to the PSP's page, where the customer
+        also picks the EMI plan. Wallets, cardless EMI and pay later name their provider by the code the PSPs use.
       properties:
-        type: {type: string, enum: [upi, card, netbanking]}
+        type: {type: string, enum: [upi, card, netbanking, wallet, emi, cardless_emi, pay_later]}
         upi:
           type: object
           required: [flow]
@@ -1109,11 +1121,25 @@ components:
           required: [bank_code]
           properties:
             bank_code: {type: string, pattern: '^[A-Z0-9_]{2,16}$'}
+        wallet: {$ref: '#/components/schemas/MethodProvider'}
+        cardless_emi: {$ref: '#/components/schemas/MethodProvider'}
+        pay_later: {$ref: '#/components/schemas/MethodProvider'}
       allOf:
         - if: {properties: {type: {const: upi}}}
           then: {required: [upi]}
         - if: {properties: {type: {const: netbanking}}}
           then: {required: [netbanking]}
+        - if: {properties: {type: {const: wallet}}}
+          then: {required: [wallet]}
+        - if: {properties: {type: {const: cardless_emi}}}
+          then: {required: [cardless_emi]}
+        - if: {properties: {type: {const: pay_later}}}
+          then: {required: [pay_later]}
+    MethodProvider:
+      type: object
+      required: [provider]
+      properties:
+        provider: {type: string, pattern: '^[a-z0-9_]{2,32}$', examples: [phonepe, zestmoney, lazypay]}
     CapturePaymentRequest:
       type: object
       properties:

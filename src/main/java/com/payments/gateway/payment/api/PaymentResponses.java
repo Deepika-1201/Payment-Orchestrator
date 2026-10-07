@@ -42,12 +42,16 @@ public final class PaymentResponses {
     public record NextActionResponse(String type, String url, String upiUri, String qrPayload, Instant expiresAt) {
     }
 
+    /** {@code methodProvider}: the wallet or lender; {@code emiPlan}: the card EMI plan the PSP reported (ADR-037). */
     public record AttemptResponse(String id, int attemptNumber, String status, String method, String upiFlow,
-                                  String bankCode, CardResponse card, String provider, String providerReference,
-                                  ErrorResponse failure, Instant createdAt) {
+                                  String bankCode, String methodProvider, CardResponse card, EmiPlanResponse emiPlan,
+                                  String provider, String providerReference, ErrorResponse failure, Instant createdAt) {
     }
 
     public record CardResponse(String network, String last4) {
+    }
+
+    public record EmiPlanResponse(int tenureMonths, Integer interestRateBps, String issuer) {
     }
 
     public record ErrorResponse(String code, String category, String message) {

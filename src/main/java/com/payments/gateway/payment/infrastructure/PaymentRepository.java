@@ -14,6 +14,7 @@ import com.payments.gateway.shared.jdbc.Sql;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
@@ -41,7 +42,7 @@ public class PaymentRepository {
     public record ClaimedAttempt(String attemptId, String paymentId) {
     }
 
-    record MethodDetails(String upiFlow, String vpa, String bankCode, String mandateId) {
+    record MethodDetails(String upiFlow, String vpa, String bankCode, String mandateId, String provider) {
     }
 
     private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() {
@@ -252,7 +253,7 @@ public class PaymentRepository {
         params.put("methodType", s.method().type().name());
         params.put("methodDetails", json.write(new MethodDetails(
                 s.method().upiFlow() == null ? null : s.method().upiFlow().name(), s.method().vpa(), s.method().bankCode(),
-                s.method().mandateId())));
+                s.method().mandateId(), s.method().provider())));
         params.put("amount", s.amount().amount());
         params.put("currency", s.amount().currency());
         params.put("routingRuleId", s.routingRuleId());
@@ -261,15 +262,16 @@ public class PaymentRepository {
                 INSERT INTO payment_attempts (id, payment_id, merchant_id, attempt_number, provider_code, method_type,
                                               method_details, amount, currency, status, provider_reference, next_action,
                                               failure_code, failure_category, failure_message, card_network, card_last4,
+                                              emi_tenure_months, emi_interest_rate_bps, emi_issuer,
                                               routing_rule_id, authorized_at, captured_at, capture_amount, void_requested,
                                               next_status_check_at, status_check_count, needs_review, review_reason,
                                               flagged_at, risk_outcome, risk_reasons, version, created_at, updated_at)
                 VALUES (:id, :paymentId, :merchantId, :attemptNumber, :providerCode, :methodType,
                         CAST(:methodDetails AS jsonb), :amount, :currency, :status, :providerReference,
                         CAST(:nextAction AS jsonb), :failureCode, :failureCategory, :failureMessage, :cardNetwork,
-                        :cardLast4, :routingRuleId, :authorizedAt, :capturedAt, :captureAmount, :voidRequested,
-                        :nextStatusCheckAt, :statusCheckCount, :needsReview, :reviewReason, :flaggedAt, :riskOutcome,
-                        :riskReasons, 0, :createdAt, :updatedAt)
+                        :cardLast4, :emiTenureMonths, :emiInterestRateBps, :emiIssuer, :routingRuleId, :authorizedAt,
+                        :capturedAt, :captureAmount, :voidRequested, :nextStatusCheckAt, :statusCheckCount, :needsReview,
+                        :reviewReason, :flaggedAt, :riskOutcome, :riskReasons, 0, :createdAt, :updatedAt)
                 """)
                 .params(params)
                 .update();
@@ -282,7 +284,8 @@ public class PaymentRepository {
                 UPDATE payment_attempts
                    SET status = :status, provider_reference = :providerReference, next_action = CAST(:nextAction AS jsonb),
                        failure_code = :failureCode, failure_category = :failureCategory, failure_message = :failureMessage,
-                       card_network = :cardNetwork, card_last4 = :cardLast4,
+                       card_network = :cardNetwork, card_last4 = :cardLast4, emi_tenure_months = :emiTenureMonths,
+                       emi_interest_rate_bps = :emiInterestRateBps, emi_issuer = :emiIssuer,
                        authorized_at = :authorizedAt, captured_at = :capturedAt, capture_amount = :captureAmount,
                        void_requested = :voidRequested,
                        next_status_check_at = :nextStatusCheckAt, status_check_count = :statusCheckCount,
@@ -308,6 +311,10 @@ public class PaymentRepository {
         params.put("failureCategory", s.failure() == null ? null : s.failure().category().name());
         params.put("failureMessage", s.failure() == null ? null : s.failure().message());
         params.put("cardNetwork", s.card() == null ? null : s.card().network());
+        EmiPlan plan = s.card() == null ? null : s.card().emiPlan();
+        params.put("emiTenureMonths", plan == null ? null : plan.tenureMonths());
+        params.put("emiInterestRateBps", plan == null ? null : plan.interestRateBps());
+        params.put("emiIssuer", plan == null ? null : plan.issuer());
         params.put("cardLast4", s.card() == null ? null : s.card().last4());
         params.put("authorizedAt", Sql.ts(s.authorizedAt()));
         params.put("capturedAt", Sql.ts(s.capturedAt()));
@@ -355,7 +362,7 @@ public class PaymentRepository {
         MethodDetails details = json.read(rs.getString("method_details"), MethodDetails.class);
         PaymentMethod method = new PaymentMethod(MethodType.valueOf(rs.getString("method_type")),
                 details.upiFlow() == null ? null : UpiFlow.valueOf(details.upiFlow()), details.vpa(), details.bankCode(),
-                details.mandateId());
+                details.mandateId(), details.provider());
         String nextAction = rs.getString("next_action");
         String failureCategory = rs.getString("failure_category");
         Failure failure = failureCategory == null ? null
@@ -375,7 +382,7 @@ public class PaymentRepository {
                 nextAction == null ? null : json.read(nextAction, NextAction.class),
                 failure,
                 rs.getString("card_network") == null ? null
-                        : new CardDetails(rs.getString("card_network"), rs.getString("card_last4")),
+                        : new CardDetails(rs.getString("card_network"), rs.getString("card_last4"), emiPlan(rs)),
                 rs.getString("routing_rule_id"),
                 Sql.instant(rs, "authorized_at"),
                 Sql.instant(rs, "captured_at"),
@@ -388,6 +395,12 @@ public class PaymentRepository {
                 rs.getLong("version"),
                 Sql.instant(rs, "created_at"),
                 Sql.instant(rs, "updated_at"));
+    }
+
+    private static EmiPlan emiPlan(ResultSet rs) throws SQLException {
+        Integer tenure = rs.getObject("emi_tenure_months", Integer.class);
+        return tenure == null ? null
+                : new EmiPlan(tenure, rs.getObject("emi_interest_rate_bps", Integer.class), rs.getString("emi_issuer"));
     }
 
     private static RiskAssessment risk(String outcome, String reasons) {

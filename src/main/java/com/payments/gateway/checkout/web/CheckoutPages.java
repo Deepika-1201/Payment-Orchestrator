@@ -10,6 +10,8 @@ import com.payments.gateway.shared.model.Money;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.web.util.HtmlUtils;
 
 /**
@@ -33,6 +35,15 @@ final class CheckoutPages {
     static final String CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'sha256-"
             + Base64.getEncoder().encodeToString(Hashing.sha256(CSS)) + "'; form-action 'self'; frame-ancestors 'none'; "
             + "base-uri 'none'";
+
+    /** Display names of the wallet, lender and pay-later codes the PSPs use; other codes are shown as they are. */
+    private static final Map<String, String> PROVIDER_NAMES = Map.ofEntries(
+            Map.entry("phonepe", "PhonePe"), Map.entry("amazonpay", "Amazon Pay"), Map.entry("mobikwik", "MobiKwik"),
+            Map.entry("payzapp", "PayZapp"), Map.entry("paytm", "Paytm"), Map.entry("olamoney", "Ola Money"),
+            Map.entry("airtelmoney", "Airtel Money"), Map.entry("jiomoney", "JioMoney"), Map.entry("zestmoney", "ZestMoney"),
+            Map.entry("earlysalary", "Fibe"), Map.entry("walnut369", "axio"), Map.entry("hdfc", "HDFC Bank"),
+            Map.entry("icic", "ICICI Bank"), Map.entry("idfb", "IDFC FIRST Bank"), Map.entry("kkbk", "Kotak Mahindra Bank"),
+            Map.entry("lazypay", "LazyPay"), Map.entry("simpl", "Simpl"));
 
     /** Fixed, parameter-selected messages: nothing from the query string is ever echoed into the page. */
     enum Notice {
@@ -141,10 +152,41 @@ final class CheckoutPages {
                     }
                     html.append("</select><button type=\"submit\">Pay with netbanking</button>");
                 }
+                case WALLET -> providers(html, page, option, "Wallet", "Choose your wallet", "Pay with wallet");
+                case EMI -> html
+                        .append("<label>EMI on a credit or debit card</label>")
+                        .append("<button type=\"submit\">Pay in EMIs</button>")
+                        .append("<p class=\"muted\">").append(escape(tenures(page.emiTenures())))
+                        .append(" You choose your bank and plan on our payment partner's secure page.</p>");
+                case CARDLESS_EMI -> providers(html, page, option, "Cardless EMI", "Choose a lender", "Pay with cardless EMI");
+                case PAY_LATER -> providers(html, page, option, "Pay later", "Choose a provider", "Pay later");
             }
             html.append("</form>");
         }
         return html.toString();
+    }
+
+    private static void providers(StringBuilder html, Page page, CheckoutOption option, String label, String prompt,
+                                  String button) {
+        String id = option.formValue() + "_provider";
+        html.append("<label for=\"").append(id).append("\">").append(label).append("</label><select id=\"").append(id)
+                .append("\" name=\"provider\" required><option value=\"\">").append(prompt).append("</option>");
+        for (String provider : page.providers().getOrDefault(option, List.of())) {
+            html.append("<option value=\"").append(escape(provider)).append("\">")
+                    .append(escape(PROVIDER_NAMES.getOrDefault(provider, provider))).append("</option>");
+        }
+        html.append("</select><button type=\"submit\">").append(button).append("</button>");
+    }
+
+    private static String tenures(List<Integer> months) {
+        if (months.isEmpty()) {
+            return "";
+        }
+        if (months.size() == 1) {
+            return "A " + months.getFirst() + "-month plan is available.";
+        }
+        String list = months.subList(0, months.size() - 1).stream().map(String::valueOf).collect(Collectors.joining(", "));
+        return "Plans of " + list + " or " + months.getLast() + " months are available.";
     }
 
     /** Renders the customer's next step and returns the auto-refresh interval. */

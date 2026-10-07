@@ -12,8 +12,11 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 
@@ -30,9 +33,13 @@ public class CheckoutService {
     public record Created(CheckoutSession session, String url) {
     }
 
-    /** Everything one render of the hosted page needs. */
+    /**
+     * Everything one render of the hosted page needs. {@code providers}: the routable wallets or lenders of each option
+     * that names one; {@code emiTenures}: the card EMI plans offered, in months.
+     */
     public record Page(CheckoutSession session, String token, String merchantName, PaymentResponse payment,
-                       List<CheckoutOption> options) {
+                       List<CheckoutOption> options, Map<CheckoutOption, List<String>> providers,
+                       List<Integer> emiTenures) {
     }
 
     private final CheckoutSessionRepository repository;
@@ -51,7 +58,7 @@ public class CheckoutService {
     }
 
     public Created create(String merchantId, String paymentId, String returnUrl) {
-        PaymentResponse payment = payments.view(merchantId, paymentId, List.of()).payment();
+        PaymentResponse payment = payments.view(merchantId, paymentId, List.of(), Set.of()).payment();
         if (payment.mandateId() != null) {
             throw GatewayException.invalidState("A mandate's payments are collected by the gateway, not at checkout");
         }
@@ -82,11 +89,16 @@ public class CheckoutService {
         if (merchant.status() != Merchant.Status.ACTIVE) {
             return Optional.empty();
         }
-        PaymentCheckoutService.View view = payments.view(merchant.id(), session.paymentId(), CheckoutOption.probes());
+        PaymentCheckoutService.View view = payments.view(merchant.id(), session.paymentId(), CheckoutOption.probes(),
+                CheckoutOption.providerMethods());
         List<CheckoutOption> options = Arrays.stream(CheckoutOption.values())
-                .filter(option -> view.routableMethods().contains(option.routingProbe()))
+                .filter(option -> option.offeredBy(view.routableMethods()))
                 .toList();
-        return Optional.of(new Page(session, token, merchant.name(), view.payment(), options));
+        Map<CheckoutOption, List<String>> providers = new EnumMap<>(CheckoutOption.class);
+        options.stream().filter(CheckoutOption::namesProvider)
+                .forEach(option -> providers.put(option, option.providers(view.routableMethods())));
+        return Optional.of(new Page(session, token, merchant.name(), view.payment(), options, providers,
+                view.emiTenures()));
     }
 
     /** Starts an attempt; the PSP sends the customer back to this session's page. */

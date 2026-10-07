@@ -3,6 +3,7 @@ package com.payments.gateway.payment.api;
 import com.payments.gateway.payment.api.PaymentResponses.AttemptResponse;
 import com.payments.gateway.payment.api.PaymentResponses.CustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.DisputeResponse;
+import com.payments.gateway.payment.api.PaymentResponses.EmiPlanResponse;
 import com.payments.gateway.payment.api.PaymentResponses.ErrorResponse;
 import com.payments.gateway.payment.api.PaymentResponses.MandateCustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.MandateDebitResponse;
@@ -20,6 +21,8 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
+import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.NextAction;
 import org.springframework.stereotype.Component;
 
@@ -148,6 +151,8 @@ public class PaymentMapper {
     }
 
     private AttemptResponse toResponse(PaymentAttempt attempt) {
+        CardDetails card = attempt.card();
+        EmiPlan plan = card == null ? null : card.emiPlan();
         return new AttemptResponse(
                 attempt.id(),
                 attempt.attemptNumber(),
@@ -155,7 +160,9 @@ public class PaymentMapper {
                 wire(attempt.method().type()),
                 wire(attempt.method().upiFlow()),
                 attempt.method().bankCode(),
-                attempt.card() == null ? null : new PaymentResponses.CardResponse(attempt.card().network(), attempt.card().last4()),
+                attempt.method().provider(),
+                card == null ? null : new PaymentResponses.CardResponse(card.network(), card.last4()),
+                plan == null ? null : new EmiPlanResponse(plan.tenureMonths(), plan.interestRateBps(), plan.issuer()),
                 attempt.providerCode(),
                 attempt.providerReference(),
                 toResponse(attempt.failure()),

@@ -170,6 +170,61 @@ class CheckoutIntegrationTest extends IntegrationTest {
     }
 
     @Test
+    void walletsEmiAndPayLaterAreOfferedPerRoutableProvider() {
+        TestMerchant merchant = createMerchant(ALPHA, BETA);
+        String large = str(createPayment(merchant, 500_000, "automatic"), "id");
+        String small = str(createPayment(merchant, 49_900, "automatic"), "id");
+
+        String page = open(session(merchant, large)).html();
+        String smallPage = open(session(merchant, small)).html();
+
+        assertThat(page).contains("value=\"wallet\"", "<select id=\"wallet_provider\" name=\"provider\" required>",
+                "<option value=\"phonepe\">PhonePe</option>", "<option value=\"paytm\">Paytm</option>",
+                "value=\"emi\"", "Plans of 3, 6, 9, 12, 18 or 24 months are available.",
+                "value=\"cardless_emi\"", "<option value=\"earlysalary\">Fibe</option>",
+                "value=\"pay_later\"", "<option value=\"simpl\">Simpl</option>");
+        assertThat(page.indexOf("value=\"phonepe\"")).as("each provider once").isEqualTo(page.lastIndexOf("value=\"phonepe\""));
+        assertThat(smallPage).as("EMI starts at 3,000 rupees").contains("value=\"wallet\"", "value=\"pay_later\"")
+                .doesNotContain("value=\"emi\"").doesNotContain("value=\"cardless_emi\"");
+    }
+
+    @Test
+    void aWalletChosenOnThePageContinuesAtThePspAndOnlyOfferedProvidersAreAccepted() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        String paymentId = str(createPayment(merchant, 49_900, "automatic"), "id");
+        String path = session(merchant, paymentId);
+
+        for (Map<String, String> form : java.util.List.of(Map.of("method", "wallet"),
+                Map.of("method", "wallet", "provider", "paytm"), Map.of("method", "pay_later", "provider", "phonepe"),
+                Map.of("method", "wallet", "provider", "PhonePe"))) {
+            assertThat(submit(path, form).headers().firstValue("Location"))
+                    .hasValueSatisfying(location -> assertThat(location).endsWith(path + "?error=method_unavailable"));
+        }
+        assertThat(num(getPayment(merchant, paymentId), "attempt_count")).isZero();
+
+        assertThat(submit(path, Map.of("method", "wallet", "provider", "amazonpay")).status()).isEqualTo(303);
+
+        Map<String, Object> payment = getPayment(merchant, paymentId);
+        assertThat(str(payment, "latest_attempt.method")).isEqualTo("wallet");
+        assertThat(str(payment, "latest_attempt.method_provider")).isEqualTo("amazonpay");
+        assertThat(open(path).html()).contains(">Continue</a>", "/simulator/" + ALPHA + "/checkout/");
+    }
+
+    @Test
+    void cardEmiFromThePageLeavesThePlanToThePsp() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        String paymentId = str(createPayment(merchant, 300_000, "automatic"), "id");
+        String path = session(merchant, paymentId);
+
+        assertThat(submit(path, Map.of("method", "emi")).status()).isEqualTo(303);
+
+        Map<String, Object> payment = getPayment(merchant, paymentId);
+        assertThat(str(payment, "latest_attempt.method")).isEqualTo("emi");
+        simulate(ALPHA, str(payment, "latest_attempt.provider_reference"), "success", false);
+        assertThat(open(path).html()).contains("Payment successful");
+    }
+
+    @Test
     void aDoubleSubmitStartsOnlyOneAttempt() {
         TestMerchant merchant = createMerchant(ALPHA);
         String paymentId = str(createPayment(merchant, 49_900, "automatic"), "id");

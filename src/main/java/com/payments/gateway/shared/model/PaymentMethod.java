@@ -1,17 +1,29 @@
 package com.payments.gateway.shared.model;
 
+import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Non-sensitive payment method selection. Card details are never carried here: cards are collected on
- * PSP-hosted pages (see ADR-008). {@code MANDATE} attempts debit an authorized mandate (ADR-035).
+ * PSP-hosted pages (see ADR-008). {@code MANDATE} attempts debit an authorized mandate (ADR-035). {@code provider}
+ * names the wallet or lender of {@code WALLET}, {@code CARDLESS_EMI} and {@code PAY_LATER} payments (ADR-037).
  */
-public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode, String mandateId) {
+public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode, String mandateId,
+                            String provider) {
+
+    private static final Pattern PROVIDER = Pattern.compile("[a-z0-9_]{2,32}");
 
     public PaymentMethod {
         Objects.requireNonNull(type, "type");
         if (type != MethodType.MANDATE) {
             mandateId = null;
+        }
+        if (type != MethodType.WALLET && type != MethodType.CARDLESS_EMI && type != MethodType.PAY_LATER) {
+            provider = null;
+        } else if (provider == null || !PROVIDER.matcher(provider).matches()) {
+            throw new IllegalArgumentException(type.name().toLowerCase(Locale.ROOT)
+                    + ".provider is required: 2-32 lower-case letters, digits or _");
         }
         switch (type) {
             case UPI -> {
@@ -33,7 +45,7 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
                 upiFlow = null;
                 vpa = null;
             }
-            case CARD -> {
+            case CARD, WALLET, EMI, CARDLESS_EMI, PAY_LATER -> {
                 upiFlow = null;
                 vpa = null;
                 bankCode = null;
@@ -49,8 +61,12 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
         }
     }
 
+    public PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode, String mandateId) {
+        this(type, upiFlow, vpa, bankCode, mandateId, null);
+    }
+
     public PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode) {
-        this(type, upiFlow, vpa, bankCode, null);
+        this(type, upiFlow, vpa, bankCode, null, null);
     }
 
     public static PaymentMethod upi(UpiFlow flow, String vpa) {
@@ -67,5 +83,21 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
 
     public static PaymentMethod mandate(String mandateId) {
         return new PaymentMethod(MethodType.MANDATE, null, null, null, mandateId);
+    }
+
+    public static PaymentMethod wallet(String provider) {
+        return new PaymentMethod(MethodType.WALLET, null, null, null, null, provider);
+    }
+
+    public static PaymentMethod emi() {
+        return new PaymentMethod(MethodType.EMI, null, null, null);
+    }
+
+    public static PaymentMethod cardlessEmi(String provider) {
+        return new PaymentMethod(MethodType.CARDLESS_EMI, null, null, null, null, provider);
+    }
+
+    public static PaymentMethod payLater(String provider) {
+        return new PaymentMethod(MethodType.PAY_LATER, null, null, null, null, provider);
     }
 }

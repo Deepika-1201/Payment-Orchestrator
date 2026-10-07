@@ -45,9 +45,18 @@ public final class PaymentRequests {
     }
 
     public record PaymentMethod(
-            @NotBlank @Pattern(regexp = "(?i)upi|card|netbanking", message = "must be upi, card or netbanking") String type,
+            @NotBlank @Pattern(regexp = "(?i)upi|card|netbanking|wallet|emi|cardless_emi|pay_later",
+                    message = "must be upi, card, netbanking, wallet, emi, cardless_emi or pay_later") String type,
             @Valid Upi upi,
-            @Valid Netbanking netbanking) {
+            @Valid Netbanking netbanking,
+            @Valid Provider wallet,
+            @Valid Provider cardlessEmi,
+            @Valid Provider payLater) {
+    }
+
+    /** The wallet, lender or pay-later provider, by the code the PSPs use (ADR-037). */
+    public record Provider(
+            @NotBlank @Pattern(regexp = "[a-z0-9_]{2,32}", message = "must be 2-32 lower-case letters, digits or _") String provider) {
     }
 
     public record Upi(

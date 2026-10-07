@@ -73,7 +73,7 @@ class RazorpayPaymentProviderTest {
 
     private RazorpayPaymentProvider provider(boolean upiS2s, Duration readTimeout) {
         RazorpayProperties properties = new RazorpayProperties(true, stub.baseUrl(), upiS2s, Duration.ofMinutes(15),
-                Duration.ofDays(5), false);
+                Duration.ofDays(5), false, RazorpayProperties.OPTIONAL_METHODS);
         return new RazorpayPaymentProvider(properties,
                 new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), readTimeout, "rzp_test_", json), Clock.fixed(NOW, ZoneOffset.UTC));
     }
@@ -242,6 +242,79 @@ class RazorpayPaymentProviderTest {
     }
 
     @Test
+    void walletsEmiAndPayLaterUseALinkShowingOnlyTheChosenInstrument() {
+        stub.on("POST /v1/payment_links", 200, "{\"id\":\"plink_1\",\"short_url\":\"https://rzp.io/i/abc\",\"status\":\"created\"}");
+        Map<PaymentMethod, String> expected = Map.of(
+                PaymentMethod.wallet("phonepe"), "{\"method\":\"wallet\",\"wallets\":[\"phonepe\"]}",
+                PaymentMethod.emi(), "{\"method\":\"emi\"}",
+                PaymentMethod.cardlessEmi("zestmoney"), "{\"method\":\"cardless_emi\",\"providers\":[\"zestmoney\"]}",
+                PaymentMethod.payLater("lazypay"), "{\"method\":\"paylater\",\"providers\":[\"lazypay\"]}");
+
+        expected.forEach((method, instrument) -> {
+            var result = provider(true).initiatePayment(ACCOUNT, request(method));
+            assertThat(result.nextAction()).isEqualTo(NextAction.redirect("https://rzp.io/i/abc"));
+            JsonNode display = body(stub.last("POST /v1/payment_links")).path("options").path("checkout").path("config")
+                    .path("display");
+            assertThat(display.path("blocks").path("pg").path("instruments").get(0)).as(method.toString())
+                    .isEqualTo(json.read(instrument, JsonNode.class));
+            assertThat(display.path("sequence").get(0).asString()).isEqualTo("block.pg");
+            assertThat(display.path("preferences").path("show_default_blocks").asBoolean(true)).isFalse();
+        });
+
+        provider(true).initiatePayment(ACCOUNT, request(PaymentMethod.card()));
+        assertThat(body(stub.last("POST /v1/payment_links")).has("options")).as("cards keep the full page").isFalse();
+    }
+
+    @Test
+    void extraMethodsAreDeclaredOnlyWhenConfigured() {
+        RazorpayPaymentProvider plain = new RazorpayPaymentProvider(new RazorpayProperties(true, stub.baseUrl(), true,
+                Duration.ofMinutes(15), Duration.ofDays(5), false, java.util.Set.of(
+                        com.payments.gateway.shared.model.MethodType.WALLET)),
+                new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), Duration.ofSeconds(1), "rzp_test_", json),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+
+        assertThat(plain.capabilities().methods().keySet()).containsExactlyInAnyOrder(
+                com.payments.gateway.shared.model.MethodType.UPI, com.payments.gateway.shared.model.MethodType.CARD,
+                com.payments.gateway.shared.model.MethodType.NETBANKING, com.payments.gateway.shared.model.MethodType.WALLET);
+        assertThat(plain.capabilities().supports(PaymentMethod.wallet("amazonpay"), Money.of(49_900, "INR"), CaptureMethod.AUTOMATIC)).isTrue();
+        assertThat(plain.capabilities().supports(PaymentMethod.wallet("paytm"), Money.of(49_900, "INR"), CaptureMethod.AUTOMATIC)).isFalse();
+        var all = provider(true).capabilities();
+        assertThat(all.supports(PaymentMethod.emi(), Money.of(299_999, "INR"), CaptureMethod.AUTOMATIC)).isFalse();
+        assertThat(all.supports(PaymentMethod.emi(), Money.of(300_000, "INR"), CaptureMethod.AUTOMATIC)).isTrue();
+        assertThat(all.supports(PaymentMethod.cardlessEmi("walnut369"), Money.of(50_000_000, "INR"), CaptureMethod.AUTOMATIC)).isTrue();
+        assertThat(all.supports(PaymentMethod.cardlessEmi("walnut369"), Money.of(50_000_001, "INR"), CaptureMethod.AUTOMATIC)).isFalse();
+        assertThat(all.supports(PaymentMethod.payLater("simpl"), Money.of(49_900, "INR"), CaptureMethod.AUTOMATIC)).isFalse();
+        assertThatThrownBy(() -> new RazorpayProperties(true, stub.baseUrl(), true, Duration.ofMinutes(15),
+                Duration.ofDays(5), false, java.util.Set.of(com.payments.gateway.shared.model.MethodType.CARD)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void anEmiPaymentCarriesItsPlanAndIsFetchedWithItWhenTheListLacksIt() {
+        stub.on("GET /v1/payment_links/plink_1", 200, "{\"id\":\"plink_1\",\"order_id\":\"order_1\",\"status\":\"paid\"}")
+                .on("GET /v1/orders/order_1/payments", 200, "{\"items\":[{\"id\":\"pay_1\",\"status\":\"captured\","
+                        + "\"amount\":500000,\"currency\":\"INR\",\"method\":\"emi\"}]}")
+                .on("GET /v1/payments/pay_1", 200, "{\"id\":\"pay_1\",\"status\":\"captured\",\"amount\":500000,"
+                        + "\"currency\":\"INR\",\"method\":\"emi\",\"card\":{\"network\":\"Visa\",\"last4\":\"1111\"},"
+                        + "\"emi\":{\"issuer\":\"HDFC\",\"rate\":1400,\"duration\":6}}");
+
+        var result = provider(true).fetchPaymentStatus(ACCOUNT, new PaymentStatusQuery(ATTEMPT, "plink_1"));
+
+        assertThat(result.outcome()).isEqualTo(Outcome.SUCCEEDED);
+        assertThat(result.card()).isEqualTo(new CardDetails("visa", "1111",
+                new com.payments.gateway.shared.model.EmiPlan(6, 1400, "HDFC")));
+        assertThat(stub.last("GET /v1/payments/pay_1").query()).isEqualTo("expand%5B%5D=card&expand%5B%5D=emi");
+
+        int calls = stub.requests().size();
+        stub.on("GET /v1/orders/order_1/payments", 200, "{\"items\":[{\"id\":\"pay_1\",\"status\":\"captured\","
+                + "\"amount\":500000,\"currency\":\"INR\",\"method\":\"emi\",\"card\":{\"network\":\"Visa\",\"last4\":\"1111\"},"
+                + "\"emi\":{\"issuer\":\"hdfc bank\",\"duration\":6}}]}");
+        var invalidPlan = provider(true).fetchPaymentStatus(ACCOUNT, new PaymentStatusQuery(ATTEMPT, "plink_1"));
+        assertThat(invalidPlan.card()).as("an unreadable plan keeps the card").isEqualTo(new CardDetails("visa", "1111"));
+        assertThat(stub.requests()).as("no refetch when both are listed").hasSize(calls + 2);
+    }
+
+    @Test
     void refundsAreKeyedByOurRefundIdAndFoundAgainAfterATimeout() {
         stub.on("GET /v1/payment_links/plink_1", 200, "{\"id\":\"plink_1\",\"order_id\":\"order_9\"}")
                 .on("GET /v1/orders/order_9/payments", 200, "{\"items\":[{\"id\":\"pay_9\",\"status\":\"captured\",\"amount\":49900,\"currency\":\"INR\"}]}")
@@ -301,7 +374,7 @@ class RazorpayPaymentProviderTest {
 
         RazorpayPaymentProvider unreachable = new RazorpayPaymentProvider(
                 new RazorpayProperties(true, java.net.URI.create("http://127.0.0.1:1/v1"), true, Duration.ofMinutes(15),
-                        Duration.ofDays(5), false),
+                        Duration.ofDays(5), false, java.util.Set.of()),
                 new RazorpayApi(java.net.URI.create("http://127.0.0.1:1/v1"), Duration.ofSeconds(1), Duration.ofSeconds(1), "rzp_test_", json),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         assertThatThrownBy(() -> unreachable.initiatePayment(ACCOUNT, request(PaymentMethod.upi(UpiFlow.INTENT, null))))

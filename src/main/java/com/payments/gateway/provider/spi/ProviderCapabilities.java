@@ -34,16 +34,35 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
         this(methods, currencies, voidSupported, partialRefunds, settlementReports, false);
     }
 
-    /** {@code partialCapture}: a manual capture may take less than the authorization, and the PSP releases the rest (ADR-036). */
+    /**
+     * {@code partialCapture}: a manual capture may take less than the authorization, and the PSP releases the rest
+     * (ADR-036). {@code providers}: the wallets or lenders offered; {@code tenures}: card EMI plans in months (ADR-037).
+     */
     public record MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture,
-                                boolean partialCapture) {
+                                boolean partialCapture, Set<String> providers, Set<Integer> tenures) {
 
         public MethodSupport {
             upiFlows = Set.copyOf(upiFlows);
+            providers = Set.copyOf(providers);
+            tenures = Set.copyOf(tenures);
+        }
+
+        public MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture,
+                             boolean partialCapture) {
+            this(upiFlows, minAmount, maxAmount, manualCapture, partialCapture, Set.of(), Set.of());
         }
 
         public MethodSupport(Set<UpiFlow> upiFlows, long minAmount, long maxAmount, boolean manualCapture) {
             this(upiFlows, minAmount, maxAmount, manualCapture, false);
+        }
+
+        /** A wallet, cardless EMI or pay-later method offering these providers. */
+        public static MethodSupport ofProviders(Set<String> providers, long minAmount, long maxAmount) {
+            return new MethodSupport(Set.of(), minAmount, maxAmount, false, false, providers, Set.of());
+        }
+
+        public static MethodSupport emi(Set<Integer> tenures, long minAmount, long maxAmount) {
+            return new MethodSupport(Set.of(), minAmount, maxAmount, false, false, Set.of(), tenures);
         }
     }
 
@@ -71,6 +90,9 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
             return false;
         }
         if (method.type() == MethodType.UPI && !support.upiFlows().contains(method.upiFlow())) {
+            return false;
+        }
+        if (method.provider() != null && !support.providers().contains(method.provider())) {
             return false;
         }
         if (amount.amount() < support.minAmount() || amount.amount() > support.maxAmount()) {

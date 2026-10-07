@@ -219,6 +219,7 @@ Rules applied by `PaymentAttempt.transition(...)`:
 - **Contradiction → conflict, not applied.** For example the PSP says `FAILED` after `SUCCEEDED`. The event is logged, counted in a metric, and left for reconciliation.
 - `FAILED → SUCCEEDED/AUTHORIZED` is accepted **only** from PSP-sourced evidence (`PROVIDER_WEBHOOK`, `STATUS_CHECK`, `RECONCILIATION`), never from an API call.
 - A reported success whose amount or currency differs from the attempt is **not applied** (flagged `amount_mismatch`). Once a capture is requested, a success must report the capture amount ([§19.2](#192-capture-amount-of-an-attempt)).
+- Card details (network and last 4 digits, plus the plan for card EMI, [§20.3](#203-the-plan)) are set by the first report that carries them and never change afterwards.
 
 **Late and duplicate success** (attempt reaches `SUCCEEDED` while the payment cannot take it):
 
@@ -346,7 +347,7 @@ public interface PaymentProvider {
 - **Status:** accounts resolve whatever their status, because work already in flight on a disabled account must finish.
 - **Logging:** `MerchantAccount.toString()` omits credential values.
 
-**Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture` and `partialCapture` ([§19](#19-partial-capture-phase-19-adr-036)), `voidSupported`, `partialRefunds`, `statusQuery`, and `requiresCustomerPhone`, which routing checks against the payment's customer (ADR-031). The orchestrator checks a capability before invoking an optional operation.
+**Capabilities** (used by routing and the orchestrator): supported method types and UPI flows, currencies, per-method amount limits, `manualCapture` and `partialCapture` ([§19](#19-partial-capture-phase-19-adr-036)), the wallets or lenders (`providers`) and EMI `tenures` of a method ([§20.2](#202-capabilities-and-routing)), `voidSupported`, `partialRefunds`, `statusQuery`, and `requiresCustomerPhone`, which routing checks against the payment's customer (ADR-031). The orchestrator checks a capability before invoking an optional operation.
 
 **Normalized outcomes:** `ProviderPaymentOutcome = REQUIRES_ACTION | PENDING | AUTHORIZED | SUCCEEDED | FAILED | VOIDED | NOT_FOUND`; `ProviderRefundOutcome = PENDING | SUCCEEDED | FAILED | NOT_FOUND`. Each result carries `providerReference`, `nextAction`, `failure (code, message, category)`, and the raw PSP status.
 
@@ -1196,4 +1197,64 @@ The amount a PSP report must carry: `AUTHORIZED` reports the attempt's `amount`;
 - `MOCK_ALPHA` cards declare `partialCapture`. `MOCK_BETA` cards support manual capture only, and fail a smaller capture with `partial_capture_not_supported`; the gateway never sends one.
 - A capture above the authorization fails with `amount_exceeds_authorization`.
 - A capture records the captured amount and releases the rest. Status checks, webhooks, settlement report lines, refund limits and simulator disputes then use the captured amount. Capturing a transaction that is already captured returns the captured amount.
+
+## 20. Wallets, EMI and pay later (phase 20, ADR-037)
+
+Requirements: [§8.3](requirements.md#83-wallets-emi-and-pay-later-phase-20). The phase adds method types, capabilities, adapter mappings and checkout options. `payment/domain` does not change (NFR-11): the method is a `PaymentMethod` and the plan travels in `CardDetails`, both in the shared model.
+
+### 20.1 Methods and merchant API
+
+| `payment_method.type` | Request | Customer flow | Attempt shows |
+|---|---|---|---|
+| `wallet` | `wallet.provider`, e.g. `phonepe` | Redirect to the PSP's page for that wallet, which may open the wallet's app | `method_provider` |
+| `emi` | Nothing more | Redirect; the customer enters the card and picks the bank's plan on the PSP's page | `card` and `emi_plan` once paid |
+| `cardless_emi` | `cardless_emi.provider`, the lender, e.g. `zestmoney` | Redirect; the customer signs in to the lender with an OTP | `method_provider` |
+| `pay_later` | `pay_later.provider`, e.g. `lazypay` | Redirect; the customer confirms with an OTP | `method_provider` |
+
+- Provider codes are lower-case letters, digits and `_`, 2 to 32 characters.
+- A provider that no linked PSP offers is refused with 422 `unsupported_payment_method`, as an unroutable method is.
+- `emi_plan` has `tenure_months` (1 to 120), and optionally `interest_rate_bps` (annual, 0 to 10,000) and `issuer` (a bank code).
+- Refunds, disputes, the ledger and reconciliation work as for cards.
+
+### 20.2 Capabilities and routing
+
+`MethodSupport` gains `providers` (wallets or lenders) and `tenures` (card EMI plans, in months). Routing requires the payment's provider to be in the PSP's `providers`. Tenures are informational: the hosted checkout shows them, and the PSP's page offers the actual plans. The new methods support automatic capture only.
+
+| PSP | Wallet | Card EMI | Cardless EMI | Pay later |
+|---|---|---|---|---|
+| `MOCK_ALPHA` | `phonepe`, `amazonpay`, `mobikwik`, `payzapp` | 3, 6, 9, 12, 18 and 24 months | `zestmoney`, `earlysalary`, `hdfc` | `lazypay`, `simpl` |
+| `MOCK_BETA` | `phonepe`, `paytm` | — | — | — |
+| `RAZORPAY`, per `extra-methods` | `phonepe`, `amazonpay`, `mobikwik`, `payzapp`, `olamoney`, `airtelmoney`, `jiomoney` | 3, 6, 9, 12, 18 and 24 months | `hdfc`, `icic`, `idfb`, `kkbk`, `walnut369`, `earlysalary`, `zestmoney` | `lazypay` |
+
+Amount ranges **(assumed)**, the same for every PSP above: wallets and pay later ₹1 to ₹1,00,000; card EMI ₹3,000 to ₹10,00,000; cardless EMI ₹3,000 to ₹5,00,000. Each lender's own minimum, ₹900 to ₹7,000 at Razorpay, is enforced on the PSP's page.
+
+### 20.3 The plan
+
+- **Card EMI.** The PSP reports the plan with the card: `CardDetails(network, last4, emiPlan)`. Like the card, the first report that carries card details is kept (§3.2), so a later report cannot change it.
+- **Cardless EMI and pay later.** The repayment schedule stays with the lender. The gateway keeps the provider from the request.
+- **Storage.** `payment_attempts.emi_tenure_months`, `emi_interest_rate_bps` and `emi_issuer`. A check requires card details with any plan, and keeps the values in range.
+
+### 20.4 Hosted checkout
+
+- **Options.** The page offers wallet, card EMI, cardless EMI and pay later after the existing options, each only when routable.
+- **Providers.** For wallets, cardless EMI and pay later, `PaymentCheckoutService.view` probes routing with every provider that a registered PSP declares for the method, and the page lists those that route for this payment. Names come from a fixed table, for example `phonepe` → PhonePe; an unknown code is shown as is.
+- **Tenures.** The card EMI option lists the tenures that the routable PSPs offer, and says that the plan is chosen on the next page.
+- **Form.** The form posts `method` and `provider`. A provider the page did not offer returns the customer with `?error=method_unavailable`.
+
+### 20.5 Mock PSP
+
+- **Flow.** Every new method redirects to `/simulator/{provider}/checkout/{reference}`. The page names the wallet or lender, and for card EMI offers the PSP's tenures in a list. Amount suffixes select the same scenarios as for other methods (§5).
+- **Completion.** `POST /simulator/{provider}/payments/{reference}/complete {outcome, emi_tenure_months}`. A paid card EMI reports the card `visa` / `1111` and the plan `{tenure_months, interest_rate_bps: 1500, issuer: HDFC}`. Without a tenure, the shortest one offered is used; a tenure the PSP does not offer, or one sent for another method, is refused (400).
+- **Webhooks.** `payment.updated` gains `emi_plan`.
+
+### 20.6 Razorpay mapping
+
+- **Enabling.** `pg.providers.razorpay.extra-methods` lists the methods Razorpay has enabled on the accounts: any of `wallet`, `emi`, `cardless_emi` and `pay_later`. None by default.
+- **Payment Link.** For the new methods the link body adds `options.checkout.config.display`: one block `{name, instruments: [instrument]}`, `sequence: ["block.pg"]` and `preferences.show_default_blocks: false`. The instrument is `{method: "wallet", wallets: [provider]}`, `{method: "emi"}`, `{method: "cardless_emi", providers: [provider]}` or `{method: "paylater", providers: [provider]}`.
+- **Plan.** It comes from the payment's `emi` object: `duration` is the tenure, `rate` the interest rate in basis points, `issuer` the bank. A status check fetches an EMI payment that lacks it with `GET /payments/{id}?expand[]=card&expand[]=emi`. Webhooks are read for the plan when they carry it. A plan outside the limits of §20.1 is dropped and the card kept, so a surprising value from the PSP never blocks the payment's outcome.
+
+### 20.7 Schema (`V16__wallets_emi_pay_later.sql`)
+
+- `payment_attempts.method_type` accepts `WALLET`, `EMI`, `CARDLESS_EMI` and `PAY_LATER`. The provider is part of `method_details`.
+- New columns `emi_tenure_months`, `emi_interest_rate_bps` and `emi_issuer`, with `CHECK (CASE WHEN emi_tenure_months IS NULL THEN emi_interest_rate_bps IS NULL AND emi_issuer IS NULL ELSE coalesce(card_network IS NOT NULL AND emi_tenure_months BETWEEN 1 AND 120 AND (emi_interest_rate_bps IS NULL OR emi_interest_rate_bps BETWEEN 0 AND 10000), false) END)`.
 

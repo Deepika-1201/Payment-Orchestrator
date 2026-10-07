@@ -124,6 +124,10 @@ public class PaymentController {
                 }
                 case MANDATE -> throw GatewayException.validation("payment_method.type",
                         "mandate debits are created with POST /v1/mandates/{id}/debits");
+                case WALLET -> PaymentMethod.wallet(provider(requested.wallet(), "wallet"));
+                case EMI -> PaymentMethod.emi();
+                case CARDLESS_EMI -> PaymentMethod.cardlessEmi(provider(requested.cardlessEmi(), "cardless_emi"));
+                case PAY_LATER -> PaymentMethod.payLater(provider(requested.payLater(), "pay_later"));
             };
         } catch (IllegalArgumentException e) {
             throw GatewayException.validation("payment_method", e.getMessage());
@@ -133,5 +137,12 @@ public class PaymentController {
                 client == null ? null : client.ip(),
                 client == null ? null : client.userAgent(),
                 client == null ? null : client.deviceId());
+    }
+
+    private static String provider(PaymentRequests.Provider details, String type) {
+        if (details == null) {
+            throw GatewayException.validation("payment_method." + type, "is required for " + type + " payments");
+        }
+        return details.provider();
     }
 }

@@ -53,7 +53,7 @@ class RazorpayMandateTest {
 
     private RazorpayPaymentProvider provider(boolean mandates) {
         return new RazorpayPaymentProvider(new RazorpayProperties(true, stub.baseUrl(), false, Duration.ofMinutes(15),
-                Duration.ofDays(5), mandates), new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), Duration.ofSeconds(2),
+                Duration.ofDays(5), mandates, java.util.Set.of()), new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), Duration.ofSeconds(2),
                 "rzp_test_", json), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
