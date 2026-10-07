@@ -1080,9 +1080,9 @@ poller: CREATED/PENDING_AUTHORIZATION mandates are checked with backoff (1, 5, 1
 
 | Debit status | Action when due |
 |---|---|
-| `SCHEDULED` (`next_action_at = max(now, not_before − notify-ahead)`) | `notifyDebit` → `PENDING`: `NOTIFYING`; `DELIVERED`: `READY`; `FAILED`: debit and payment fail (`notification_failed`). PSP errors: retry later |
-| `NOTIFYING` (checks every `notification-check-interval`) | `fetchDebitNotification` (or webhook) → `READY` / `FAILED`; still pending after `notification-timeout` → `FAILED` (`notification_not_delivered`) |
-| `READY` (`next_action_at = execute_after = max(not_before, notified_at + 24 h)`) | tx: lock mandate (share), payment, debit. Mandate not `ACTIVE` → debit and payment fail (`mandate_<status>`). Otherwise start the attempt and set `last_executed_at`; after commit `executeDebit` and apply the result. Unavailable → attempt fails (no failover); timeout → `UNKNOWN`, resolved by the status resolver |
+| `SCHEDULED` (`next_action_at = max(now, not_before − notify-ahead)`) | Mandate not `ACTIVE`, paused included → debit and payment fail (`mandate_<status>`); after a resume the merchant creates a new debit. Otherwise `notifyDebit` → `PENDING`: `NOTIFYING`; `DELIVERED`: `READY`; `FAILED`: debit and payment fail (`notification_failed`). PSP errors: retry after `notification-check-interval` |
+| `NOTIFYING` (checks every `notification-check-interval`) | Mandate not `ACTIVE` → as for `SCHEDULED`. `fetchDebitNotification` (or webhook) → `READY` / `FAILED`. Not delivered by `not_before + notification-timeout`, in either status → `FAILED` (`notification_not_delivered`) |
+| `READY` (`next_action_at = execute_after = max(not_before, notified_at + 24 h)`) | tx: lock mandate (share), payment, debit. Mandate not `ACTIVE` → debit and payment fail (`mandate_<status>`). PSP circuit open → try again in 1 min without starting an attempt, so an outage does not use up a retry. Otherwise start the attempt and set `last_executed_at`; after commit `executeDebit` and apply the result. Unavailable → attempt fails (no failover); timeout → `UNKNOWN`, resolved by the status resolver |
 | `EXECUTING` | Nothing: the attempt's outcome arrives by webhook or status check |
 
 On every save of a payment with a `mandate_id`, its debit (if any) follows the payment in the same transaction:
