@@ -44,6 +44,22 @@ class MerchantAdminIntegrationTest extends IntegrationTest {
     }
 
     @Test
+    void aMerchantWithoutAWebhookUrlChangesItsMandateDebitLimit() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        String path = "/admin/v1/merchants/" + merchant.id();
+
+        Response updated = admin("PATCH", path, Map.of("mandate_debit_limit", 2_000_000));
+
+        assertThat(updated.status()).as(updated.raw()).isEqualTo(200);
+        assertThat(updated.body()).doesNotContainKey("webhook_url");
+        assertThat(num(updated.body(), "mandate_debit_limit")).isEqualTo(2_000_000);
+        assertThat(admin("PATCH", path, Map.of("mandate_debit_limit", 10_000_001)).status()).as("above ₹1,00,000")
+                .isEqualTo(400);
+        assertThat(jdbc.sql("SELECT details::text FROM audit_log WHERE resource_id = ? AND action = 'merchant.updated'")
+                .param(1, merchant.id()).query(String.class).single()).contains("\"mandate_debit_limit\": 2000000");
+    }
+
+    @Test
     void suspensionBlocksKeysAndCheckoutLinksWhilePaymentsInFlightStillComplete() {
         TestMerchant merchant = createMerchant(ALPHA);
         String paymentId = str(createPayment(merchant, 10_000, "automatic"), "id");

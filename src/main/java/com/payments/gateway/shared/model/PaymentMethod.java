@@ -4,12 +4,15 @@ import java.util.Objects;
 
 /**
  * Non-sensitive payment method selection. Card details are never carried here: cards are collected on
- * PSP-hosted pages (see ADR-008).
+ * PSP-hosted pages (see ADR-008). {@code MANDATE} attempts debit an authorized mandate (ADR-035).
  */
-public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode) {
+public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode, String mandateId) {
 
     public PaymentMethod {
         Objects.requireNonNull(type, "type");
+        if (type != MethodType.MANDATE) {
+            mandateId = null;
+        }
         switch (type) {
             case UPI -> {
                 if (upiFlow == null) {
@@ -35,7 +38,19 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
                 vpa = null;
                 bankCode = null;
             }
+            case MANDATE -> {
+                if (mandateId == null || mandateId.isBlank()) {
+                    throw new IllegalArgumentException("mandate_id is required for mandate payments");
+                }
+                upiFlow = null;
+                vpa = null;
+                bankCode = null;
+            }
         }
+    }
+
+    public PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String bankCode) {
+        this(type, upiFlow, vpa, bankCode, null);
     }
 
     public static PaymentMethod upi(UpiFlow flow, String vpa) {
@@ -48,5 +63,9 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
 
     public static PaymentMethod netbanking(String bankCode) {
         return new PaymentMethod(MethodType.NETBANKING, null, null, bankCode);
+    }
+
+    public static PaymentMethod mandate(String mandateId) {
+        return new PaymentMethod(MethodType.MANDATE, null, null, null, mandateId);
     }
 }

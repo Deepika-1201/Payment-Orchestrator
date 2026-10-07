@@ -114,7 +114,7 @@ flowchart TB
 | `shared` | Money, ids, errors, crypto, request context | — |
 | `merchant` | Merchants, API keys, provider accounts, auth filters | shared |
 | `idempotency` | Idempotency records, replay | shared |
-| `payment` | Payment/Attempt/Refund aggregates, orchestrator, resolver, expiry, payment API | shared, merchant, provider (SPI), routing, risk |
+| `payment` | Payment/Attempt/Refund aggregates, orchestrator, resolver, expiry, payment API; mandates and their debit scheduler (ADR-035) | shared, merchant, provider (SPI), routing, risk |
 | `provider` | SPI, registry, adapters (mock, Razorpay, Cashfree), circuit breakers | shared |
 | `routing` | Rules, candidate selection, health tracking | shared, provider (SPI) |
 | `risk` | Risk rules and decisions | shared |
@@ -462,7 +462,7 @@ flowchart TB
 | Independent scaling or ownership | Extract `webhook` delivery and `reconciliation` into services first (already async and DB-decoupled) |
 | Holding funds | PA mode: escrow accounts, settlement engine, merchant balances in the ledger |
 | BIN routing, saved cards across PSPs | Card-data service in an isolated CDE (PCI DSS Level 1) with network tokenization |
-| Recurring | Mandate aggregate, pre-debit notification scheduler |
+| Recurring | Mandate aggregate, pre-debit notification scheduler (built in phase 18, ADR-035) |
 | Better routing | Cost-aware scoring, contextual bandits |
 
-Holding funds, recurring payments and better routing are scheduled as V2 phases in the [implementation plan](implementation-plan.md). BIN routing and saved cards across PSPs are not planned ([ADR-034](decisions/ADR-034-post-v1-scope.md)). The other rows wait for their triggers.
+Holding funds and better routing are scheduled as V2 phases in the [implementation plan](implementation-plan.md); recurring payments are built. BIN routing and saved cards across PSPs are not planned ([ADR-034](decisions/ADR-034-post-v1-scope.md)). The other rows wait for their triggers.

@@ -122,6 +122,8 @@ public class PaymentController {
                     }
                     yield PaymentMethod.netbanking(requested.netbanking().bankCode());
                 }
+                case MANDATE -> throw GatewayException.validation("payment_method.type",
+                        "mandate debits are created with POST /v1/mandates/{id}/debits");
             };
         } catch (IllegalArgumentException e) {
             throw GatewayException.validation("payment_method", e.getMessage());

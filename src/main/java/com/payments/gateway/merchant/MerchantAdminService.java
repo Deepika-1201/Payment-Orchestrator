@@ -31,7 +31,7 @@ public class MerchantAdminService {
 
     /** Null fields are left unchanged. */
     public record SettingsUpdate(String name, String webhookUrl, Merchant.LateSuccessPolicy lateSuccessPolicy,
-                                 Duration paymentExpiry) {
+                                 Duration paymentExpiry, Long mandateDebitLimit) {
     }
 
     public record CreatedMerchant(Merchant merchant, List<String> providers, String webhookSecret) {
@@ -99,9 +99,11 @@ public class MerchantAdminService {
         checkWebhookUrl(update.webhookUrl());
         return mutate(merchantId, merchant -> merchant.withSettings(
                 Objects.requireNonNullElse(update.name(), merchant.name()),
-                Objects.requireNonNullElse(update.webhookUrl(), merchant.webhookUrl()),
+                update.webhookUrl() != null ? update.webhookUrl() : merchant.webhookUrl(),
                 Objects.requireNonNullElse(update.lateSuccessPolicy(), merchant.lateSuccessPolicy()),
-                Objects.requireNonNullElse(update.paymentExpiry(), merchant.paymentExpiry())), "merchant.updated", actor);
+                Objects.requireNonNullElse(update.paymentExpiry(), merchant.paymentExpiry()))
+                .withMandateDebitLimit(update.mandateDebitLimit() == null
+                        ? merchant.mandateDebitLimit() : update.mandateDebitLimit()), "merchant.updated", actor);
     }
 
     /** New events are no longer delivered; deliveries already queued keep the URL they were created with. */
@@ -226,6 +228,9 @@ public class MerchantAdminService {
         }
         if (!before.paymentExpiry().equals(after.paymentExpiry())) {
             changed.put("payment_expiry_seconds", after.paymentExpiry().toSeconds());
+        }
+        if (!Objects.equals(before.mandateDebitLimit(), after.mandateDebitLimit())) {
+            changed.put("mandate_debit_limit", after.mandateDebitLimit());
         }
         if (before.status() != after.status() || !Objects.equals(before.statusReason(), after.statusReason())) {
             List<String> status = new ArrayList<>(List.of(after.status().name()));

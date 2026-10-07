@@ -41,7 +41,7 @@ public class PaymentRepository {
     public record ClaimedAttempt(String attemptId, String paymentId) {
     }
 
-    record MethodDetails(String upiFlow, String vpa, String bankCode) {
+    record MethodDetails(String upiFlow, String vpa, String bankCode, String mandateId) {
     }
 
     private static final TypeReference<Map<String, String>> STRING_MAP = new TypeReference<>() {
@@ -229,13 +229,15 @@ public class PaymentRepository {
         params.put("expiresAt", Sql.ts(s.expiresAt()));
         params.put("createdAt", Sql.ts(s.createdAt()));
         params.put("updatedAt", Sql.ts(s.updatedAt()));
+        params.put("mandateId", s.mandateId());
+        params.put("attemptLimit", s.attemptLimit());
         jdbc.sql("""
                 INSERT INTO payments (id, merchant_id, merchant_order_id, amount, currency, status, capture_method,
                                       description, customer_reference, customer_email, customer_phone, metadata,
-                                      expires_at, version, created_at, updated_at)
+                                      expires_at, version, created_at, updated_at, mandate_id, attempt_limit)
                 VALUES (:id, :merchantId, :merchantOrderId, :amount, :currency, :status, :captureMethod, :description,
                         :customerReference, :customerEmail, :customerPhone, CAST(:metadata AS jsonb), :expiresAt, 0,
-                        :createdAt, :updatedAt)
+                        :createdAt, :updatedAt, :mandateId, :attemptLimit)
                 """)
                 .params(params)
                 .update();
@@ -249,7 +251,8 @@ public class PaymentRepository {
         params.put("providerCode", s.providerCode());
         params.put("methodType", s.method().type().name());
         params.put("methodDetails", json.write(new MethodDetails(
-                s.method().upiFlow() == null ? null : s.method().upiFlow().name(), s.method().vpa(), s.method().bankCode())));
+                s.method().upiFlow() == null ? null : s.method().upiFlow().name(), s.method().vpa(), s.method().bankCode(),
+                s.method().mandateId())));
         params.put("amount", s.amount().amount());
         params.put("currency", s.amount().currency());
         params.put("routingRuleId", s.routingRuleId());
@@ -341,13 +344,16 @@ public class PaymentRepository {
                 Sql.instant(rs, "authorization_expires_at"),
                 rs.getLong("version"),
                 Sql.instant(rs, "created_at"),
-                Sql.instant(rs, "updated_at"));
+                Sql.instant(rs, "updated_at"),
+                rs.getString("mandate_id"),
+                (Integer) rs.getObject("attempt_limit"));
     }
 
     private AttemptSnapshot mapAttempt(ResultSet rs, int rowNum) throws SQLException {
         MethodDetails details = json.read(rs.getString("method_details"), MethodDetails.class);
         PaymentMethod method = new PaymentMethod(MethodType.valueOf(rs.getString("method_type")),
-                details.upiFlow() == null ? null : UpiFlow.valueOf(details.upiFlow()), details.vpa(), details.bankCode());
+                details.upiFlow() == null ? null : UpiFlow.valueOf(details.upiFlow()), details.vpa(), details.bankCode(),
+                details.mandateId());
         String nextAction = rs.getString("next_action");
         String failureCategory = rs.getString("failure_category");
         Failure failure = failureCategory == null ? null

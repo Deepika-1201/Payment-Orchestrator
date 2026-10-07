@@ -15,7 +15,13 @@ public record PaymentEvent(Type type, String resourceId) {
         DISPUTE_CREATED("dispute.created"),
         DISPUTE_UPDATED("dispute.updated"),
         DISPUTE_WON("dispute.won"),
-        DISPUTE_LOST("dispute.lost");
+        DISPUTE_LOST("dispute.lost"),
+        MANDATE_ACTIVATED("mandate.activated"),
+        MANDATE_PAUSED("mandate.paused"),
+        MANDATE_RESUMED("mandate.resumed"),
+        MANDATE_REVOKED("mandate.revoked"),
+        MANDATE_EXPIRED("mandate.expired"),
+        MANDATE_FAILED("mandate.failed");
 
         private final String wireName;
 

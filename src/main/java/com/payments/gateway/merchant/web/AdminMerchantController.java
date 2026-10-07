@@ -52,11 +52,13 @@ public class AdminMerchantController {
             @Size(max = 10) List<@NotBlank String> providers) {
     }
 
+    /** {@code mandateDebitLimit}: frictionless mandate debit limit in minor units, ₹1 to ₹1,00,000 (ADR-035). */
     public record UpdateMerchantRequest(
             @Size(min = 1, max = 200) String name,
             @Size(max = 2048) String webhookUrl,
             String lateSuccessPolicy,
-            @Min(60) @Max(86400) Integer paymentExpirySeconds) {
+            @Min(60) @Max(86400) Integer paymentExpirySeconds,
+            @Min(100) @Max(10_000_000) Long mandateDebitLimit) {
     }
 
     public record SuspendRequest(@NotBlank @Size(max = 500) String reason) {
@@ -71,7 +73,7 @@ public class AdminMerchantController {
 
     public record MerchantResponse(String id, String name, String status, String statusReason, String webhookUrl,
                                    String lateSuccessPolicy, long paymentExpirySeconds, List<String> providers,
-                                   String webhookSecret, Instant createdAt) {
+                                   String webhookSecret, Instant createdAt, Long mandateDebitLimit) {
     }
 
     public record ApiKeyResponse(String id, String apiKey, String hint, String mode, String status, Instant createdAt,
@@ -145,7 +147,7 @@ public class AdminMerchantController {
                 : WireEnums.parse(Merchant.LateSuccessPolicy.class, request.lateSuccessPolicy(), "late_success_policy");
         Duration expiry = request.paymentExpirySeconds() == null ? null : Duration.ofSeconds(request.paymentExpirySeconds());
         return toResponse(admin.update(id, new MerchantAdminService.SettingsUpdate(request.name(), request.webhookUrl(),
-                policy, expiry), actor));
+                policy, expiry, request.mandateDebitLimit()), actor));
     }
 
     @DeleteMapping("/{id}/webhook-url")
@@ -256,7 +258,8 @@ public class AdminMerchantController {
     private static MerchantResponse toResponse(Merchant merchant, List<String> providers, String webhookSecret) {
         return new MerchantResponse(merchant.id(), merchant.name(), WireEnums.wire(merchant.status()),
                 merchant.statusReason(), merchant.webhookUrl(), WireEnums.wire(merchant.lateSuccessPolicy()),
-                merchant.paymentExpiry().toSeconds(), providers, webhookSecret, merchant.createdAt());
+                merchant.paymentExpiry().toSeconds(), providers, webhookSecret, merchant.createdAt(),
+                merchant.mandateDebitLimit());
     }
 
     private static ApiKeyResponse toResponse(ApiKeyRow key) {

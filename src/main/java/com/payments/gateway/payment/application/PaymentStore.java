@@ -3,12 +3,16 @@ package com.payments.gateway.payment.application;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.DisputeStatus;
+import com.payments.gateway.payment.domain.Mandate;
+import com.payments.gateway.payment.domain.MandateDebit;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
+import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.StatusChange;
 import com.payments.gateway.payment.infrastructure.DisputeRepository;
+import com.payments.gateway.payment.infrastructure.MandateRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.payment.infrastructure.TransitionLog;
@@ -31,17 +35,22 @@ public class PaymentStore {
     private final PaymentRepository payments;
     private final RefundRepository refunds;
     private final DisputeRepository disputes;
+    private final MandateRepository mandates;
+    private final MandateProperties mandateProperties;
     private final TransitionLog transitions;
     private final PaymentEventPublisher events;
     private final ProviderHealthTracker health;
     private final MeterRegistry meters;
 
     public PaymentStore(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
+                        MandateRepository mandates, MandateProperties mandateProperties,
                         TransitionLog transitions, PaymentEventPublisher events, ProviderHealthTracker health,
                         MeterRegistry meters) {
         this.payments = payments;
         this.refunds = refunds;
         this.disputes = disputes;
+        this.mandates = mandates;
+        this.mandateProperties = mandateProperties;
         this.transitions = transitions;
         this.events = events;
         this.health = health;
@@ -58,6 +67,7 @@ public class PaymentStore {
         payments.save(payment);
         transitions.append(payment.id(), payment.merchantId(), changes);
         publishCaptures(payment, changes);
+        followMandateDebit(payment, changes);
         if (refund != null) {
             saveRefund(payment, refund);
         }
@@ -98,6 +108,41 @@ public class PaymentStore {
             }
         }
         events.publishDisputeEvents(dispute, disputeEvents);
+    }
+
+    /** Saves a mandate under its row lock, with its transitions and merchant events (ADR-035). */
+    public void saveMandate(Mandate mandate) {
+        List<StatusChange> changes = mandate.pullChanges();
+        List<PaymentEvent> mandateEvents = mandate.pullEvents();
+        mandates.save(mandate);
+        mandates.appendTransitions(mandate.id(), mandate.merchantId(), changes);
+        events.publishMandateEvents(mandate, mandateEvents);
+    }
+
+    /** Saves a debit under its payment's lock (lock order mandate → payment → debit). */
+    public void saveDebit(MandateDebit debit) {
+        List<StatusChange> changes = debit.pullChanges();
+        mandates.save(debit);
+        mandates.appendTransitions(debit.mandateId(), debit.merchantId(), changes);
+    }
+
+    /**
+     * A debit ends only through its payment (LLD §18.5): when the payment's status changes, the debit follows in this
+     * transaction, under the payment lock already held. A failure also has the mandate checked at the PSP after commit.
+     */
+    private void followMandateDebit(Payment payment, List<StatusChange> changes) {
+        if (payment.mandateId() == null || changes.stream().noneMatch(c -> c.entity() == StatusChange.Entity.PAYMENT)) {
+            return;
+        }
+        mandates.lockDebitByPayment(payment.id()).ifPresent(debit -> {
+            if (debit.followPayment(payment.status(), payment.failureCode(), payment.failureMessage(),
+                    mandateProperties.retryInterval(), mandateProperties.notifyAhead(), payment.updatedAt())) {
+                saveDebit(debit);
+                if (payment.status() == PaymentStatus.FAILED || payment.status() == PaymentStatus.REQUIRES_PAYMENT_METHOD) {
+                    afterCommit(() -> mandates.requestCheck(debit.mandateId(), payment.updatedAt()));
+                }
+            }
+        });
     }
 
     private void publishCaptures(Payment payment, List<StatusChange> changes) {

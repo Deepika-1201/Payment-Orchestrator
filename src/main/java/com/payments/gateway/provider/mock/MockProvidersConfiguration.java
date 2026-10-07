@@ -1,8 +1,10 @@
 package com.payments.gateway.provider.mock;
 
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCapabilities.MandateSupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.shared.json.JsonCodec;
+import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.UpiFlow;
 import java.time.Clock;
@@ -23,6 +25,11 @@ public class MockProvidersConfiguration {
 
     private static final long UPI_MAX = 10_000_000L;
     private static final long CARD_MAX = 100_000_000L;
+    /** LLD §18.8: ₹1 authorization charge for UPI and card, none for eNACH; eNACH debits up to ₹1 crore. */
+    private static final Map<MandateInstrument, MandateSupport> MANDATES = Map.of(
+            MandateInstrument.UPI_AUTOPAY, new MandateSupport(100, UPI_MAX),
+            MandateInstrument.CARD, new MandateSupport(100, UPI_MAX),
+            MandateInstrument.ENACH, new MandateSupport(0, 1_000_000_000L));
 
     @Bean
     MockPaymentProvider mockAlphaProvider(MockProviderProperties properties, JsonCodec json, Clock clock) {
@@ -31,7 +38,7 @@ public class MockProvidersConfiguration {
                 MethodType.UPI, new MethodSupport(EnumSet.allOf(UpiFlow.class), 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, true),
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)),
-                Set.of("INR"), true, true, true);
+                Set.of("INR"), true, true, true).withMandates(MANDATES);
         return new MockPaymentProvider(MOCK_ALPHA, capabilities, properties, json, clock);
     }
 
@@ -41,7 +48,7 @@ public class MockProvidersConfiguration {
         ProviderCapabilities capabilities = new ProviderCapabilities(Map.of(
                 MethodType.UPI, new MethodSupport(EnumSet.allOf(UpiFlow.class), 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, true)),
-                Set.of("INR"), true, true, true);
+                Set.of("INR"), true, true, true).withMandates(MANDATES);
         return new MockPaymentProvider(MOCK_BETA, capabilities, properties, json, clock);
     }
 

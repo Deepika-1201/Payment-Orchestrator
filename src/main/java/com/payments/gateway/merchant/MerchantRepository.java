@@ -70,7 +70,7 @@ public class MerchantRepository {
         jdbc.sql("""
                 UPDATE merchants SET name = :name, webhook_url = :webhookUrl, late_success_policy = :policy,
                                      payment_expiry_seconds = :expiry, status = :status, status_reason = :reason,
-                                     updated_at = :now
+                                     mandate_debit_limit = :mandateDebitLimit, updated_at = :now
                  WHERE id = :id
                 """)
                 .param("id", merchant.id())
@@ -80,6 +80,7 @@ public class MerchantRepository {
                 .param("expiry", (int) merchant.paymentExpiry().toSeconds())
                 .param("status", merchant.status().name())
                 .param("reason", merchant.statusReason())
+                .param("mandateDebitLimit", merchant.mandateDebitLimit())
                 .param("now", Sql.ts(now))
                 .update();
     }
@@ -328,7 +329,8 @@ public class MerchantRepository {
                 rs.getString("webhook_url"),
                 Merchant.LateSuccessPolicy.valueOf(rs.getString("late_success_policy")),
                 Duration.ofSeconds(rs.getInt("payment_expiry_seconds")),
-                Sql.instant(rs, "created_at"));
+                Sql.instant(rs, "created_at"),
+                Sql.nullableLong(rs, "mandate_debit_limit"));
     }
 
     private static ProviderAccountRow mapProviderAccount(ResultSet rs, int rowNum) throws SQLException {

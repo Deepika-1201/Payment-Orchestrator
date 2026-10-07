@@ -3,6 +3,11 @@ package com.payments.gateway.provider.mock;
 import com.payments.gateway.provider.spi.CredentialField;
 import com.payments.gateway.provider.spi.InboundWebhook;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MandateRequests.CreateMandateRequest;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationQuery;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationRequest;
+import com.payments.gateway.provider.spi.MandateRequests.ExecuteDebitRequest;
+import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
@@ -10,6 +15,8 @@ import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
+import com.payments.gateway.provider.spi.ProviderMandateResult;
+import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
@@ -22,6 +29,9 @@ import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.provider.spi.SettlementReport;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
+import com.payments.gateway.provider.mock.MockPsp.MandateState;
+import com.payments.gateway.provider.mock.MockPsp.MandateTxn;
+import com.payments.gateway.provider.mock.MockPsp.Notification;
 import com.payments.gateway.provider.mock.MockPsp.RefundState;
 import com.payments.gateway.provider.mock.MockPsp.RefundTxn;
 import com.payments.gateway.provider.mock.MockPsp.Txn;
@@ -35,6 +45,7 @@ import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
+import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.model.UpiFlow;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -47,8 +58,10 @@ import java.util.Locale;
 /**
  * Simulated PSP with deterministic scenarios selected by the amount's last two digits (see LLD §5):
  * 01 timeout-but-processed, 03 declined, 04 pending-then-silent-success, 05 timeout-never-processed.
- * Refund amounts: 07 pending, 08 timeout-but-processed, 09 failed. Credentials are optional: an {@code api_key}
- * starting with {@code bad_} is rejected, and a {@code webhook_secret} replaces the platform secret for that account.
+ * Refund amounts: 07 pending, 08 timeout-but-processed, 09 failed. Mandates (LLD §18.8): a {@code max_amount} ending in
+ * 01 or 05 times out as for payments; a debit amount ending in 06 is never notified. Credentials are optional: an
+ * {@code api_key} starting with {@code bad_} is rejected, and a {@code webhook_secret} replaces the platform secret for
+ * that account.
  */
 public class MockPaymentProvider implements PaymentProvider {
 
@@ -219,6 +232,115 @@ public class MockPaymentProvider implements PaymentProvider {
     }
 
     @Override
+    public ProviderMandateResult createMandate(MerchantAccount account, CreateMandateRequest request) {
+        simulateNetwork(account);
+        var existing = psp.findMandate(null, request.mandateId());
+        if (existing.isPresent()) {
+            return toResult(existing.get());
+        }
+        int scenario = (int) (request.maxAmount().amount() % 100);
+        if (scenario == 5) {
+            throw new ProviderTimeoutException(code, "simulated read timeout (registration was not processed)");
+        }
+        String secret = account.credential(WEBHOOK_SECRET).orElse(null);
+        Txn registration = request.registrationAttemptId() == null ? null
+                : psp.create(Ids.newId(prefix()), request.merchantId(), account.id(), secret,
+                        request.registrationAttemptId(), request.registrationAmount(),
+                        PaymentMethod.mandate(request.mandateId()), false, request.returnUrl(), TxnState.REQUIRES_ACTION,
+                        clock.instant());
+        MandateTxn mandate = psp.saveMandate(new MandateTxn(Ids.newId(prefix() + "_mdt"), request.merchantId(), account.id(),
+                secret, request.mandateId(), request.instrument(), request.maxAmount(), Ids.newId(prefix() + "_cust"),
+                registration, request.returnUrl()));
+        if (scenario == 1) {
+            throw new ProviderTimeoutException(code, "simulated read timeout (registration was processed)");
+        }
+        return toResult(mandate);
+    }
+
+    @Override
+    public ProviderMandateResult fetchMandate(MerchantAccount account, MandateQuery query) {
+        simulateNetwork(account);
+        return psp.findMandate(query.providerReference(), query.mandateId())
+                .map(this::toResult)
+                .orElseGet(ProviderMandateResult::notFound);
+    }
+
+    @Override
+    public ProviderMandateResult revokeMandate(MerchantAccount account, MandateQuery query) {
+        simulateNetwork(account);
+        MandateTxn mandate = psp.findMandate(query.providerReference(), query.mandateId()).orElse(null);
+        if (mandate == null) {
+            return ProviderMandateResult.notFound();
+        }
+        if (mandate.moveTo(MandateState.REVOKED) && mandate.registration() != null) {
+            mandate.registration().complete(false, clock.instant());
+        }
+        return toResult(mandate);
+    }
+
+    @Override
+    public ProviderNotificationResult notifyDebit(MerchantAccount account, DebitNotificationRequest request) {
+        simulateNetwork(account);
+        var existing = psp.findNotification(null, request.notificationId());
+        if (existing.isPresent()) {
+            return toResult(existing.get());
+        }
+        MandateTxn mandate = psp.findMandate(null, request.mandateId()).orElse(null);
+        if (mandate == null || mandate.state() != MandateState.ACTIVE) {
+            return ProviderNotificationResult.failed(null, new ProviderFailure("mandate_not_active",
+                    "The mandate is not active at the PSP", FailureCategory.CUSTOMER), "failed");
+        }
+        Notification notification = psp.saveNotification(new Notification(Ids.newId(prefix() + "_ntf"),
+                request.notificationId(), mandate.mandateReference(), mandate.accountId(), mandate.webhookSecret(),
+                request.amount(), request.amount().amount() % 100 != 6, clock.instant()));
+        return ProviderNotificationResult.pending(notification.reference(), "pending");
+    }
+
+    @Override
+    public ProviderNotificationResult fetchDebitNotification(MerchantAccount account, DebitNotificationQuery query) {
+        simulateNetwork(account);
+        return psp.findNotification(query.providerReference(), query.notificationId())
+                .map(MockPaymentProvider::toResult)
+                .orElseGet(ProviderNotificationResult::notFound);
+    }
+
+    /** Debits on the cycle's notification reference (eNACH: a new one); amount suffixes behave as for payments. */
+    @Override
+    public ProviderPaymentResult executeDebit(MerchantAccount account, ExecuteDebitRequest request) {
+        simulateNetwork(account);
+        var existing = psp.find(null, request.attemptId());
+        if (existing.isPresent()) {
+            return toResult(existing.get());
+        }
+        MandateTxn mandate = psp.findMandate(null, request.mandateId()).orElse(null);
+        if (mandate == null || mandate.state() != MandateState.ACTIVE) {
+            return ProviderPaymentResult.failed(null, new ProviderFailure("mandate_not_active",
+                    "The mandate is not active at the PSP", FailureCategory.CUSTOMER), "failed");
+        }
+        String reference = request.notificationReference() != null ? request.notificationReference() : Ids.newId(prefix());
+        int scenario = (int) (request.amount().amount() % 100);
+        switch (scenario) {
+            case 1 -> {
+                createDebit(mandate, reference, request, TxnState.CAPTURED);
+                throw new ProviderTimeoutException(code, "simulated read timeout (debit was processed)");
+            }
+            case 3 -> {
+                Txn txn = createDebit(mandate, reference, request, TxnState.FAILED);
+                txn.moveTo(TxnState.FAILED, "transaction_declined", clock.instant());
+                return toResult(txn);
+            }
+            case 4 -> {
+                createDebit(mandate, reference, request, TxnState.CAPTURED);
+                return ProviderPaymentResult.pending(reference, "pending");
+            }
+            case 5 -> throw new ProviderTimeoutException(code, "simulated read timeout (debit was not processed)");
+            default -> {
+                return toResult(createDebit(mandate, reference, request, TxnState.PENDING));
+            }
+        }
+    }
+
+    @Override
     public List<ProviderEvent> parseWebhook(MerchantAccount account, InboundWebhook webhook) {
         verifySignature(webhookSecret(account), webhook);
         MockWebhookPayload payload;
@@ -243,6 +365,12 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         if (MockWebhookPayload.DISPUTE_UPDATED.equals(payload.type())) {
             return List.of(parseDispute(payload, amount));
+        }
+        if (MockWebhookPayload.MANDATE_UPDATED.equals(payload.type())) {
+            return List.of(parseMandate(payload));
+        }
+        if (MockWebhookPayload.NOTIFICATION_UPDATED.equals(payload.type())) {
+            return List.of(parseNotification(payload));
         }
         ProviderPaymentResult result = switch (payload.status()) {
             case "captured" -> ProviderPaymentResult.succeeded(payload.providerReference(), amount, "captured");
@@ -275,12 +403,72 @@ public class MockPaymentProvider implements PaymentProvider {
                         payload.disputeReason(), payload.respondBy(), payload.status()));
     }
 
+    private static ProviderEvent parseMandate(MockWebhookPayload payload) {
+        ProviderMandateResult.Status status = switch (payload.status()) {
+            case "confirming" -> ProviderMandateResult.Status.PENDING;
+            case "active" -> ProviderMandateResult.Status.ACTIVE;
+            case "paused" -> ProviderMandateResult.Status.PAUSED;
+            case "revoked" -> ProviderMandateResult.Status.REVOKED;
+            case "rejected" -> ProviderMandateResult.Status.FAILED;
+            default -> throw new WebhookVerificationException("malformed payload");
+        };
+        if (payload.providerReference() == null) {
+            throw new WebhookVerificationException("malformed payload");
+        }
+        ProviderFailure failure = status != ProviderMandateResult.Status.FAILED ? null
+                : new ProviderFailure(payload.failureCode() == null ? "mandate_rejected" : payload.failureCode(),
+                        payload.failureMessage(), FailureCategory.CUSTOMER);
+        return ProviderEvent.mandate(payload.eventId(), payload.type(), payload.merchantReference(),
+                new ProviderMandateResult(status, payload.providerReference(), payload.mandateReference(),
+                        payload.customerReference(), payload.paymentReference(), null, failure, payload.status()));
+    }
+
+    private static ProviderEvent parseNotification(MockWebhookPayload payload) {
+        String reference = payload.providerReference();
+        ProviderNotificationResult result = switch (payload.status()) {
+            case "pending" -> ProviderNotificationResult.pending(reference, "pending");
+            case "delivered" -> payload.deliveredAt() == null ? null
+                    : ProviderNotificationResult.delivered(reference, payload.deliveredAt(), "delivered");
+            case "failed" -> ProviderNotificationResult.failed(reference, new ProviderFailure(
+                    payload.failureCode() == null ? "notification_failed" : payload.failureCode(),
+                    payload.failureMessage(), FailureCategory.CUSTOMER), "failed");
+            default -> null;
+        };
+        if (result == null || reference == null) {
+            throw new WebhookVerificationException("malformed payload");
+        }
+        return ProviderEvent.notification(payload.eventId(), payload.type(), payload.merchantReference(), result);
+    }
+
+    /** Builds the webhook body the simulated PSP would send for a mandate's current state. */
+    public MockWebhookPayload webhookFor(MandateTxn mandate) {
+        boolean rejected = mandate.state() == MandateState.REJECTED;
+        return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.MANDATE_UPDATED, mandate.reference(),
+                mandate.merchantReference(), mandate.state().name().toLowerCase(Locale.ROOT), mandate.maxAmount().amount(),
+                mandate.maxAmount().currency(), rejected ? "mandate_rejected" : null,
+                rejected ? "Simulated: the customer rejected the mandate" : null, null, null,
+                mandate.registration() == null ? null : mandate.registration().reference(), null, null,
+                mandate.mandateReference(), mandate.customerReference(), null);
+    }
+
+    /** Builds the webhook body the simulated PSP would send once a notification is delivered or has failed. */
+    public MockWebhookPayload webhookFor(Notification notification) {
+        return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.NOTIFICATION_UPDATED,
+                notification.reference(), notification.notificationId(), notification.delivered() ? "delivered" : "failed",
+                notification.amount().amount(), notification.amount().currency(),
+                notification.delivered() ? null : "notification_failed",
+                notification.delivered() ? null : "Simulated: the notification could not be delivered", null, null, null,
+                null, null, notification.mandateReference(), null,
+                notification.delivered() ? notification.requestedAt() : null);
+    }
+
     /** Builds the webhook body the simulated PSP would send for a dispute's current state. */
     public MockWebhookPayload webhookFor(MockPsp.DisputeTxn dispute) {
         Txn txn = dispute.payment();
         return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.DISPUTE_UPDATED, dispute.reference(),
                 txn.merchantReference(), dispute.state().name().toLowerCase(Locale.ROOT), dispute.amount().amount(),
-                dispute.amount().currency(), null, null, null, null, txn.reference(), dispute.reason(), dispute.respondBy());
+                dispute.amount().currency(), null, null, null, null, txn.reference(), dispute.reason(), dispute.respondBy(),
+                null, null, null);
     }
 
     /** Builds the webhook body the simulated PSP would send for the current transaction state. */
@@ -296,7 +484,8 @@ public class MockPaymentProvider implements PaymentProvider {
         return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.PAYMENT_UPDATED, txn.reference(),
                 txn.merchantReference(), status, txn.amount().amount(), txn.amount().currency(), txn.failureCode(),
                 txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode(),
-                card == null ? null : card.network(), card == null ? null : card.last4(), null, null, null);
+                card == null ? null : card.network(), card == null ? null : card.last4(), null, null, null, null, null,
+                null);
     }
 
     /** The simulated hosted page always "collects" the Visa test card; only its network and last 4 are reported. */
@@ -307,7 +496,12 @@ public class MockPaymentProvider implements PaymentProvider {
 
     /** Signs as the simulated PSP would for the transaction's account (platform secret if the account has none). */
     public String sign(Txn txn, long timestampSeconds, String body) {
-        return sign(txn.webhookSecret() == null ? properties.webhookSecret() : txn.webhookSecret(), timestampSeconds, body);
+        return signForAccount(txn.webhookSecret(), timestampSeconds, body);
+    }
+
+    /** {@code accountSecret} is the merchant account's own webhook secret, or null for the platform secret. */
+    public String signForAccount(String accountSecret, long timestampSeconds, String body) {
+        return sign(accountSecret == null ? properties.webhookSecret() : accountSecret, timestampSeconds, body);
     }
 
     public String sign(long timestampSeconds, String body) {
@@ -413,9 +607,18 @@ public class MockPaymentProvider implements PaymentProvider {
                 request.returnUrl(), state, clock.instant());
     }
 
+    private Txn createDebit(MandateTxn mandate, String reference, ExecuteDebitRequest request, TxnState state) {
+        return psp.create(reference, mandate.merchantId(), mandate.accountId(), mandate.webhookSecret(), request.attemptId(),
+                request.amount(), PaymentMethod.mandate(request.mandateId()), false, null, state, clock.instant());
+    }
+
+    private String prefix() {
+        return code.toLowerCase(Locale.ROOT);
+    }
+
     private NextAction nextAction(Txn txn) {
         return switch (txn.method().type()) {
-            case CARD, NETBANKING -> NextAction.redirect(properties.publicBaseUrl() + "/simulator/" + code
+            case CARD, NETBANKING, MANDATE -> NextAction.redirect(properties.publicBaseUrl() + "/simulator/" + code
                     + "/checkout/" + txn.reference());
             case UPI -> {
                 UpiFlow flow = txn.method().upiFlow();
@@ -449,6 +652,37 @@ public class MockPaymentProvider implements PaymentProvider {
 
     private static FailureCategory failureCategory(String failureCode) {
         return "transaction_declined".equals(failureCode) ? FailureCategory.ISSUER : FailureCategory.CUSTOMER;
+    }
+
+    private ProviderMandateResult toResult(MandateTxn mandate) {
+        String registration = mandate.registration() == null ? null : mandate.registration().reference();
+        return switch (mandate.state()) {
+            case PENDING -> new ProviderMandateResult(ProviderMandateResult.Status.PENDING, mandate.reference(), null,
+                    mandate.customerReference(), registration, NextAction.redirect(properties.publicBaseUrl()
+                            + "/simulator/" + code + "/mandates/" + mandate.reference()), null, "pending");
+            case CONFIRMING -> new ProviderMandateResult(ProviderMandateResult.Status.PENDING, mandate.reference(), null,
+                    mandate.customerReference(), registration, null, null, "confirming");
+            case ACTIVE -> mandateResult(ProviderMandateResult.Status.ACTIVE, mandate, registration);
+            case PAUSED -> mandateResult(ProviderMandateResult.Status.PAUSED, mandate, registration);
+            case REVOKED -> mandateResult(ProviderMandateResult.Status.REVOKED, mandate, registration);
+            case REJECTED -> new ProviderMandateResult(ProviderMandateResult.Status.FAILED, mandate.reference(), null,
+                    mandate.customerReference(), registration, null, new ProviderFailure("mandate_rejected",
+                            "Simulated: the customer rejected the mandate", FailureCategory.CUSTOMER), "rejected");
+        };
+    }
+
+    private static ProviderMandateResult mandateResult(ProviderMandateResult.Status status, MandateTxn mandate,
+                                                       String registration) {
+        return new ProviderMandateResult(status, mandate.reference(), mandate.mandateReference(),
+                mandate.customerReference(), registration, null, null, status.name().toLowerCase(Locale.ROOT));
+    }
+
+    /** The simulated PSP delivers a notification at the moment it is requested, unless the scenario fails it. */
+    private static ProviderNotificationResult toResult(Notification notification) {
+        return notification.delivered()
+                ? ProviderNotificationResult.delivered(notification.reference(), notification.requestedAt(), "delivered")
+                : ProviderNotificationResult.failed(notification.reference(), new ProviderFailure("notification_failed",
+                        "Simulated: the notification could not be delivered", FailureCategory.CUSTOMER), "failed");
     }
 
     private ProviderRefundResult toResult(RefundTxn refund) {

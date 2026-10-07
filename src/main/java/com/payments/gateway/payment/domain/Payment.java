@@ -31,6 +31,8 @@ public final class Payment {
     private final Map<String, String> metadata;
     private final Instant expiresAt;
     private final Instant createdAt;
+    private final String mandateId;
+    private final Integer attemptLimit;
     private PaymentStatus status;
     private long amountCaptured;
     private long amountRefunded;
@@ -58,6 +60,8 @@ public final class Payment {
         this.metadata = s.metadata() == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(s.metadata()));
         this.expiresAt = s.expiresAt();
         this.createdAt = s.createdAt();
+        this.mandateId = s.mandateId();
+        this.attemptLimit = s.attemptLimit();
         this.status = s.status();
         this.amountCaptured = s.amountCaptured();
         this.amountRefunded = s.amountRefunded();
@@ -77,9 +81,21 @@ public final class Payment {
                                  Map<String, String> metadata, Instant expiresAt, Instant now) {
         Payment payment = new Payment(new PaymentSnapshot(id, merchantId, merchantOrderId, amount,
                 PaymentStatus.REQUIRES_PAYMENT_METHOD, captureMethod, description, customer, metadata, 0, 0, null, null,
-                null, null, expiresAt, null, 0, now, now), List.of(), true);
+                null, null, expiresAt, null, 0, now, now, null, null), List.of(), true);
         payment.record(StatusChange.Entity.PAYMENT, id, null, PaymentStatus.REQUIRES_PAYMENT_METHOD.name(),
                 TransitionSource.API, "created", now);
+        return payment;
+    }
+
+    /** A mandate's registration charge or debit: captured automatically, attempts started only by the gateway. */
+    public static Payment createForMandate(String id, String merchantId, String merchantOrderId, Money amount,
+                                           String description, Customer customer, Map<String, String> metadata,
+                                           Instant expiresAt, String mandateId, int attemptLimit, Instant now) {
+        Payment payment = new Payment(new PaymentSnapshot(id, merchantId, merchantOrderId, amount,
+                PaymentStatus.REQUIRES_PAYMENT_METHOD, CaptureMethod.AUTOMATIC, description, customer, metadata, 0, 0, null,
+                null, null, null, expiresAt, null, 0, now, now, mandateId, attemptLimit), List.of(), true);
+        payment.record(StatusChange.Entity.PAYMENT, id, null, PaymentStatus.REQUIRES_PAYMENT_METHOD.name(),
+                TransitionSource.API, "created for mandate " + mandateId, now);
         return payment;
     }
 
@@ -90,7 +106,7 @@ public final class Payment {
     public PaymentSnapshot snapshot() {
         return new PaymentSnapshot(id, merchantId, merchantOrderId, amount, status, captureMethod, description, customer,
                 metadata, amountCaptured, amountRefunded, succeededAttemptId, cancellationReason, failureCode,
-                failureMessage, expiresAt, authorizationExpiresAt, version, createdAt, updatedAt);
+                failureMessage, expiresAt, authorizationExpiresAt, version, createdAt, updatedAt, mandateId, attemptLimit);
     }
 
     // ---------------------------------------------------------------- commands
@@ -201,6 +217,35 @@ public final class Payment {
         failureCode = "risk_blocked";
         failureMessage = "Blocked by risk rules: " + String.join(", ", reasons);
         changeStatus(PaymentStatus.FAILED, TransitionSource.SYSTEM, failureMessage, now);
+        events.add(new PaymentEvent(PaymentEvent.Type.PAYMENT_FAILED, id));
+    }
+
+    /** Starts the gateway's attempt on a mandate payment; {@code providerReference} is known up front (LLD §18.3). */
+    public PaymentAttempt startMandateAttempt(String attemptId, String providerCode, String providerReference,
+                                              Instant now) {
+        if (mandateId == null) {
+            throw new IllegalStateException("payment " + id + " is not a mandate payment");
+        }
+        ensureConfirmable(attemptLimit, now);
+        PaymentAttempt attempt = PaymentAttempt.initiate(attemptId, id, merchantId, attempts.size() + 1, providerCode,
+                PaymentMethod.mandate(mandateId), amount, null, providerReference, now);
+        attempts.add(attempt);
+        record(StatusChange.Entity.ATTEMPT, attemptId, null, AttemptStatus.INITIATED.name(), TransitionSource.SYSTEM,
+                "mandate " + mandateId, now);
+        failureCode = null;
+        failureMessage = null;
+        changeStatus(PaymentStatus.PROCESSING, TransitionSource.SYSTEM, "attempt started", now);
+        return attempt;
+    }
+
+    /** Ends a payment that has no attempt in flight, e.g. a debit whose notification or mandate failed. */
+    public void fail(String code, String message, TransitionSource source, Instant now) {
+        if (status != PaymentStatus.REQUIRES_PAYMENT_METHOD) {
+            throw GatewayException.invalidState("Cannot fail a payment in status " + status);
+        }
+        failureCode = code;
+        failureMessage = message;
+        changeStatus(PaymentStatus.FAILED, source, code, now);
         events.add(new PaymentEvent(PaymentEvent.Type.PAYMENT_FAILED, id));
     }
 
@@ -508,6 +553,15 @@ public final class Payment {
 
     public Map<String, String> metadata() {
         return metadata;
+    }
+
+    public String mandateId() {
+        return mandateId;
+    }
+
+    /** The attempt limit of a mandate payment; null means the default policy applies. */
+    public Integer attemptLimit() {
+        return attemptLimit;
     }
 
     public PaymentStatus status() {

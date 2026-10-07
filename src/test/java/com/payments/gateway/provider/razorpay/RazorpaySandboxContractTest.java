@@ -4,14 +4,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MandateRequests.CreateMandateRequest;
+import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
+import com.payments.gateway.provider.spi.ProviderMandateResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult.Outcome;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.SettlementReport;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
+import com.payments.gateway.shared.model.MandateFrequency;
+import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import com.payments.gateway.shared.model.PaymentMethod;
@@ -30,7 +35,8 @@ import tools.jackson.databind.json.JsonMapper;
  * The assumptions the stub cannot prove, checked against Razorpay test mode (ADR-030, ADR-032): idempotent link creation
  * by {@code reference_id}, lookup by our attempt id, key rejection, and the settlement recon request. Runs only with test
  * keys: {@code RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... ./gradlew test --tests '*RazorpaySandbox*'}.
- * Creates one Payment Link per run (test mode allows 30 per account).
+ * Creates one Payment Link per run (test mode allows 30 per account). The mandate check (ADR-035) also needs
+ * {@code RAZORPAY_MANDATES=true}, once Razorpay has enabled recurring payments on the test account.
  */
 @EnabledIfEnvironmentVariable(named = "RAZORPAY_KEY_ID", matches = "rzp_test_.+")
 class RazorpaySandboxContractTest {
@@ -39,7 +45,12 @@ class RazorpaySandboxContractTest {
     private final URI api = URI.create("https://api.razorpay.com/v1");
 
     private RazorpayPaymentProvider provider() {
-        return new RazorpayPaymentProvider(new RazorpayProperties(true, api, false, Duration.ofMinutes(15), Duration.ofDays(5)),
+        return provider(false);
+    }
+
+    private RazorpayPaymentProvider provider(boolean mandates) {
+        return new RazorpayPaymentProvider(new RazorpayProperties(true, api, false, Duration.ofMinutes(15), Duration.ofDays(5),
+                mandates),
                 new RazorpayApi(api, Duration.ofSeconds(5), Duration.ofSeconds(20), "rzp_test_", json), Clock.systemUTC());
     }
 
@@ -88,5 +99,31 @@ class RazorpaySandboxContractTest {
 
         assertThat(report.lines()).allSatisfy(line -> assertThat(line.settlementId()).isNotNull());
         assertThat(report.settlements()).extracting(SettlementReport.Settlement::settlementId).doesNotHaveDuplicates();
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "RAZORPAY_MANDATES", matches = "true")
+    void aMandateRegistrationLinkIsFoundByTheMandateIdAndCancelled() {
+        MerchantAccount account = account(System.getenv("RAZORPAY_KEY_SECRET"));
+        String mandateId = "mdt_sandbox_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        Instant now = Instant.now();
+
+        ProviderMandateResult created = provider(true).createMandate(account, new CreateMandateRequest(mandateId,
+                "mer_sandbox", MandateInstrument.UPI_AUTOPAY, Money.of(100_000, "INR"), MandateFrequency.AS_PRESENTED, now,
+                now.plus(Duration.ofDays(365)), now.plus(Duration.ofHours(24)), "payment-gateway sandbox contract test",
+                "Sandbox Customer", "sandbox@example.com", "+919999999999", "att_sandbox_registration",
+                Money.of(100, "INR"), null));
+        assertThat(created.status()).as(String.valueOf(created.failure())).isEqualTo(ProviderMandateResult.Status.PENDING);
+        assertThat(created.providerReference()).startsWith("inv_");
+        assertThat(created.nextAction().type()).isEqualTo(NextAction.Type.REDIRECT);
+
+        ProviderMandateResult byMandateId = provider(true).fetchMandate(account,
+                new MandateQuery(mandateId, MandateInstrument.UPI_AUTOPAY, null, null, null));
+        assertThat(byMandateId.providerReference()).as("found by receipt after a lost response")
+                .isEqualTo(created.providerReference());
+
+        ProviderMandateResult revoked = provider(true).revokeMandate(account,
+                new MandateQuery(mandateId, MandateInstrument.UPI_AUTOPAY, created.providerReference(), null, null));
+        assertThat(revoked.status()).isEqualTo(ProviderMandateResult.Status.REVOKED);
     }
 }

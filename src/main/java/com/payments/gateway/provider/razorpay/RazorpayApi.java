@@ -105,6 +105,16 @@ final class RazorpayApi {
                 .POST(HttpRequest.BodyPublishers.ofString(json.write(body))), true);
     }
 
+    JsonNode put(MerchantAccount account, String path, Map<String, ?> body) {
+        return send(account, HttpRequest.newBuilder(uri(path))
+                .header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(json.write(body))), true);
+    }
+
+    JsonNode delete(MerchantAccount account, String path) {
+        return send(account, HttpRequest.newBuilder(uri(path)).DELETE(), true);
+    }
+
     JsonNode parse(String body) {
         return json.read(body, JsonNode.class);
     }
@@ -153,7 +163,7 @@ final class RazorpayApi {
     private JsonNode classify(HttpResponse<String> response, boolean mayChangeState) {
         int status = response.statusCode();
         if (status >= 200 && status < 300) {
-            return json.read(response.body(), JsonNode.class);
+            return json.read(response.body().isBlank() ? "{}" : response.body(), JsonNode.class);
         }
         if (status == 401) {
             throw new ProviderCredentialsException(CODE, "Razorpay rejected the API key");

@@ -5,6 +5,7 @@ import static com.payments.gateway.support.JsonPath.num;
 import static com.payments.gateway.support.JsonPath.str;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.payments.gateway.payment.application.MandateScheduler;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.support.IntegrationTest;
 import com.payments.gateway.support.StubPsp;
@@ -20,6 +21,9 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import tools.jackson.databind.JsonNode;
@@ -37,8 +41,12 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
         registry.add("pg.providers.razorpay.enabled", () -> "true");
         registry.add("pg.providers.razorpay.base-url", () -> RAZORPAY.baseUrl().toString());
         registry.add("pg.providers.razorpay.settlement-lag", () -> "2d");
+        registry.add("pg.providers.razorpay.mandates", () -> "true");
         registry.add("pg.providers.http.read-timeout", () -> "1s");
     }
+
+    @Autowired
+    private MandateScheduler mandateScheduler;
 
     @AfterAll
     static void stopRazorpay() {
@@ -146,6 +154,92 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
         assertThat(RAZORPAY.requests()).filteredOn(r -> r.method().equals("POST") && r.path().equals("/v1/payment_links"))
                 .as("a link that may exist is never created twice").hasSize(1);
         assertThat(RAZORPAY.last("GET /v1/payment_links").query()).isEqualTo("reference_id=" + attemptId);
+    }
+
+    // ------------------------------------------------------------------ mandates (ADR-035)
+
+    @ParameterizedTest
+    @ValueSource(strings = {"upi_autopay", "card", "enach"})
+    void aMandateRegistersAndIsDebitedThroughRazorpay(String instrument) {
+        boolean enach = instrument.equals("enach");
+        Linked linked = merchantOnRazorpay();
+        TestMerchant merchant = linked.merchant();
+        RAZORPAY.on("POST /v1/subscription_registration/auth_links", 200, "{\"id\":\"inv_it1\",\"customer_id\":\"cust_it1\","
+                + "\"order_id\":\"order_reg_it1\",\"short_url\":\"https://rzp.io/i/reg_it1\",\"status\":\"issued\"}");
+        Response created = post(merchant, "/v1/mandates", UUID.randomUUID().toString(), Map.of("instrument", instrument,
+                "max_amount", 500_000, "currency", "INR", "frequency", "monthly",
+                "customer", Map.of("email", "asha@example.com", "phone", "+919999999999")));
+
+        assertThat(created.status()).as(created.raw()).isEqualTo(201);
+        String mandateId = str(created.body(), "id");
+        assertThat(str(created.body(), "provider")).isEqualTo(RazorpayApi.CODE);
+        assertThat(str(created.body(), "next_action.url")).isEqualTo("https://rzp.io/i/reg_it1");
+        JsonNode link = json.read(RAZORPAY.last("POST /v1/subscription_registration/auth_links").body(), JsonNode.class);
+        assertThat(link.path("receipt").asString()).isEqualTo(mandateId);
+        assertThat(link.path("amount").asLong()).isEqualTo(enach ? 0 : 100);
+        String registrationId = str(created.body(), "registration_payment_id");
+        if (enach) {
+            assertThat(registrationId).as("eNACH registers without a charge").isNull();
+        } else {
+            assertThat(str(getPayment(merchant, registrationId), "latest_attempt.provider_reference")).isEqualTo("order_reg_it1");
+        }
+
+        String paid = "{\"entity\":\"event\",\"event\":\"invoice.paid\",\"payload\":{\"invoice\":{\"entity\":{\"id\":\"inv_it1\","
+                + "\"receipt\":\"" + mandateId + "\",\"customer_id\":\"cust_it1\",\"order_id\":\"order_reg_it1\","
+                + "\"payment_id\":\"pay_reg_it1\",\"status\":\"paid\"}},\"payment\":{\"entity\":{\"id\":\"pay_reg_it1\","
+                + "\"order_id\":\"order_reg_it1\",\"token_id\":\"token_it1\",\"status\":\"captured\",\"amount\":"
+                + (enach ? 0 : 100) + ",\"currency\":\"INR\"}}}}";
+        assertThat(num(webhook(linked, "evt_inv_it1", paid, WEBHOOK_SECRET).body(), "received")).isEqualTo(enach ? 1 : 2);
+        if (!enach) {
+            assertThat(str(getPayment(merchant, registrationId), "status")).isEqualTo("succeeded");
+        }
+        Map<String, Object> authorized = get(merchant, "/v1/mandates/" + mandateId).body();
+        assertThat(str(authorized, "status")).as("until the token is confirmed").isEqualTo("pending_authorization");
+        assertThat(authorized).doesNotContainKey("next_action");
+        webhook(linked, "evt_tok_it1", "{\"entity\":\"event\",\"event\":\"token.confirmed\",\"payload\":{\"token\":"
+                + "{\"entity\":{\"id\":\"token_it1\",\"recurring_details\":{\"status\":\"confirmed\"}}}}}", WEBHOOK_SECRET);
+        assertThat(str(get(merchant, "/v1/mandates/" + mandateId).body(), "status")).isEqualTo("active");
+
+        RAZORPAY.on("POST /v1/orders", 200, enach ? "{\"id\":\"order_e_it1\"}"
+                : "{\"id\":\"order_n_it1\",\"notification\":{\"status\":\"pending\"}}");
+        String orderId = enach ? "order_e_it1" : "order_n_it1";
+        Response debit = post(merchant, "/v1/mandates/" + mandateId + "/debits", UUID.randomUUID().toString(),
+                Map.of("amount", 49_900, "merchant_debit_id", "inv_oct"));
+        String debitId = str(debit.body(), "id");
+        String paymentId = str(debit.body(), "payment_id");
+        if (enach) {
+            assertThat(str(debit.body(), "status")).as("eNACH debits without a notification").isEqualTo("ready");
+        } else {
+            mandateScheduler.processDueDebits();
+            JsonNode order = json.read(RAZORPAY.last("POST /v1/orders").body(), JsonNode.class);
+            assertThat(order.path("receipt").asString()).isEqualTo(debitId + ".1");
+            assertThat(order.path("notification").path("token_id").asString()).isEqualTo("token_it1");
+            long deliveredAt = clock.instant().getEpochSecond();
+            webhook(linked, "evt_ntf_it1", "{\"entity\":\"event\",\"event\":\"order.notification.delivered\",\"payload\":"
+                    + "{\"order\":{\"entity\":{\"id\":\"order_n_it1\",\"receipt\":\"" + debitId + ".1\",\"notification\":"
+                    + "{\"status\":\"delivered\",\"delivered_at\":" + deliveredAt + "}}}}}", WEBHOOK_SECRET);
+            assertThat(str(get(merchant, "/v1/mandates/" + mandateId + "/debits/" + debitId).body(), "status"))
+                    .isEqualTo("ready");
+            clock.advance(Duration.ofHours(25));
+        }
+        RAZORPAY.on("POST /v1/payments/create/recurring", 200, "{\"razorpay_payment_id\":\"pay_d_it1\"}");
+        mandateScheduler.processDueDebits();
+
+        JsonNode recurring = json.read(RAZORPAY.last("POST /v1/payments/create/recurring").body(), JsonNode.class);
+        assertThat(recurring.path("order_id").asString()).isEqualTo(orderId);
+        assertThat(recurring.path("token").asString()).isEqualTo("token_it1");
+        assertThat(recurring.path("customer_id").asString()).isEqualTo("cust_it1");
+        Map<String, Object> executing = getPayment(merchant, paymentId);
+        assertThat(str(executing, "latest_attempt.provider_reference")).isEqualTo(orderId);
+        if (enach) {
+            assertThat(json.read(RAZORPAY.last("POST /v1/orders").body(), JsonNode.class).path("receipt").asString())
+                    .as("an order keyed by the attempt").isEqualTo(str(executing, "latest_attempt.id"));
+        }
+        webhook(linked, "evt_pay_it1", "{\"entity\":\"event\",\"event\":\"payment.captured\",\"payload\":{\"payment\":"
+                + "{\"entity\":{\"id\":\"pay_d_it1\",\"order_id\":\"" + orderId + "\",\"status\":\"captured\",\"amount\":49900,"
+                + "\"currency\":\"INR\"}}}}", WEBHOOK_SECRET);
+        assertThat(str(getPayment(merchant, paymentId), "status")).isEqualTo("succeeded");
+        assertThat(str(get(merchant, "/v1/mandates/" + mandateId + "/debits/" + debitId).body(), "status")).isEqualTo("succeeded");
     }
 
     // ------------------------------------------------------------------ settlement reconciliation (ADR-032)

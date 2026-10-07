@@ -52,6 +52,9 @@ public class CheckoutService {
 
     public Created create(String merchantId, String paymentId, String returnUrl) {
         PaymentResponse payment = payments.view(merchantId, paymentId, List.of()).payment();
+        if (payment.mandateId() != null) {
+            throw GatewayException.invalidState("A mandate's payments are collected by the gateway, not at checkout");
+        }
         if (!"requires_payment_method".equals(payment.status())) {
             throw GatewayException.invalidState(
                     "A checkout session needs a payment awaiting a payment method; this payment is " + payment.status());

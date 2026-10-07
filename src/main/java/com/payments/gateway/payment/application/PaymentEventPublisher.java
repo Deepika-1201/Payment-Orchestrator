@@ -2,6 +2,7 @@ package com.payments.gateway.payment.application;
 
 import com.payments.gateway.payment.api.PaymentMapper;
 import com.payments.gateway.payment.domain.Dispute;
+import com.payments.gateway.payment.domain.Mandate;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
 import com.payments.gateway.payment.domain.Refund;
@@ -56,6 +57,17 @@ public class PaymentEventPublisher {
         for (PaymentEvent event : events) {
             publisher.publishEvent(new MerchantEventRequested(dispute.merchantId(), event.type().wireName(),
                     dispute.id(), payload, clock.instant()));
+        }
+    }
+
+    public void publishMandateEvents(Mandate mandate, List<PaymentEvent> events) {
+        if (events.isEmpty()) {
+            return;
+        }
+        Object payload = mapper.toResponse(mandate);
+        for (PaymentEvent event : events) {
+            publisher.publishEvent(new MerchantEventRequested(mandate.merchantId(), event.type().wireName(),
+                    mandate.id(), payload, clock.instant()));
         }
     }
 

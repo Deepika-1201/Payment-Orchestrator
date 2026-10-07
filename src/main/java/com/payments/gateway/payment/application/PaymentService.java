@@ -124,6 +124,7 @@ public class PaymentService {
         Instant now = clock.instant();
         Payment current = payments.findForMerchant(merchantId, paymentId)
                 .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
+        refuseMandatePayment(current, "confirmed");
         // Risk rules may call an external vendor, so they run before the row lock is taken (ADR-016).
         RiskDecision decision = assessRisk(current, command, now);
         Started started = tx.execute(status -> {
@@ -179,6 +180,7 @@ public class PaymentService {
         Optional<String> voidAttemptId = tx.execute(status -> {
             Payment payment = payments.lockForMerchant(merchantId, paymentId)
                     .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
+            refuseMandatePayment(payment, "cancelled");
             Optional<String> result = payment.cancel(reason, now);
             store.save(payment);
             return result;
@@ -217,6 +219,14 @@ public class PaymentService {
                 return outcomes.apply(payment.id(), currentAttemptId, AttemptUpdate.of(AttemptStatus.UNKNOWN),
                         TransitionSource.PROVIDER_RESPONSE);
             }
+        }
+    }
+
+    /** Mandate payments are driven by the gateway; debits are cancelled through the mandate API (ADR-035). */
+    private static void refuseMandatePayment(Payment payment, String action) {
+        if (payment.mandateId() != null) {
+            throw GatewayException.invalidState("Payment " + payment.id() + " belongs to mandate " + payment.mandateId()
+                    + " and cannot be " + action + " through the payments API");
         }
     }
 

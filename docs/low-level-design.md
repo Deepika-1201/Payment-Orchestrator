@@ -1055,7 +1055,7 @@ The debit's payment carries the money state: `payments.mandate_id` is set and `p
 | `fetchDebitNotification(account, DebitNotificationQuery)` | notification id or reference | `ProviderNotificationResult` |
 | `executeDebit(account, ExecuteDebitRequest)` | attempt id | `ProviderPaymentResult` (usually `PENDING`) |
 
-Debit attempts reuse `fetchPaymentStatus` and payment webhooks. Their provider reference is set when the attempt starts: the cycle's notification reference (one PSP order per cycle), or the adapter's own reference for eNACH. `ProviderEvent` gains `MANDATE` and `NOTIFICATION` kinds.
+Debit attempts reuse `fetchPaymentStatus` and payment webhooks. Their provider reference is set when the attempt starts: the cycle's notification reference (one PSP order per cycle), or the adapter's own reference for eNACH. `ProviderEvent` gains `MANDATE` and `NOTIFICATION` kinds. A `PENDING` mandate result without a `next_action` means the customer has authorized and the PSP awaits confirmation (an eNACH bank can take days).
 
 ### 18.4 Registration
 
@@ -1071,7 +1071,11 @@ create(merchant, request):
   registration attempt ← REQUIRES_ACTION (reference, next_action) through PaymentOutcomeService
 customer authorizes at the PSP → webhooks: payment (registration charge) and mandate (ACTIVE)
 poller: CREATED/PENDING_AUTHORIZATION mandates are checked with backoff (1, 5, 15 min, then hourly);
-        after the window, a last check, then FAILED (authorization_expired) and the registration is cancelled at the PSP
+        after the window, if the customer still has to act (CREATED, or a next_action is pending): FAILED
+        (authorization_expired) and the registration is cancelled at the PSP. A registration the customer completed
+        waits for the PSP's confirmation.
+        ACTIVE/PAUSED mandates are checked at end_at (EXPIRED), and at the PSP when one of their debits fails:
+        a revocation or pause whose webhook was lost is learned before the next debit.
 ```
 
 ### 18.5 Debit cycle
@@ -1089,6 +1093,8 @@ On every save of a payment with a `mandate_id`, its debit (if any) follows the p
 - `SUCCEEDED` → `SUCCEEDED`.
 - Back to `requires_payment_method` (attempt failed) → next cycle with `not_before = now + retry-interval`: `SCHEDULED` for UPI and card (new notification), `READY` for eNACH.
 - `FAILED`/`EXPIRED` → `FAILED`; `CANCELLED` → `CANCELLED`.
+
+A failed attempt or failed debit also brings its mandate's next status check forward, after commit and outside any lock. A debit's payment expires at `max(due_at, now) + attempt_limit × (retry-interval + notification-lead + notification-timeout) + 3 days`, so it never expires while a cycle can still run.
 
 Lock order everywhere: mandate → payment → debit. Webhooks and status checks lock payment → debit; revocation locks the mandate, then each debit's payment and debit.
 
@@ -1112,26 +1118,30 @@ Lock order everywhere: mandate → payment → debit. Webhooks and status checks
 | `notification-lead` | 24h | Time between delivery and debit; values below 24h are rejected at startup |
 | `notify-ahead` | 26h | When to notify, relative to the cycle's earliest execution |
 | `notification-check-interval` / `notification-timeout` | 5m / 48h | Delivery polling |
-| `authorization-window` | 24h | Time the customer has to authorize a registration |
+| `authorization-window` | 24h | Time the customer has to authorize a registration (not the PSP's confirmation afterwards) |
 | `frictionless-debit-limit` | 1500000 | ₹15,000; a merchant's `mandate_debit_limit` (≤ ₹1,00,000) overrides it |
 | `default-term` | 3650d | `end_at` when the merchant gives none |
 
 ### 18.8 Mock PSP
 
 - **Registration:** charges ₹1 for UPI and card, nothing for eNACH. The `max_amount` suffix picks the scenario: `01` timeout but processed, `05` timeout and never processed; anything else returns `PENDING` with a redirect to `/simulator/{provider}/mandates/{reference}` (Approve / Reject).
-- **Simulator:** `POST /simulator/{provider}/mandates/{reference}/complete {outcome}` authorizes or rejects the registration and sends the payment and mandate webhooks. `POST …/mandates/{reference}/status {status: paused|active|revoked}` plays the customer's actions in their UPI app.
-- **Notifications:** `notifyDebit` returns `PENDING`, and the status check then reports `DELIVERED` at the time of the request. A debit amount ending in `06` is never delivered (`FAILED`).
+- **Simulator:** `POST /simulator/{provider}/mandates/{reference}/complete {outcome: success|failure|confirming, send_webhook}` authorizes or rejects the registration and sends the payment and mandate webhooks; `confirming` leaves it awaiting the bank (`PENDING` without a next action). `POST …/mandates/{reference}/status {status: paused|active|revoked, send_webhook}` plays the customer's actions in their UPI app, or the bank's confirmation (`active`).
+- **Notifications:** `notifyDebit` returns `PENDING`, and the status check then reports `DELIVERED` at the time of the request. A debit amount ending in `06` is never delivered (`FAILED`). Webhooks of type `notification.updated` (`delivered` with `delivered_at`, or `failed`) exercise the `NOTIFICATION` path.
 - **Debits:** `executeDebit` refuses a mandate that is not active. Amount suffixes `01`, `03`, `04` and `05` behave as for payments; anything else is `PENDING` until `/simulator/{provider}/payments/{reference}/complete`.
 
 ### 18.9 Razorpay mapping
 
+Mandates are offered only with `pg.providers.razorpay.mandates=true`, once Razorpay has enabled recurring payments on the account.
+
 | Gateway | Razorpay |
 |---|---|
-| `createMandate` | `POST /subscription_registration/auth_links`: method `upi`/`card`/`emandate`, `max_amount`, `expire_at` = `end_at`, `frequency`, `receipt` = mandate id, amount ₹1 (₹0 for eNACH), `expire_by` = the authorization window. Reference = invoice id; the registration payment's reference is the invoice's order id; `next_action` redirects to `short_url` |
-| `fetchMandate` | invoice → paid payment → `token_id`; token status from `GET /customers/{customer}/tokens` |
-| `revokeMandate` | before activation `POST /invoices/{id}/cancel`, after it `PUT /customers/{customer}/tokens/{token}/cancel` |
+| `createMandate` | `POST /subscription_registration/auth_links`: method `upi`/`card`/`emandate`, `max_amount`, `expire_at` = `end_at`, `frequency` (UPI and card), `receipt` = mandate id, amount ₹1 (₹0 for eNACH), `expire_by` = the authorization window. Reference = invoice id; the registration payment's reference is the invoice's order id; `next_action` redirects to `short_url`. A duplicate receipt is found through `GET /invoices?receipt=` |
+| `fetchMandate` | Live mandates: `GET /customers/{customer}/tokens/{token}`. Otherwise the invoice (by id or receipt): `issued` → `PENDING` with the link; `expired` → `FAILED`; `cancelled` → `REVOKED`; `paid` → payment → `token_id` → token. Token `recurring_details.status`: `initiated` → `PENDING` (no next action), `confirmed` → `ACTIVE`, `paused`, `cancelled` → `REVOKED`, `rejected` → `FAILED` |
+| `revokeMandate` | Before activation `POST /invoices/{id}/cancel`. After it, UPI `PUT /customers/{customer}/tokens/{token}/cancel`; card and eNACH `DELETE /customers/{customer}/tokens/{token}` |
 | `notifyDebit` | `POST /orders` with `receipt` = notification id and `notification{token_id, payment_after}`. Idempotent through `GET /orders?receipt=` |
-| `fetchDebitNotification` | `GET /orders/{id}`: `notification.status`, `delivered_at` |
-| `executeDebit` | `POST /payments/create/recurring` on the cycle's order, with notes `{attempt_id}` |
-| Webhooks | `token.confirmed`/`rejected`/`cancelled`/`paused` → `MANDATE`; `invoice.paid` → payment (registration) and `MANDATE` (token reference); `invoice.expired` → `MANDATE FAILED`; `order.notification.delivered`/`failed` → `NOTIFICATION`; debit payments use the existing `payment.*` handling by `order_id` |
+| `fetchDebitNotification` | `GET /orders/{id}`: `notification.status`, `notification.delivered_at` |
+| `executeDebit` | `POST /payments/create/recurring` on the cycle's order (eNACH: an order with `receipt` = attempt id), with the token, customer and notes `{attempt_id}` |
+| Webhooks | `token.confirmed`/`rejected`/`cancelled`/`paused`/`resumed` → `MANDATE` by token; `invoice.paid` → the registration charge's payment event and a `MANDATE` event with the token (`PENDING` until the token is confirmed), with distinct event ids; `invoice.expired` → `MANDATE FAILED`; `order.notification.delivered`/`failed` → `NOTIFICATION`; debit payments use the existing `payment.*` handling by `order_id` |
+
+Settlement recon lines take the attempt id from the payment's notes before the order's receipt, because a debit's order receipt is its notification id.
 

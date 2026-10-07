@@ -13,7 +13,7 @@ BEGIN
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', app);
     EXECUTE format('REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM %I', app);
     EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', app);
-    EXECUTE format('REVOKE UPDATE, DELETE ON ledger_transactions, ledger_entries, audit_log, payment_transitions FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON ledger_transactions, ledger_entries, audit_log, payment_transitions, mandate_transitions FROM %I', app);
     EXECUTE format('REVOKE ALL ON flyway_schema_history FROM %I', app);
 END
 $$;

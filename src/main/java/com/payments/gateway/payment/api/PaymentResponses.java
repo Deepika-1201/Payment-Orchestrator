@@ -32,7 +32,8 @@ public final class PaymentResponses {
             Instant authorizationExpiresAt,
             Instant createdAt,
             Instant updatedAt,
-            long version) {
+            long version,
+            String mandateId) {
     }
 
     public record CustomerResponse(String reference, String email, String phone) {
@@ -66,5 +67,24 @@ public final class PaymentResponses {
     }
 
     public record ListResponse<T>(List<T> data) {
+    }
+
+    /** {@code nextAction} only while the customer has to authorize; {@code lastError} once the mandate failed. */
+    public record MandateResponse(String id, String object, String status, String instrument, String provider,
+                                  long maxAmount, String currency, String frequency, Instant startAt, Instant endAt,
+                                  String description, MandateCustomerResponse customer, Map<String, String> metadata,
+                                  NextActionResponse nextAction, String registrationPaymentId, ErrorResponse lastError,
+                                  Instant activatedAt, Instant createdAt, Instant updatedAt, long version) {
+    }
+
+    public record MandateCustomerResponse(String reference, String name, String email, String phone) {
+    }
+
+    /** {@code notBefore}: earliest execution of the current cycle; {@code cycle} counts the first attempt and retries. */
+    public record MandateDebitResponse(String id, String object, String mandateId, String paymentId,
+                                       String merchantDebitId, long amount, String currency, String status,
+                                       String description, Instant dueAt, Instant notBefore, int cycle,
+                                       Instant notifiedAt, ErrorResponse lastError, Instant createdAt,
+                                       Instant updatedAt, long version) {
     }
 }

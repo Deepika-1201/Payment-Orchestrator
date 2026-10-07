@@ -20,6 +20,8 @@ info:
       `Idempotency-Key`, so retry it unchanged.
     - **Outcomes are asynchronous**: a `200` from `confirm` means the attempt started, not that money moved. Rely
       on webhooks (see `webhooks`) or `GET /v1/payments/{payment_id}` for the final status.
+    - **Recurring payments**: register a mandate once, then create debits on it. Each debit is a payment, so its
+      outcome arrives as `payment.*` events.
 
     This document is the contract: `ApiContractTest` fails the build if the implementation drifts from it.
 servers:
@@ -32,6 +34,8 @@ tags:
   - name: Refunds
   - name: Disputes
     description: Chargebacks and UPI disputes reported by the PSP. Read-only; evidence is submitted on the PSP's dashboard.
+  - name: Mandates
+    description: UPI AutoPay, card and eNACH mandates, and the recurring debits made on them.
   - name: Checkout
     description: Hosted checkout sessions. The customer-facing pages under `/checkout/` are HTML and not part of this API.
 
@@ -318,6 +322,213 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/UnexpectedError'}
 
+  /v1/mandates:
+    post:
+      tags: [Mandates]
+      operationId: createMandate
+      summary: Register a mandate
+      description: |
+        Registers the mandate at the first linked PSP that supports the instrument and `max_amount`. The response
+        is usually `pending_authorization` with a `next_action` (`redirect`) where the customer approves it within
+        24 hours. UPI and card registrations charge ₹1 through the payment in `registration_payment_id`. The
+        outcome arrives as `mandate.activated` or `mandate.failed`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateMandateRequest'}
+            example:
+              instrument: upi_autopay
+              max_amount: 500000
+              currency: INR
+              frequency: monthly
+              description: Gym membership
+              customer: {reference: cust_42, name: Asha Rao, email: asha@example.com, phone: '+919999999999'}
+              return_url: https://merchant.example/subscriptions/42
+      responses:
+        '201':
+          description: Mandate created (or the original response replayed).
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Mandate'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/mandates/{mandate_id}:
+    get:
+      tags: [Mandates]
+      operationId: getMandate
+      summary: Retrieve a mandate
+      parameters:
+        - $ref: '#/components/parameters/MandateId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The mandate.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Mandate'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/mandates/{mandate_id}/revoke:
+    post:
+      tags: [Mandates]
+      operationId: revokeMandate
+      summary: Revoke a mandate
+      description: |
+        Revokes the mandate at the PSP, then here, and cancels its debits that have not started executing. A revoked
+        mandate replays as success. `409 mandate_invalid_state` once it has expired or failed; `503` when the PSP
+        could not confirm the revocation (retry with the same Idempotency-Key).
+      parameters:
+        - $ref: '#/components/parameters/MandateId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The revoked mandate.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Mandate'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/mandates/{mandate_id}/debits:
+    post:
+      tags: [Mandates]
+      operationId: createMandateDebit
+      summary: Debit an active mandate
+      description: |
+        Schedules a debit. For UPI AutoPay and card mandates the PSP notifies the customer, and the debit runs at
+        least 24 hours after delivery and no earlier than `due_at`. A failed debit is retried up to 3 times, a day
+        apart. The money moves on the debit's payment (`payment_id`): follow its `payment.*` events. A mandate has
+        one debit in progress at a time. UPI and card debits above ₹15,000 (or your account's limit) need the
+        customer's authentication, so collect them as payments instead.
+      parameters:
+        - $ref: '#/components/parameters/MandateId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateMandateDebitRequest'}
+            example:
+              amount: 99900
+              merchant_debit_id: invoice_2026_10
+              description: October membership
+      responses:
+        '201':
+          description: Debit scheduled (or the original response replayed).
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MandateDebit'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+    get:
+      tags: [Mandates]
+      operationId: listMandateDebits
+      summary: List the debits of a mandate
+      parameters:
+        - $ref: '#/components/parameters/MandateId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Debits, oldest first.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MandateDebitList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/mandates/{mandate_id}/debits/{debit_id}:
+    get:
+      tags: [Mandates]
+      operationId: getMandateDebit
+      summary: Retrieve a debit
+      parameters:
+        - $ref: '#/components/parameters/MandateId'
+        - $ref: '#/components/parameters/DebitId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The debit.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MandateDebit'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/mandates/{mandate_id}/debits/{debit_id}/cancel:
+    post:
+      tags: [Mandates]
+      operationId: cancelMandateDebit
+      summary: Cancel a debit
+      description: |
+        Cancels a debit that has not started executing (`scheduled`, `notifying` or `ready`), and its payment. A
+        cancelled debit replays as success; any other status is `409 mandate_invalid_state`.
+      parameters:
+        - $ref: '#/components/parameters/MandateId'
+        - $ref: '#/components/parameters/DebitId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The cancelled debit.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MandateDebit'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
   /v1/checkout-sessions:
     post:
       tags: [Checkout]
@@ -358,7 +569,7 @@ paths:
 webhooks:
   merchantEvent:
     post:
-      summary: Payment, refund and dispute events sent to the merchant's webhook URL
+      summary: Payment, refund, dispute and mandate events sent to the merchant's webhook URL
       description: |
         Delivered at least once, possibly out of order; deduplicate on `id` (also in `PG-Event-Id`) and re-read
         the resource if ordering matters. Verify `PG-Signature: t=<unix seconds>,v1=<hex>` where
@@ -393,6 +604,16 @@ components:
       in: path
       required: true
       schema: {type: string, pattern: '^pay_'}
+    MandateId:
+      name: mandate_id
+      in: path
+      required: true
+      schema: {type: string, pattern: '^mdt_'}
+    DebitId:
+      name: debit_id
+      in: path
+      required: true
+      schema: {type: string, pattern: '^mdd_'}
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -447,8 +668,9 @@ components:
           schema: {$ref: '#/components/schemas/Problem'}
     Conflict:
       description: |
-        `payment_invalid_state` (re-read the resource), `refund_already_exists`, or
-        `idempotency_request_in_progress` (retry with the same key after `Retry-After`).
+        `payment_invalid_state` (re-read the resource), `refund_already_exists`, `mandate_invalid_state`,
+        `mandate_debit_already_exists`, or `idempotency_request_in_progress` (retry with the same key after
+        `Retry-After`).
       headers:
         X-Request-Id: {$ref: '#/components/headers/RequestId'}
         Retry-After: {$ref: '#/components/headers/RetryAfter'}
@@ -457,8 +679,8 @@ components:
           schema: {$ref: '#/components/schemas/Problem'}
     Unprocessable:
       description: |
-        `idempotency_key_reuse`, `amount_exceeds_refundable`, `capture_amount_mismatch`,
-        `unsupported_payment_method` or `unsupported_currency`. Do not retry unchanged.
+        `idempotency_key_reuse`, `amount_exceeds_refundable`, `amount_exceeds_mandate_limit`,
+        `capture_amount_mismatch`, `unsupported_payment_method` or `unsupported_currency`. Do not retry unchanged.
       headers:
         X-Request-Id: {$ref: '#/components/headers/RequestId'}
       content:
@@ -522,7 +744,27 @@ components:
       type: string
       enum: [payment.authorized, payment.succeeded, payment.attempt_failed, payment.failed, payment.cancelled,
              payment.expired, refund.succeeded, refund.failed, dispute.created, dispute.updated, dispute.won,
-             dispute.lost]
+             dispute.lost, mandate.activated, mandate.paused, mandate.resumed, mandate.revoked, mandate.expired,
+             mandate.failed]
+    MandateStatus:
+      type: string
+      enum: [created, pending_authorization, active, paused, revoked, expired, failed]
+      description: |
+        Only `active` mandates can be debited. `paused` and `active` alternate as the customer pauses and resumes in
+        their UPI or bank app. Final: `revoked`, `expired` (at `end_at`) and `failed` (never authorized).
+    MandateDebitStatus:
+      type: string
+      enum: [scheduled, notifying, ready, executing, succeeded, failed, cancelled]
+      description: |
+        UPI and card debits go `scheduled` → `notifying` → `ready` → `executing`; eNACH debits start `ready`.
+        A failed attempt with retries left starts the next cycle. Final: `succeeded`, `failed` and `cancelled`.
+    MandateInstrument:
+      type: string
+      enum: [upi_autopay, card, enach]
+    MandateFrequency:
+      type: string
+      enum: [daily, weekly, fortnightly, monthly, bimonthly, quarterly, half_yearly, yearly, as_presented]
+      description: Passed to the PSP, which enforces it.
 
     Payment:
       type: object
@@ -557,6 +799,10 @@ components:
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
         version: {type: integer, format: int64, description: Increases with every change.}
+        mandate_id:
+          type: string
+          pattern: '^mdt_'
+          description: Set on a mandate's debits and its authorization charge, which only the gateway confirms or cancels.
     Customer:
       type: object
       properties:
@@ -580,7 +826,7 @@ components:
         id: {type: string, pattern: '^att_'}
         attempt_number: {type: integer, minimum: 1}
         status: {$ref: '#/components/schemas/AttemptStatus'}
-        method: {type: string, enum: [upi, card, netbanking]}
+        method: {type: string, enum: [upi, card, netbanking, mandate]}
         upi_flow: {type: string, enum: [intent, qr, collect]}
         bank_code: {type: string}
         card:
@@ -665,6 +911,83 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Dispute'}
 
+    Mandate:
+      type: object
+      required: [id, object, status, instrument, provider, max_amount, currency, frequency, start_at, end_at,
+                 customer, created_at, updated_at, version]
+      properties:
+        id: {type: string, pattern: '^mdt_'}
+        object: {const: mandate}
+        status: {$ref: '#/components/schemas/MandateStatus'}
+        instrument: {$ref: '#/components/schemas/MandateInstrument'}
+        provider: {type: string}
+        max_amount:
+          $ref: '#/components/schemas/Amount'
+          description: The largest single debit.
+        currency: {$ref: '#/components/schemas/Currency'}
+        frequency: {$ref: '#/components/schemas/MandateFrequency'}
+        start_at: {$ref: '#/components/schemas/Timestamp'}
+        end_at: {$ref: '#/components/schemas/Timestamp'}
+        description: {type: string}
+        customer: {$ref: '#/components/schemas/MandateCustomer'}
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        next_action:
+          $ref: '#/components/schemas/NextAction'
+          description: Present only while `pending_authorization`; send the customer there to approve the mandate.
+        registration_payment_id:
+          type: string
+          pattern: '^pay_'
+          description: The ₹1 authorization charge of UPI and card mandates.
+        last_error: {$ref: '#/components/schemas/PaymentError'}
+        activated_at: {$ref: '#/components/schemas/Timestamp'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        version: {type: integer, format: int64}
+    MandateCustomer:
+      type: object
+      required: [email, phone]
+      properties:
+        reference: {type: string}
+        name: {type: string}
+        email: {type: string}
+        phone: {type: string}
+    MandateDebit:
+      type: object
+      description: One debit of a mandate. Its payment carries the money and the outcome.
+      required: [id, object, mandate_id, payment_id, merchant_debit_id, amount, currency, status, due_at, not_before,
+                 cycle, created_at, updated_at, version]
+      properties:
+        id: {type: string, pattern: '^mdd_'}
+        object: {const: mandate_debit}
+        mandate_id: {type: string, pattern: '^mdt_'}
+        payment_id: {type: string, pattern: '^pay_'}
+        merchant_debit_id: {type: string}
+        amount: {$ref: '#/components/schemas/Amount'}
+        currency: {$ref: '#/components/schemas/Currency'}
+        status: {$ref: '#/components/schemas/MandateDebitStatus'}
+        description: {type: string}
+        due_at: {$ref: '#/components/schemas/Timestamp'}
+        not_before:
+          $ref: '#/components/schemas/Timestamp'
+          description: Earliest execution of the current cycle.
+        cycle: {type: integer, minimum: 1, description: '1 for the first attempt, then one more per retry.'}
+        notified_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: When the PSP delivered the current cycle's pre-debit notification.
+        last_error: {$ref: '#/components/schemas/PaymentError'}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+        updated_at: {$ref: '#/components/schemas/Timestamp'}
+        version: {type: integer, format: int64}
+    MandateDebitList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/MandateDebit'}
+
     CheckoutSession:
       type: object
       required: [id, object, payment_id, url, expires_at, created_at]
@@ -689,11 +1012,14 @@ components:
           required: [object]
           properties:
             object:
-              description: The payment (`payment.*`), refund (`refund.*`) or dispute (`dispute.*`) as returned by the API.
+              description: |
+                The payment (`payment.*`), refund (`refund.*`), dispute (`dispute.*`) or mandate (`mandate.*`) as
+                returned by the API.
               oneOf:
                 - $ref: '#/components/schemas/Payment'
                 - $ref: '#/components/schemas/Refund'
                 - $ref: '#/components/schemas/Dispute'
+                - $ref: '#/components/schemas/Mandate'
 
     Problem:
       type: object
@@ -708,10 +1034,10 @@ components:
           type: string
           enum: [validation_error, malformed_request, idempotency_key_required, authentication_required,
                  invalid_api_key, invalid_signature, resource_not_found, method_not_allowed, unsupported_media_type,
-                 payment_invalid_state, refund_already_exists, idempotency_request_in_progress,
-                 idempotency_key_reuse, amount_exceeds_refundable, capture_amount_mismatch,
-                 unsupported_payment_method, unsupported_currency, rate_limited, no_provider_available,
-                 internal_error]
+                 payment_invalid_state, refund_already_exists, mandate_invalid_state, mandate_debit_already_exists,
+                 idempotency_request_in_progress, idempotency_key_reuse, amount_exceeds_refundable,
+                 amount_exceeds_mandate_limit, capture_amount_mismatch, unsupported_payment_method,
+                 unsupported_currency, rate_limited, no_provider_available, internal_error]
         request_id: {type: string}
         errors:
           type: array
@@ -796,6 +1122,58 @@ components:
         amount: {type: integer, format: int64, minimum: 1, description: Defaults to the remaining refundable amount.}
         reason: {type: string, maxLength: 255}
         merchant_refund_id: {type: string, maxLength: 64, pattern: '^[A-Za-z0-9_\-:.]+$'}
+    CreateMandateRequest:
+      type: object
+      required: [instrument, max_amount, currency, frequency, customer]
+      properties:
+        instrument: {$ref: '#/components/schemas/MandateInstrument'}
+        max_amount:
+          type: integer
+          format: int64
+          minimum: 100
+          maximum: 1000000000
+          description: The largest single debit; the PSP's limit for the instrument applies.
+        currency: {$ref: '#/components/schemas/Currency'}
+        frequency: {$ref: '#/components/schemas/MandateFrequency'}
+        start_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: Defaults to now.
+        end_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: Defaults to 10 years after `start_at`.
+        description: {type: string, maxLength: 255}
+        customer:
+          type: object
+          required: [email, phone]
+          properties:
+            reference: {type: string, maxLength: 64}
+            name: {type: string, maxLength: 100}
+            email: {type: string, format: email, maxLength: 254}
+            phone: {type: string, pattern: '^\+?[0-9]{8,15}$'}
+        metadata:
+          type: object
+          maxProperties: 20
+          propertyNames: {minLength: 1, maxLength: 40}
+          additionalProperties: {type: string, maxLength: 500}
+        return_url:
+          type: string
+          maxLength: 2048
+          pattern: '^https?://\S+$'
+          description: Where the PSP's authorization page sends the customer back.
+    CreateMandateDebitRequest:
+      type: object
+      required: [amount, merchant_debit_id]
+      properties:
+        amount: {type: integer, format: int64, minimum: 100, maximum: 1000000000}
+        merchant_debit_id:
+          type: string
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_\-:.]+$'
+          description: Your reference, unique per mandate; also the payment's `merchant_order_id`.
+        due_at:
+          $ref: '#/components/schemas/Timestamp'
+          description: 'Earliest debit. Default: 25 hours from now for UPI and card (after the notice), now for eNACH.'
+        description: {type: string, maxLength: 255}
     CreateCheckoutSessionRequest:
       type: object
       required: [payment_id]

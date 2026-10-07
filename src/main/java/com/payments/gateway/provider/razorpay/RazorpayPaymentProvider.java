@@ -3,13 +3,21 @@ package com.payments.gateway.provider.razorpay;
 import com.payments.gateway.provider.spi.CredentialField;
 import com.payments.gateway.provider.spi.InboundWebhook;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MandateRequests.CreateMandateRequest;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationQuery;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationRequest;
+import com.payments.gateway.provider.spi.MandateRequests.ExecuteDebitRequest;
+import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCapabilities.MandateSupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
+import com.payments.gateway.provider.spi.ProviderMandateResult;
+import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
@@ -26,6 +34,7 @@ import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.FailureCategory;
+import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
@@ -55,6 +64,8 @@ import tools.jackson.databind.JsonNode;
  *       {@code notes}, so every object can be found again after a timeout and every webhook maps back to us.</li>
  *   <li>Payments are captured automatically; Razorpay cannot void an authorization, so neither can this adapter.</li>
  *   <li>Settlement reports come from Razorpay's settlement recon, read per settlement day (ADR-032).</li>
+ *   <li>Mandates (ADR-035) register through a registration link (an invoice keyed by our mandate id); debits run on
+ *       the token, each cycle on the order that carried its pre-debit notification.</li>
  * </ul>
  */
 public final class RazorpayPaymentProvider implements PaymentProvider {
@@ -64,6 +75,8 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
     static final String WEBHOOK_SECRET = "webhook_secret";
     static final String ATTEMPT_NOTE = "pg_attempt_id";
     static final String REFUND_NOTE = "pg_refund_id";
+    static final String MANDATE_NOTE = "pg_mandate_id";
+    static final String DEBIT_NOTE = "pg_debit_id";
 
     private static final List<CredentialField> CREDENTIALS = List.of(
             new CredentialField(KEY_ID, false, true),
@@ -71,6 +84,11 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             new CredentialField(WEBHOOK_SECRET, true, true));
     private static final long UPI_MAX = 10_000_000L;
     private static final long CARD_MAX = 100_000_000L;
+    /** ₹1 authorization for UPI and card; eNACH registers without a charge and debits up to ₹1 crore. */
+    private static final Map<MandateInstrument, MandateSupport> MANDATES = Map.of(
+            MandateInstrument.UPI_AUTOPAY, new MandateSupport(100, UPI_MAX),
+            MandateInstrument.CARD, new MandateSupport(100, UPI_MAX),
+            MandateInstrument.ENACH, new MandateSupport(0, 1_000_000_000L));
     // Razorpay rejects Payment Links that expire less than 15 minutes after creation.
     private static final Duration MIN_LINK_TTL = Duration.ofMinutes(16);
     // Razorpay dates settlements in India time; recon pages hold at most 1000 items.
@@ -92,7 +110,7 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                 MethodType.UPI, new MethodSupport(upiFlows, 100, UPI_MAX, false),
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, false),
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)),
-                Set.of("INR"), false, true, true);
+                Set.of("INR"), false, true, true).withMandates(properties.mandates() ? MANDATES : Map.of());
     }
 
     @Override
@@ -155,11 +173,16 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         body.put("currency", request.amount().currency());
         body.put("receipt", request.attemptId());
         body.put("notes", notes(request));
+        return createOrFindOrder(account, body, request.attemptId());
+    }
+
+    /** Razorpay treats an order's receipt as an idempotency key: a repeat is answered with the existing order. */
+    private JsonNode createOrFindOrder(MerchantAccount account, Map<String, Object> body, String receipt) {
         try {
             return api.post(account, "/orders", body);
         } catch (RazorpayApi.BadRequest e) {
             if (e.isDuplicate()) {
-                return findOrderByReceipt(account, request.attemptId())
+                return findOrderByReceipt(account, receipt)
                         .orElseThrow(() -> new IllegalStateException("Razorpay reports a duplicate receipt it cannot find", e));
             }
             throw e;
@@ -469,7 +492,8 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         String type = Optional.ofNullable(text(item, "type")).orElse("");
         String disputeId = text(item, "dispute_id");
         if (type.equals("payment")) {
-            String attemptId = Optional.ofNullable(text(item, "order_receipt")).orElse(note(item, ATTEMPT_NOTE));
+            // A mandate debit's order receipt is its notification id, so the payment's notes come first.
+            String attemptId = Optional.ofNullable(note(item, ATTEMPT_NOTE)).orElse(text(item, "order_receipt"));
             return new SettlementReport.Line(id, LineType.PAYMENT, Optional.ofNullable(text(item, "order_id")).orElse(id),
                     attemptId, amount, keptOnCredit, settlementId, createdAt);
         }
@@ -589,6 +613,15 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             return result == null ? List.of()
                     : List.of(ProviderEvent.payment(eventId, type, linkId, text(link, "reference_id"), result));
         }
+        if (type.startsWith("token.")) {
+            return tokenEvents(eventId, type, payload.path("token").path("entity"));
+        }
+        if (type.startsWith("invoice.")) {
+            return invoiceEvents(eventId, type, payload.path("invoice").path("entity"), payment);
+        }
+        if (type.startsWith("order.notification.")) {
+            return notificationEvents(eventId, type, payload.path("order").path("entity"), event);
+        }
         String reference = text(payment, "order_id");
         String attemptId = text(payment.path("notes"), ATTEMPT_NOTE);
         ProviderPaymentResult result = switch (type) {
@@ -616,6 +649,340 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                 amount(dispute), text(dispute, "reason_code"), respondBy > 0 ? Instant.ofEpochSecond(respondBy) : null,
                 text(dispute, "status"));
         return ProviderEvent.dispute(eventId, type, text(payment.path("notes"), ATTEMPT_NOTE), result);
+    }
+
+    /** Token webhooks carry no receipt of ours: the mandate is found by its token. */
+    private static List<ProviderEvent> tokenEvents(String eventId, String type, JsonNode token) {
+        String tokenId = text(token, "id");
+        ProviderMandateResult.Status status = switch (type) {
+            case "token.confirmed", "token.resumed" -> ProviderMandateResult.Status.ACTIVE;
+            case "token.paused" -> ProviderMandateResult.Status.PAUSED;
+            case "token.cancelled" -> ProviderMandateResult.Status.REVOKED;
+            case "token.rejected" -> ProviderMandateResult.Status.FAILED;
+            default -> null;
+        };
+        if (status == null || tokenId == null) {
+            return List.of();
+        }
+        return List.of(ProviderEvent.mandate(eventId, type, null, new ProviderMandateResult(status, null, tokenId,
+                text(token, "customer_id"), null, null, rejection(status, token.path("recurring_details")), type)));
+    }
+
+    /**
+     * A paid registration link yields its ₹1 charge's payment event and a mandate event with the token, which stays
+     * {@code PENDING} until the token is confirmed. Distinct event ids keep both in the webhook inbox.
+     */
+    private static List<ProviderEvent> invoiceEvents(String eventId, String type, JsonNode invoice, JsonNode payment) {
+        String invoiceId = text(invoice, "id");
+        String receipt = text(invoice, "receipt");
+        String customerId = text(invoice, "customer_id");
+        String orderId = text(invoice, "order_id");
+        if (invoiceId == null) {
+            return List.of();
+        }
+        if (type.equals("invoice.expired")) {
+            return List.of(ProviderEvent.mandate(eventId, type, receipt, new ProviderMandateResult(
+                    ProviderMandateResult.Status.FAILED, invoiceId, null, customerId, orderId, null, registrationExpired(),
+                    "expired")));
+        }
+        if (!type.equals("invoice.paid")) {
+            return List.of();
+        }
+        List<ProviderEvent> events = new ArrayList<>();
+        String paymentStatus = status(payment);
+        if (orderId != null && payment.path("amount").asLong(0) > 0
+                && (paymentStatus.equals("captured") || paymentStatus.equals("authorized"))) {
+            ProviderPaymentResult charge = paymentStatus.equals("captured")
+                    ? ProviderPaymentResult.succeeded(orderId, amount(payment), "captured")
+                    : ProviderPaymentResult.authorized(orderId, amount(payment), "authorized");
+            events.add(ProviderEvent.payment(eventId + "#payment", type, orderId, null, withCard(charge, payment)));
+        }
+        events.add(ProviderEvent.mandate(eventId + "#mandate", type, receipt, new ProviderMandateResult(
+                ProviderMandateResult.Status.PENDING, invoiceId, text(payment, "token_id"), customerId, orderId, null, null,
+                "paid")));
+        return events;
+    }
+
+    private List<ProviderEvent> notificationEvents(String eventId, String type, JsonNode order, JsonNode event) {
+        String orderId = text(order, "id");
+        JsonNode notification = order.path("notification");
+        ProviderNotificationResult result = switch (type) {
+            case "order.notification.delivered" -> ProviderNotificationResult.delivered(orderId,
+                    Optional.ofNullable(epochSeconds(notification, "delivered_at"))
+                            .or(() -> Optional.ofNullable(epochSeconds(event, "created_at")))
+                            .orElse(clock.instant()), "delivered");
+            case "order.notification.failed" -> ProviderNotificationResult.failed(orderId, notificationFailure(notification),
+                    "failed");
+            default -> null;
+        };
+        return result == null || orderId == null ? List.of()
+                : List.of(ProviderEvent.notification(eventId, type, text(order, "receipt"), result));
+    }
+
+    // ------------------------------------------------------------------ mandates (ADR-035, LLD §18.9)
+
+    @Override
+    public ProviderMandateResult createMandate(MerchantAccount account, CreateMandateRequest request) {
+        Map<String, Object> registration = new LinkedHashMap<>();
+        registration.put("method", switch (request.instrument()) {
+            case UPI_AUTOPAY -> "upi";
+            case CARD -> "card";
+            case ENACH -> "emandate";
+        });
+        registration.put("max_amount", request.maxAmount().amount());
+        registration.put("expire_at", request.endAt().getEpochSecond());
+        if (request.instrument() != MandateInstrument.ENACH) {
+            registration.put("frequency", request.frequency().name().toLowerCase(Locale.ROOT));
+        }
+        Map<String, Object> customer = new LinkedHashMap<>();
+        putIfPresent(customer, "name", request.customerName());
+        customer.put("email", request.customerEmail());
+        customer.put("contact", request.customerPhone());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("customer", customer);
+        body.put("type", "link");
+        body.put("amount", request.registrationAmount() == null ? 0 : request.registrationAmount().amount());
+        body.put("currency", request.maxAmount().currency());
+        body.put("description", request.description() == null ? "Mandate " + request.mandateId() : request.description());
+        body.put("subscription_registration", registration);
+        body.put("receipt", request.mandateId());
+        body.put("expire_by", request.authorizationExpiresAt().getEpochSecond());
+        body.put("sms_notify", 0);
+        body.put("email_notify", 0);
+        body.put("notes", Map.of(MANDATE_NOTE, request.mandateId()));
+        try {
+            return registrationResult(account, api.post(account, "/subscription_registration/auth_links", body));
+        } catch (RazorpayApi.BadRequest e) {
+            if (e.isDuplicate()) {
+                Optional<JsonNode> existing = findInvoiceByReceipt(account, request.mandateId());
+                if (existing.isPresent()) {
+                    return registrationResult(account, existing.get());
+                }
+            }
+            return ProviderMandateResult.failed(null, failure(e), "auth_link_rejected");
+        }
+    }
+
+    @Override
+    public ProviderMandateResult fetchMandate(MerchantAccount account, MandateQuery query) {
+        try {
+            if (query.providerMandateReference() != null && query.providerCustomerReference() != null) {
+                return tokenResult(api.get(account, tokenPath(query.providerCustomerReference(),
+                        query.providerMandateReference()), Map.of()), query.providerReference(),
+                        query.providerCustomerReference(), null);
+            }
+            return findInvoice(account, query).map(invoice -> registrationResult(account, invoice))
+                    .orElseGet(ProviderMandateResult::notFound);
+        } catch (RazorpayApi.BadRequest e) {
+            if (e.isNotFound()) {
+                return ProviderMandateResult.notFound();
+            }
+            throw e;
+        }
+    }
+
+    /** Cancels the registration link while it is unpaid, otherwise the token. */
+    @Override
+    public ProviderMandateResult revokeMandate(MerchantAccount account, MandateQuery query) {
+        try {
+            String token = query.providerMandateReference();
+            String customer = query.providerCustomerReference();
+            if (token == null || customer == null) {
+                Optional<JsonNode> invoice = findInvoice(account, query);
+                if (invoice.isEmpty()) {
+                    return ProviderMandateResult.notFound();
+                }
+                if (status(invoice.get()).equals("issued")) {
+                    return registrationResult(account, api.post(account,
+                            "/invoices/" + RazorpayApi.segment(text(invoice.get(), "id")) + "/cancel", Map.of()));
+                }
+                ProviderMandateResult current = registrationResult(account, invoice.get());
+                if (current.providerMandateReference() == null || current.providerCustomerReference() == null) {
+                    return current;
+                }
+                token = current.providerMandateReference();
+                customer = current.providerCustomerReference();
+            }
+            String path = tokenPath(customer, token);
+            try {
+                if (query.instrument() == MandateInstrument.UPI_AUTOPAY) {
+                    api.put(account, path + "/cancel", Map.of());
+                } else {
+                    api.delete(account, path);
+                }
+            } catch (RazorpayApi.BadRequest e) {
+                ProviderMandateResult current = tokenResult(api.get(account, path, Map.of()), query.providerReference(),
+                        customer, null);
+                if (current.status() != ProviderMandateResult.Status.REVOKED) {
+                    throw e;
+                }
+                return current;
+            }
+            return new ProviderMandateResult(ProviderMandateResult.Status.REVOKED, query.providerReference(), token,
+                    customer, null, null, null, "cancelled");
+        } catch (RazorpayApi.BadRequest e) {
+            if (e.isNotFound()) {
+                return ProviderMandateResult.notFound();
+            }
+            throw e;
+        }
+    }
+
+    /** One order per cycle, keyed by the notification id; the debit later runs on this order. */
+    @Override
+    public ProviderNotificationResult notifyDebit(MerchantAccount account, DebitNotificationRequest request) {
+        if (request.providerMandateReference() == null) {
+            return ProviderNotificationResult.failed(null, new ProviderFailure("mandate_token_unknown",
+                    "Razorpay has not reported the mandate's token", FailureCategory.PROVIDER), "no_token");
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("amount", request.amount().amount());
+        body.put("currency", request.amount().currency());
+        body.put("receipt", request.notificationId());
+        body.put("notes", Map.of(DEBIT_NOTE, request.debitId(), MANDATE_NOTE, request.mandateId()));
+        body.put("notification", Map.of("token_id", request.providerMandateReference(),
+                "payment_after", request.debitAfter().getEpochSecond()));
+        try {
+            return notificationResult(createOrFindOrder(account, body, request.notificationId()));
+        } catch (RazorpayApi.BadRequest e) {
+            return ProviderNotificationResult.failed(null, failure(e), "order_rejected");
+        }
+    }
+
+    @Override
+    public ProviderNotificationResult fetchDebitNotification(MerchantAccount account, DebitNotificationQuery query) {
+        try {
+            Optional<JsonNode> order = query.providerReference() != null
+                    ? Optional.of(api.get(account, "/orders/" + RazorpayApi.segment(query.providerReference()), Map.of()))
+                    : findOrderByReceipt(account, query.notificationId());
+            return order.map(this::notificationResult).orElseGet(ProviderNotificationResult::notFound);
+        } catch (RazorpayApi.BadRequest e) {
+            if (e.isNotFound()) {
+                return ProviderNotificationResult.notFound();
+            }
+            throw e;
+        }
+    }
+
+    /** UPI and card debits run on the cycle's notified order; eNACH debits on an order keyed by the attempt. */
+    @Override
+    public ProviderPaymentResult executeDebit(MerchantAccount account, ExecuteDebitRequest request) {
+        String orderId = request.notificationReference();
+        try {
+            if (orderId == null) {
+                Map<String, Object> order = new LinkedHashMap<>();
+                order.put("amount", request.amount().amount());
+                order.put("currency", request.amount().currency());
+                order.put("receipt", request.attemptId());
+                order.put("notes", Map.of(ATTEMPT_NOTE, request.attemptId(), DEBIT_NOTE, request.debitId()));
+                orderId = text(createOrFindOrder(account, order, request.attemptId()), "id");
+            }
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("email", request.customerEmail());
+            body.put("contact", request.customerPhone());
+            body.put("amount", request.amount().amount());
+            body.put("currency", request.amount().currency());
+            body.put("order_id", orderId);
+            putIfPresent(body, "customer_id", request.providerCustomerReference());
+            putIfPresent(body, "token", request.providerMandateReference());
+            body.put("recurring", "1");
+            putIfPresent(body, "description", request.description());
+            body.put("notes", Map.of(ATTEMPT_NOTE, request.attemptId(), DEBIT_NOTE, request.debitId()));
+            api.post(account, "/payments/create/recurring", body);
+            return ProviderPaymentResult.pending(orderId, "created");
+        } catch (RazorpayApi.BadRequest e) {
+            return ProviderPaymentResult.failed(orderId, failure(e), "recurring_payment_rejected");
+        }
+    }
+
+    private ProviderMandateResult registrationResult(MerchantAccount account, JsonNode invoice) {
+        String invoiceId = text(invoice, "id");
+        String customerId = text(invoice, "customer_id");
+        String orderId = text(invoice, "order_id");
+        String status = status(invoice);
+        return switch (status) {
+            case "paid" -> {
+                String paymentId = text(invoice, "payment_id");
+                String tokenId = paymentId == null ? null
+                        : text(api.get(account, "/payments/" + RazorpayApi.segment(paymentId), Map.of()), "token_id");
+                yield tokenId == null || customerId == null
+                        ? new ProviderMandateResult(ProviderMandateResult.Status.PENDING, invoiceId, null, customerId, orderId,
+                                null, null, status)
+                        : tokenResult(api.get(account, tokenPath(customerId, tokenId), Map.of()), invoiceId, customerId, orderId);
+            }
+            case "expired" -> new ProviderMandateResult(ProviderMandateResult.Status.FAILED, invoiceId, null, customerId,
+                    orderId, null, registrationExpired(), status);
+            case "cancelled" -> new ProviderMandateResult(ProviderMandateResult.Status.REVOKED, invoiceId, null, customerId,
+                    orderId, null, null, status);
+            default -> {
+                String link = text(invoice, "short_url");
+                yield new ProviderMandateResult(ProviderMandateResult.Status.PENDING, invoiceId, null, customerId, orderId,
+                        link == null ? null : NextAction.redirect(link), null, status);
+            }
+        };
+    }
+
+    /** {@code recurring_details.status}: initiated (the bank has yet to confirm), confirmed, paused, cancelled, rejected. */
+    private static ProviderMandateResult tokenResult(JsonNode token, String invoiceId, String customerId, String orderId) {
+        JsonNode recurring = token.path("recurring_details");
+        String recurringStatus = Optional.ofNullable(text(recurring, "status")).orElse("");
+        ProviderMandateResult.Status status = switch (recurringStatus) {
+            case "confirmed" -> ProviderMandateResult.Status.ACTIVE;
+            case "paused" -> ProviderMandateResult.Status.PAUSED;
+            case "cancelled" -> ProviderMandateResult.Status.REVOKED;
+            case "expired" -> ProviderMandateResult.Status.EXPIRED;
+            case "rejected" -> ProviderMandateResult.Status.FAILED;
+            default -> ProviderMandateResult.Status.PENDING;
+        };
+        return new ProviderMandateResult(status, invoiceId, text(token, "id"), customerId, orderId, null,
+                rejection(status, recurring), recurringStatus);
+    }
+
+    private static ProviderFailure rejection(ProviderMandateResult.Status status, JsonNode recurring) {
+        return status != ProviderMandateResult.Status.FAILED ? null : new ProviderFailure("mandate_rejected",
+                Optional.ofNullable(text(recurring, "failure_reason")).orElse("The customer's bank rejected the mandate"),
+                FailureCategory.CUSTOMER);
+    }
+
+    private static ProviderFailure registrationExpired() {
+        return new ProviderFailure("registration_expired",
+                "The customer did not authorize the mandate before the registration link expired", FailureCategory.CUSTOMER);
+    }
+
+    private ProviderNotificationResult notificationResult(JsonNode order) {
+        String orderId = text(order, "id");
+        JsonNode notification = order.path("notification");
+        return switch (status(notification)) {
+            case "delivered" -> ProviderNotificationResult.delivered(orderId,
+                    Optional.ofNullable(epochSeconds(notification, "delivered_at")).orElse(clock.instant()), "delivered");
+            case "failed" -> ProviderNotificationResult.failed(orderId, notificationFailure(notification), "failed");
+            default -> ProviderNotificationResult.pending(orderId, status(notification));
+        };
+    }
+
+    private static ProviderFailure notificationFailure(JsonNode notification) {
+        return new ProviderFailure("notification_failed", Optional.ofNullable(text(notification, "failure_reason"))
+                .orElse("Razorpay could not deliver the pre-debit notification"), FailureCategory.CUSTOMER);
+    }
+
+    private Optional<JsonNode> findInvoice(MerchantAccount account, MandateQuery query) {
+        if (query.providerReference() != null) {
+            return Optional.of(api.get(account, "/invoices/" + RazorpayApi.segment(query.providerReference()), Map.of()));
+        }
+        return findInvoiceByReceipt(account, query.mandateId());
+    }
+
+    private Optional<JsonNode> findInvoiceByReceipt(MerchantAccount account, String receipt) {
+        for (JsonNode invoice : api.get(account, "/invoices", Map.of("receipt", receipt)).path("items")) {
+            if (receipt.equals(text(invoice, "receipt"))) {
+                return Optional.of(invoice);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static String tokenPath(String customerId, String tokenId) {
+        return "/customers/" + RazorpayApi.segment(customerId) + "/tokens/" + RazorpayApi.segment(tokenId);
     }
 
     // ------------------------------------------------------------------ lookups and mapping

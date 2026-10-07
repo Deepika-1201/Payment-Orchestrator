@@ -1,11 +1,15 @@
 package com.payments.gateway.provider.mock;
 
+import com.payments.gateway.provider.mock.MockPsp.MandateState;
+import com.payments.gateway.provider.mock.MockPsp.MandateTxn;
 import com.payments.gateway.provider.mock.MockPsp.Txn;
+import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
@@ -52,6 +56,107 @@ public class SimulatorController {
     }
 
     public record DisputeStatusRequest(String status, Boolean sendWebhook) {
+    }
+
+    /** {@code send_webhook = false} leaves the gateway to learn the outcome from its status checks. */
+    public record MandateCompleteRequest(String outcome, Boolean sendWebhook) {
+    }
+
+    public record MandateStatusRequest(String status, Boolean sendWebhook) {
+    }
+
+    /**
+     * The customer approves ({@code success}) or rejects ({@code failure}) a registration, or approves one the bank has
+     * yet to confirm ({@code confirming}): webhooks for its authorization charge and the mandate.
+     */
+    @PostMapping("/{provider}/mandates/{reference}/complete")
+    public Map<String, Object> completeMandate(@PathVariable String provider, @PathVariable String reference,
+                                               @RequestBody MandateCompleteRequest request) {
+        MandateTxn mandate = authorizeAndNotify(provider, reference, String.valueOf(request.outcome()),
+                !Boolean.FALSE.equals(request.sendWebhook()));
+        return mandateView(mandate);
+    }
+
+    /** Plays the customer pausing, resuming or revoking in their UPI or bank app, or the bank confirming ({@code active}). */
+    @PostMapping("/{provider}/mandates/{reference}/status")
+    public Map<String, Object> updateMandate(@PathVariable String provider, @PathVariable String reference,
+                                             @RequestBody MandateStatusRequest request) {
+        MockPaymentProvider mock = provider(provider);
+        MandateTxn mandate = mandate(provider, reference);
+        MandateState target = switch (String.valueOf(request.status())) {
+            case "paused" -> MandateState.PAUSED;
+            case "active" -> MandateState.ACTIVE;
+            case "revoked" -> MandateState.REVOKED;
+            default -> throw GatewayException.validation("status", "must be one of paused, active, revoked");
+        };
+        boolean moved = target == MandateState.ACTIVE && mandate.state() == MandateState.CONFIRMING
+                ? mandate.confirm(Ids.newId(provider.toLowerCase(Locale.ROOT) + "_tok"))
+                : mandate.moveTo(target);
+        if (!moved) {
+            throw GatewayException.invalidState("Mandate " + reference + " is " + mandate.state());
+        }
+        if (!Boolean.FALSE.equals(request.sendWebhook())) {
+            webhookSender.send(gatewayBaseUrl(), mock, mandate.accountId(), mandate.webhookSecret(),
+                    mock.webhookFor(mandate));
+        }
+        return mandateView(mandate);
+    }
+
+    @GetMapping(value = "/{provider}/mandates/{reference}", produces = MediaType.TEXT_HTML_VALUE)
+    public String mandatePage(@PathVariable String provider, @PathVariable String reference) {
+        MandateTxn mandate = mandate(provider, reference);
+        String action = "/simulator/" + HtmlUtils.htmlEscape(provider) + "/mandates/" + HtmlUtils.htmlEscape(reference);
+        return page("Mock PSP mandate authorization",
+                "<p>" + HtmlUtils.htmlEscape(provider) + " &middot; " + mandate.instrument().name() + " &middot; up to "
+                        + mandate.maxAmount().currency() + " " + mandate.maxAmount().toDecimalString() + " per debit</p>"
+                        + "<form method=\"post\" action=\"" + action + "\"><input type=\"hidden\" name=\"outcome\" value=\"success\">"
+                        + "<button type=\"submit\">Approve</button></form>"
+                        + "<form method=\"post\" action=\"" + action + "\"><input type=\"hidden\" name=\"outcome\" value=\"failure\">"
+                        + "<button type=\"submit\">Reject</button></form>");
+    }
+
+    @PostMapping(value = "/{provider}/mandates/{reference}", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE,
+            produces = MediaType.TEXT_HTML_VALUE)
+    public String submitMandate(@PathVariable String provider, @PathVariable String reference,
+                                @RequestParam String outcome) {
+        MandateTxn mandate = authorizeAndNotify(provider, reference, outcome, true);
+        return page("Mandate " + mandate.state().name().toLowerCase(Locale.ROOT), returnLink(mandate.returnUrl()));
+    }
+
+    private MandateTxn authorizeAndNotify(String provider, String reference, String outcome, boolean sendWebhooks) {
+        MockPaymentProvider mock = provider(provider);
+        MandateTxn mandate = mandate(provider, reference);
+        boolean approved = !"failure".equalsIgnoreCase(outcome);
+        boolean moved = "confirming".equalsIgnoreCase(outcome) ? mandate.awaitConfirmation()
+                : mandate.authorize(approved, Ids.newId(provider.toLowerCase(Locale.ROOT) + "_tok"));
+        if (!moved) {
+            throw GatewayException.invalidState("Mandate " + reference + " is already " + mandate.state());
+        }
+        Txn registration = mandate.registration();
+        if (registration != null) {
+            registration.complete(approved, clock.instant());
+        }
+        if (sendWebhooks) {
+            if (registration != null) {
+                webhookSender.send(gatewayBaseUrl(), mock, registration, mock.webhookFor(registration));
+            }
+            webhookSender.send(gatewayBaseUrl(), mock, mandate.accountId(), mandate.webhookSecret(),
+                    mock.webhookFor(mandate));
+        }
+        return mandate;
+    }
+
+    private MandateTxn mandate(String provider, String reference) {
+        return provider(provider).psp().findMandate(reference, null)
+                .orElseThrow(() -> GatewayException.notFound("Mock mandate", reference));
+    }
+
+    private static Map<String, Object> mandateView(MandateTxn mandate) {
+        return Map.of("provider_reference", mandate.reference(), "state", mandate.state().name().toLowerCase(Locale.ROOT));
+    }
+
+    private static String gatewayBaseUrl() {
+        return ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
     }
 
     /** Raises a chargeback on a captured transaction, as the card network or NPCI would through the PSP. */
@@ -152,12 +257,14 @@ public class SimulatorController {
     public String submitCheckout(@PathVariable String provider, @PathVariable String reference,
                                  @RequestParam String outcome) {
         Txn txn = completeAndNotify(provider, reference, "success".equalsIgnoreCase(outcome), 1);
-        String returnLink = "";
-        String returnUrl = txn.returnUrl();
+        return page("Payment " + txn.state().name().toLowerCase(java.util.Locale.ROOT), returnLink(txn.returnUrl()));
+    }
+
+    private static String returnLink(String returnUrl) {
         if (returnUrl != null && (returnUrl.startsWith("https://") || returnUrl.startsWith("http://"))) {
-            returnLink = "<p><a href=\"" + HtmlUtils.htmlEscape(returnUrl) + "\">Return to merchant</a></p>";
+            return "<p><a href=\"" + HtmlUtils.htmlEscape(returnUrl) + "\">Return to merchant</a></p>";
         }
-        return page("Payment " + txn.state().name().toLowerCase(java.util.Locale.ROOT), returnLink);
+        return "";
     }
 
     private Txn completeAndNotify(String provider, String reference, boolean success, int deliveries) {

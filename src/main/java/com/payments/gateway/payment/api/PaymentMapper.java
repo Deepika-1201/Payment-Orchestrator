@@ -4,12 +4,18 @@ import com.payments.gateway.payment.api.PaymentResponses.AttemptResponse;
 import com.payments.gateway.payment.api.PaymentResponses.CustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.DisputeResponse;
 import com.payments.gateway.payment.api.PaymentResponses.ErrorResponse;
+import com.payments.gateway.payment.api.PaymentResponses.MandateCustomerResponse;
+import com.payments.gateway.payment.api.PaymentResponses.MandateDebitResponse;
+import com.payments.gateway.payment.api.PaymentResponses.MandateResponse;
 import com.payments.gateway.payment.api.PaymentResponses.NextActionResponse;
 import com.payments.gateway.payment.api.PaymentResponses.PaymentResponse;
 import com.payments.gateway.payment.api.PaymentResponses.RefundResponse;
 import com.payments.gateway.payment.domain.Customer;
 import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.Failure;
+import com.payments.gateway.payment.domain.Mandate;
+import com.payments.gateway.payment.domain.MandateCustomer;
+import com.payments.gateway.payment.domain.MandateDebit;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
@@ -53,7 +59,54 @@ public class PaymentMapper {
                 payment.authorizationExpiresAt(),
                 payment.createdAt(),
                 payment.updatedAt(),
-                payment.version());
+                payment.version(),
+                payment.mandateId());
+    }
+
+    public MandateResponse toResponse(Mandate mandate) {
+        MandateCustomer customer = mandate.customer();
+        return new MandateResponse(
+                mandate.id(),
+                "mandate",
+                wire(mandate.status()),
+                wire(mandate.instrument()),
+                mandate.providerCode(),
+                mandate.maxAmount().amount(),
+                mandate.maxAmount().currency(),
+                wire(mandate.frequency()),
+                mandate.startAt(),
+                mandate.endAt(),
+                mandate.description(),
+                new MandateCustomerResponse(customer.reference(), customer.name(), customer.email(), customer.phone()),
+                mandate.metadata().isEmpty() ? null : mandate.metadata(),
+                toResponse(mandate.nextAction()),
+                mandate.registrationPaymentId(),
+                mandate.failureCode() == null ? null : new ErrorResponse(mandate.failureCode(), null, mandate.failureMessage()),
+                mandate.activatedAt(),
+                mandate.createdAt(),
+                mandate.updatedAt(),
+                mandate.version());
+    }
+
+    public MandateDebitResponse toResponse(MandateDebit debit) {
+        return new MandateDebitResponse(
+                debit.id(),
+                "mandate_debit",
+                debit.mandateId(),
+                debit.paymentId(),
+                debit.merchantDebitId(),
+                debit.amount().amount(),
+                debit.amount().currency(),
+                wire(debit.status()),
+                debit.description(),
+                debit.dueAt(),
+                debit.notBefore(),
+                debit.cycle(),
+                debit.notifiedAt(),
+                debit.failureCode() == null ? null : new ErrorResponse(debit.failureCode(), null, debit.failureMessage()),
+                debit.createdAt(),
+                debit.updatedAt(),
+                debit.version());
     }
 
     public RefundResponse toResponse(Refund refund) {

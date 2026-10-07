@@ -253,7 +253,8 @@ public class PaymentOutcomeService {
     }
 
     private PaymentPolicy policyFor(Payment payment) {
-        return new PaymentPolicy(properties.maxAttempts(), properties.authorizationTtl(),
+        int maxAttempts = payment.attemptLimit() != null ? payment.attemptLimit() : properties.maxAttempts();
+        return new PaymentPolicy(maxAttempts, properties.authorizationTtl(),
                 merchants.require(payment.merchantId()).acceptsLateSuccess());
     }
 }

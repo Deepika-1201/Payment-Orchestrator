@@ -16,8 +16,8 @@ V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists it
 | Scope | Planned units | Done | Progress |
 |---|---|---|---|
 | V1 (phases 1–17) | 23 | 22 | 96% |
-| V2 (phases 18–28) | 15.5 | 0 | 0% |
-| **Project** | **38.5** | **22** | **57%** |
+| V2 (phases 18–28) | 15.5 | 3 | 19% |
+| **Project** | **38.5** | **25** | **65%** |
 
 *As of 2026-10-07.*
 
@@ -67,7 +67,7 @@ These items belong to the phases above but need access the project does not have
 
 | # | Phase | Requirements | Depends on | Units | Exit criteria | Status |
 |---|---|---|---|---|---|---|
-| 18 | Recurring payments and mandates | [§8.1](requirements.md#81-recurring-payments-and-mandates-phase-18) | — | 3 | UPI AutoPay, card and eNACH mandates each register, notify and debit end to end on the mock PSP, and through one real adapter against its stub. A debit without an active mandate or a required notification, or above a limit, is refused (NFR-19). A revocation arriving by webhook stops the next debit | In progress: design done ([ADR-035](decisions/ADR-035-mandates.md), [LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035)); see [phase 18 steps](#phase-18-steps) |
+| 18 | Recurring payments and mandates | [§8.1](requirements.md#81-recurring-payments-and-mandates-phase-18) | — | 3 | UPI AutoPay, card and eNACH mandates each register, notify and debit end to end on the mock PSP, and through one real adapter against its stub. A debit without an active mandate or a required notification, or above a limit, is refused (NFR-19). A revocation arriving by webhook stops the next debit | Done: [ADR-035](decisions/ADR-035-mandates.md), [LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035), [steps](#phase-18-steps). The Razorpay sandbox check needs keys, as C1 does |
 | 19 | Partial capture | [§8.2](requirements.md#82-partial-capture-phase-19) | — | 0.5 | Capturing less than the authorization releases the rest at the PSP; refunds, disputes and the ledger use the captured amount; capturing more is refused | |
 | 20 | Wallets, EMI and pay later | [§8.3](requirements.md#83-wallets-emi-and-pay-later-phase-20) | — | 1.5 | Each method pays end to end on the mock PSP and through a real adapter's stub, and the hosted checkout offers it when routable. The phase changes nothing in `payment/domain` (NFR-11) | |
 | 21 | Bank transfers and virtual accounts | [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) | — | 1.5 | An exact transfer pays the payment. Short, excess, repeated and unmatched credits follow the policy. Credits reconcile against settlement reports | |
@@ -81,7 +81,7 @@ These items belong to the phases above but need access the project does not have
 
 **Not planned:** a merchant dashboard UI, a card vault, direct acquirer integrations, ML-based fraud and multi-region active-active. [ADR-034](decisions/ADR-034-post-v1-scope.md) gives the reasons and when to revisit each. The scale-driven changes in [architecture §11](architecture.md#11-evolution-path) wait for their triggers and are not counted.
 
-**Order of work:** phase 18, then phases 19 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 16.5 units, 15.5 in V2 and 1 in the close-out.
+**Order of work:** phases 19 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 13.5 units, 12.5 in V2 and 1 in the close-out.
 
 ### Phase 18 steps
 
@@ -90,14 +90,14 @@ No partial credit: the phase's 3 units count when all nine steps are done. Steps
 | Step | Work | Status |
 |---|---|---|
 | 1 | Design: [ADR-035](decisions/ADR-035-mandates.md), [LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035), [requirements §8.1](requirements.md#81-recurring-payments-and-mandates-phase-18) | Done |
-| 2 | Schema (`V14__mandates.sql`), domain (`Mandate`, `MandateDebit`, mandate payments), repositories, provider SPI and `ProviderClient` calls | In progress |
-| 3 | `MandateService`, `MandateScheduler` and its worker jobs, mandate and notification webhooks, the merchant's `mandate_debit_limit` | In progress |
-| 4 | Mock PSP ([LLD §18.8](low-level-design.md#188-mock-psp)): mandates and notifications, the six SPI operations, mandate webhooks, simulator endpoints, capabilities of both mock providers | |
-| 5 | `MandateController`: the seven endpoints of [LLD §18.2](low-level-design.md#182-merchant-api), POSTs with an `Idempotency-Key` | |
-| 6 | `openapi.yaml`: paths and schemas, the six `mandate.*` events, `mandate_id` on payments, the three new error codes | |
-| 7 | Tests: state machine unit tests; UPI AutoPay, card and eNACH end to end; limits; one debit in progress; revocation by webhook; retries; failed notifications; idempotency; database rules (NFR-19); mutation checks. Then commit and push on a green build | |
-| 8 | Razorpay mandate adapter ([LLD §18.9](low-level-design.md#189-razorpay-mapping)): tests against its stub, and a sandbox test skipped without keys | |
-| 9 | Docs: README API table, runbooks for any new alert, LLD notes on decisions made while coding, progress and changelog | |
+| 2 | Schema (`V14__mandates.sql`), domain (`Mandate`, `MandateDebit`, mandate payments), repositories, provider SPI and `ProviderClient` calls | Done |
+| 3 | `MandateService`, `MandateScheduler` and its worker jobs, mandate and notification webhooks, the merchant's `mandate_debit_limit` | Done |
+| 4 | Mock PSP ([LLD §18.8](low-level-design.md#188-mock-psp)): mandates and notifications, the six SPI operations, mandate webhooks, simulator endpoints, capabilities of both mock providers | Done |
+| 5 | `MandateController`: the seven endpoints of [LLD §18.2](low-level-design.md#182-merchant-api), POSTs with an `Idempotency-Key` | Done |
+| 6 | `openapi.yaml`: paths and schemas, the six `mandate.*` events, `mandate_id` on payments, the three new error codes | Done |
+| 7 | Tests: state machine unit tests; UPI AutoPay, card and eNACH end to end; limits; one debit in progress; revocation by webhook; retries; failed notifications; idempotency; database rules (NFR-19); mutation checks. Then commit and push on a green build | Done: 70 mutants, all killed (one first survived and got a stronger test) |
+| 8 | Razorpay mandate adapter ([LLD §18.9](low-level-design.md#189-razorpay-mapping)): tests against its stub, and a sandbox test skipped without keys | Done |
+| 9 | Docs: README API table, runbooks for any new alert, LLD notes on decisions made while coding, progress and changelog | Done (no new alerts) |
 
 ## Changelog
 
@@ -106,3 +106,4 @@ No partial credit: the phase's 3 units count when all nine steps are done. Steps
 | 2026-10-06 | Plan drafted: V1 baseline, close-out C1–C3, V2 phases 18–28 ([ADR-034](decisions/ADR-034-post-v1-scope.md)) | 22 of 38.5 units (57%) |
 | 2026-10-06 | ADR-034 accepted; phase 18 started with its design ([ADR-035](decisions/ADR-035-mandates.md)) | 22 of 38.5 units (57%) |
 | 2026-10-07 | Phase 18 split into steps and the order of the remaining work recorded; [LLD §18.5](low-level-design.md#185-debit-cycle) gains the defaults for paused mandates and open circuits | 22 of 38.5 units (57%) |
+| 2026-10-07 | Phase 18 done: mandates and debits on the mock PSP and the Razorpay adapter, NFR-19 enforced in the database. Decided while building ([LLD §18](low-level-design.md#18-recurring-payments-and-mandates-phase-18-adr-035)): the authorization window ends only registrations the customer has not acted on; a failed debit has its mandate checked at the PSP. Also fixed: merchants without a webhook URL could not change other settings | 25 of 38.5 units (65%) |

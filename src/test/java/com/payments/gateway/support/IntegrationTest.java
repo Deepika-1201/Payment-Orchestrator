@@ -109,7 +109,7 @@ public abstract class IntegrationTest {
                          payment_transitions, idempotency_records, provider_webhook_events, merchant_events,
                          webhook_deliveries, routing_rules, audit_log, ledger_entries, ledger_transactions,
                          ledger_accounts, reconciliation_lines, reconciliation_exceptions, reconciliation_runs,
-                         checkout_sessions
+                         checkout_sessions, mandates, mandate_debits, mandate_transitions
                          RESTART IDENTITY CASCADE
                 """).update();
         clock.set(Instant.now());

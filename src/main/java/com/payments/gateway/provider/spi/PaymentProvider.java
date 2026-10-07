@@ -1,5 +1,10 @@
 package com.payments.gateway.provider.spi;
 
+import com.payments.gateway.provider.spi.MandateRequests.CreateMandateRequest;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationQuery;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationRequest;
+import com.payments.gateway.provider.spi.MandateRequests.ExecuteDebitRequest;
+import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
@@ -57,5 +62,33 @@ public interface PaymentProvider {
      */
     default Duration settlementLag() {
         return Duration.ZERO;
+    }
+
+    // Mandate operations (ADR-035): only called for instruments in capabilities().mandates().
+
+    default ProviderMandateResult createMandate(MerchantAccount account, CreateMandateRequest request) {
+        throw new UnsupportedOperationException(code() + " does not support mandates");
+    }
+
+    default ProviderMandateResult fetchMandate(MerchantAccount account, MandateQuery query) {
+        throw new UnsupportedOperationException(code() + " does not support mandates");
+    }
+
+    /** Cancels the registration, or the mandate once authorized. {@code PENDING} means the PSP is still cancelling. */
+    default ProviderMandateResult revokeMandate(MerchantAccount account, MandateQuery query) {
+        throw new UnsupportedOperationException(code() + " does not support mandates");
+    }
+
+    default ProviderNotificationResult notifyDebit(MerchantAccount account, DebitNotificationRequest request) {
+        throw new UnsupportedOperationException(code() + " does not support mandates");
+    }
+
+    default ProviderNotificationResult fetchDebitNotification(MerchantAccount account, DebitNotificationQuery query) {
+        throw new UnsupportedOperationException(code() + " does not support mandates");
+    }
+
+    /** Debits an active mandate; the outcome usually arrives later (webhook or {@link #fetchPaymentStatus}). */
+    default ProviderPaymentResult executeDebit(MerchantAccount account, ExecuteDebitRequest request) {
+        throw new UnsupportedOperationException(code() + " does not support mandates");
     }
 }

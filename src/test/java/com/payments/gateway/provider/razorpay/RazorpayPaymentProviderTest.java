@@ -73,7 +73,7 @@ class RazorpayPaymentProviderTest {
 
     private RazorpayPaymentProvider provider(boolean upiS2s, Duration readTimeout) {
         RazorpayProperties properties = new RazorpayProperties(true, stub.baseUrl(), upiS2s, Duration.ofMinutes(15),
-                Duration.ofDays(5));
+                Duration.ofDays(5), false);
         return new RazorpayPaymentProvider(properties,
                 new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), readTimeout, "rzp_test_", json), Clock.fixed(NOW, ZoneOffset.UTC));
     }
@@ -301,7 +301,7 @@ class RazorpayPaymentProviderTest {
 
         RazorpayPaymentProvider unreachable = new RazorpayPaymentProvider(
                 new RazorpayProperties(true, java.net.URI.create("http://127.0.0.1:1/v1"), true, Duration.ofMinutes(15),
-                        Duration.ofDays(5)),
+                        Duration.ofDays(5), false),
                 new RazorpayApi(java.net.URI.create("http://127.0.0.1:1/v1"), Duration.ofSeconds(1), Duration.ofSeconds(1), "rzp_test_", json),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         assertThatThrownBy(() -> unreachable.initiatePayment(ACCOUNT, request(PaymentMethod.upi(UpiFlow.INTENT, null))))

@@ -1,9 +1,16 @@
 package com.payments.gateway.provider;
 
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.MandateRequests.CreateMandateRequest;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationQuery;
+import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationRequest;
+import com.payments.gateway.provider.spi.MandateRequests.ExecuteDebitRequest;
+import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
+import com.payments.gateway.provider.spi.ProviderMandateResult;
+import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
@@ -89,6 +96,32 @@ public class ProviderClient {
 
     public ProviderRefundResult fetchRefundStatus(String merchantId, String providerCode, RefundStatusQuery query) {
         return call(merchantId, providerCode, "refund_status", (provider, account) -> provider.fetchRefundStatus(account, query));
+    }
+
+    public ProviderMandateResult createMandate(String merchantId, String providerCode, CreateMandateRequest request) {
+        return call(merchantId, providerCode, "mandate_create", (provider, account) -> provider.createMandate(account, request));
+    }
+
+    public ProviderMandateResult fetchMandate(String merchantId, String providerCode, MandateQuery query) {
+        return call(merchantId, providerCode, "mandate_status", (provider, account) -> provider.fetchMandate(account, query));
+    }
+
+    public ProviderMandateResult revokeMandate(String merchantId, String providerCode, MandateQuery query) {
+        return call(merchantId, providerCode, "mandate_revoke", (provider, account) -> provider.revokeMandate(account, query));
+    }
+
+    public ProviderNotificationResult notifyDebit(String merchantId, String providerCode, DebitNotificationRequest request) {
+        return call(merchantId, providerCode, "debit_notify", (provider, account) -> provider.notifyDebit(account, request));
+    }
+
+    public ProviderNotificationResult fetchDebitNotification(String merchantId, String providerCode,
+                                                             DebitNotificationQuery query) {
+        return call(merchantId, providerCode, "debit_notification_status",
+                (provider, account) -> provider.fetchDebitNotification(account, query));
+    }
+
+    public ProviderPaymentResult executeDebit(String merchantId, String providerCode, ExecuteDebitRequest request) {
+        return call(merchantId, providerCode, "debit_execute", (provider, account) -> provider.executeDebit(account, request));
     }
 
     /**

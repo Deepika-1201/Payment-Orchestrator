@@ -68,8 +68,14 @@ public final class PaymentAttempt {
 
     static PaymentAttempt initiate(String id, String paymentId, String merchantId, int attemptNumber, String providerCode,
                                    PaymentMethod method, Money amount, String routingRuleId, Instant now) {
+        return initiate(id, paymentId, merchantId, attemptNumber, providerCode, method, amount, routingRuleId, null, now);
+    }
+
+    static PaymentAttempt initiate(String id, String paymentId, String merchantId, int attemptNumber, String providerCode,
+                                   PaymentMethod method, Money amount, String routingRuleId, String providerReference,
+                                   Instant now) {
         return new PaymentAttempt(new AttemptSnapshot(id, paymentId, merchantId, attemptNumber, providerCode, method,
-                amount, AttemptStatus.INITIATED, null, null, null, null, routingRuleId, null, null, false,
+                amount, AttemptStatus.INITIATED, providerReference, null, null, null, routingRuleId, null, null, false,
                 now.plus(INITIATED_CHECK_DELAY), 0, Review.NONE, null, 0, now, now), true);
     }
 

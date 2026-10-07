@@ -1,6 +1,7 @@
 package com.payments.gateway.provider.mock;
 
 import com.payments.gateway.shared.Ids;
+import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.PaymentMethod;
 import java.time.Instant;
@@ -149,6 +150,145 @@ public final class MockPsp {
                             RefundState state, Instant createdAt) {
     }
 
+    public enum MandateState {
+        PENDING,
+        CONFIRMING,
+        ACTIVE,
+        PAUSED,
+        REVOKED,
+        REJECTED
+    }
+
+    /** A mandate registration; once the customer authorizes it, the mandate itself (token or UMRN). */
+    public static final class MandateTxn {
+        private final String reference;
+        private final String merchantId;
+        private final String accountId;
+        private final String webhookSecret;
+        private final String merchantReference;
+        private final MandateInstrument instrument;
+        private final Money maxAmount;
+        private final String customerReference;
+        private final Txn registration;
+        private final String returnUrl;
+        private MandateState state = MandateState.PENDING;
+        private String mandateReference;
+
+        MandateTxn(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
+                   MandateInstrument instrument, Money maxAmount, String customerReference, Txn registration,
+                   String returnUrl) {
+            this.reference = reference;
+            this.merchantId = merchantId;
+            this.accountId = accountId;
+            this.webhookSecret = webhookSecret;
+            this.merchantReference = merchantReference;
+            this.instrument = instrument;
+            this.maxAmount = maxAmount;
+            this.customerReference = customerReference;
+            this.registration = registration;
+            this.returnUrl = returnUrl;
+        }
+
+        public String reference() {
+            return reference;
+        }
+
+        public String merchantId() {
+            return merchantId;
+        }
+
+        public String accountId() {
+            return accountId;
+        }
+
+        public String webhookSecret() {
+            return webhookSecret;
+        }
+
+        /** Our mandate id. */
+        public String merchantReference() {
+            return merchantReference;
+        }
+
+        public MandateInstrument instrument() {
+            return instrument;
+        }
+
+        public Money maxAmount() {
+            return maxAmount;
+        }
+
+        public String customerReference() {
+            return customerReference;
+        }
+
+        /** The authorization charge, or null for instruments registered without one (eNACH). */
+        public Txn registration() {
+            return registration;
+        }
+
+        public String returnUrl() {
+            return returnUrl;
+        }
+
+        public synchronized MandateState state() {
+            return state;
+        }
+
+        public synchronized String mandateReference() {
+            return mandateReference;
+        }
+
+        /** The customer approves or rejects the registration; returns false if it is no longer pending. */
+        synchronized boolean authorize(boolean approve, String newMandateReference) {
+            if (state != MandateState.PENDING) {
+                return false;
+            }
+            state = approve ? MandateState.ACTIVE : MandateState.REJECTED;
+            mandateReference = approve ? newMandateReference : null;
+            return true;
+        }
+
+        /** The customer approved; the bank has yet to confirm. */
+        synchronized boolean awaitConfirmation() {
+            if (state != MandateState.PENDING) {
+                return false;
+            }
+            state = MandateState.CONFIRMING;
+            return true;
+        }
+
+        /** The bank confirms a registration the customer approved. */
+        synchronized boolean confirm(String newMandateReference) {
+            if (state != MandateState.CONFIRMING) {
+                return false;
+            }
+            state = MandateState.ACTIVE;
+            mandateReference = newMandateReference;
+            return true;
+        }
+
+        /** Pause, resume or revoke, as the customer's UPI or bank app would; returns false if not allowed. */
+        synchronized boolean moveTo(MandateState target) {
+            boolean allowed = switch (target) {
+                case PAUSED -> state == MandateState.ACTIVE;
+                case ACTIVE -> state == MandateState.PAUSED;
+                case REVOKED -> state == MandateState.PENDING || state == MandateState.CONFIRMING
+                        || state == MandateState.ACTIVE || state == MandateState.PAUSED;
+                default -> false;
+            };
+            if (allowed) {
+                state = target;
+            }
+            return allowed;
+        }
+    }
+
+    /** A pre-debit notification; {@code delivered} is false when the scenario makes it fail. */
+    public record Notification(String reference, String notificationId, String mandateReference, String accountId,
+                               String webhookSecret, Money amount, boolean delivered, Instant requestedAt) {
+    }
+
     public enum DisputeState {
         OPEN,
         UNDER_REVIEW,
@@ -223,6 +363,10 @@ public final class MockPsp {
     private final ConcurrentMap<String, String> transactionsByMerchantRef = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, RefundTxn> refunds = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, String> refundsByMerchantRef = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, MandateTxn> mandates = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> mandatesByMerchantRef = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Notification> notifications = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> notificationsById = new ConcurrentHashMap<>();
     private final List<Txn> orphanCaptures = new CopyOnWriteArrayList<>();
     private final Set<String> droppedFromReport = ConcurrentHashMap.newKeySet();
     private final Set<String> duplicatedInReport = ConcurrentHashMap.newKeySet();
@@ -276,6 +420,50 @@ public final class MockPsp {
             String ref = refundsByMerchantRef.get(merchantReference);
             if (ref != null) {
                 return Optional.ofNullable(refunds.get(ref));
+            }
+        }
+        return Optional.empty();
+    }
+
+    MandateTxn saveMandate(MandateTxn mandate) {
+        String existing = mandatesByMerchantRef.putIfAbsent(mandate.merchantReference(), mandate.reference());
+        if (existing != null) {
+            return mandates.get(existing);
+        }
+        mandates.put(mandate.reference(), mandate);
+        return mandate;
+    }
+
+    public Optional<MandateTxn> findMandate(String reference, String merchantReference) {
+        if (reference != null && mandates.containsKey(reference)) {
+            return Optional.of(mandates.get(reference));
+        }
+        if (merchantReference != null) {
+            String ref = mandatesByMerchantRef.get(merchantReference);
+            if (ref != null) {
+                return Optional.ofNullable(mandates.get(ref));
+            }
+        }
+        return Optional.empty();
+    }
+
+    Notification saveNotification(Notification notification) {
+        String existing = notificationsById.putIfAbsent(notification.notificationId(), notification.reference());
+        if (existing != null) {
+            return notifications.get(existing);
+        }
+        notifications.put(notification.reference(), notification);
+        return notification;
+    }
+
+    public Optional<Notification> findNotification(String reference, String notificationId) {
+        if (reference != null && notifications.containsKey(reference)) {
+            return Optional.of(notifications.get(reference));
+        }
+        if (notificationId != null) {
+            String ref = notificationsById.get(notificationId);
+            if (ref != null) {
+                return Optional.ofNullable(notifications.get(ref));
             }
         }
         return Optional.empty();

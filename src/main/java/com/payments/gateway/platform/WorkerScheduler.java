@@ -1,6 +1,7 @@
 package com.payments.gateway.platform;
 
 import com.payments.gateway.payment.application.ExpiryJob;
+import com.payments.gateway.payment.application.MandateScheduler;
 import com.payments.gateway.payment.application.StatusResolver;
 import com.payments.gateway.reconciliation.ReconciliationService;
 import com.payments.gateway.webhook.inbound.ProviderWebhookService;
@@ -25,16 +26,18 @@ public class WorkerScheduler {
     private final WebhookDeliveryWorker deliveries;
     private final ReconciliationService reconciliation;
     private final RetentionJob retention;
+    private final MandateScheduler mandates;
 
     public WorkerScheduler(StatusResolver statusResolver, ExpiryJob expiryJob, ProviderWebhookService inbox,
                            WebhookDeliveryWorker deliveries, ReconciliationService reconciliation,
-                           RetentionJob retention) {
+                           RetentionJob retention, MandateScheduler mandates) {
         this.statusResolver = statusResolver;
         this.expiryJob = expiryJob;
         this.inbox = inbox;
         this.deliveries = deliveries;
         this.reconciliation = reconciliation;
         this.retention = retention;
+        this.mandates = mandates;
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
@@ -53,6 +56,12 @@ public class WorkerScheduler {
     @Scheduled(fixedDelay = 5, timeUnit = TimeUnit.SECONDS)
     void inboxRetries() {
         run("inbox-retries", inbox::processDue);
+    }
+
+    @Scheduled(fixedDelay = 5, timeUnit = TimeUnit.SECONDS)
+    void mandates() {
+        run("mandates", mandates::processDueMandates);
+        run("mandate-debits", mandates::processDueDebits);
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
