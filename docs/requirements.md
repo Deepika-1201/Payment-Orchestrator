@@ -179,8 +179,8 @@ The V2 scope accepted in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased i
 
 ### 8.4 Bank transfers and virtual accounts (phase 21)
 - **FR-VA1** A payment can be paid by bank transfer (NEFT, RTGS, IMPS) or UPI to a virtual account or VPA that a PSP issues for it. `next_action` carries the account details.
-- **FR-VA2** Credits are matched to the payment by virtual account, and an exact amount pays it. Defaults, configurable per merchant **(assumed)**: several credits add up; a payment still short at expiry is refunded; an excess is refunded.
-- **FR-VA3** A credit to an expired or unknown virtual account is refunded to its source, or queued for review if that fails. Reconciliation matches credits against settlement reports (FR-RC2).
+- **FR-VA2** Credits are matched to the payment by virtual account, and an exact amount pays it. Defaults, configurable per merchant **(assumed)**: several credits add up; a payment still short at expiry is refunded. A merchant may instead accept only exact credits, and accept a short payment at expiry for what arrived. An excess is always refunded ([ADR-038](decisions/ADR-038-bank-transfers.md)).
+- **FR-VA3** A credit to an expired virtual account is refunded to its source, or queued for review if that fails. A credit to an account the gateway cannot place is queued for review. Reconciliation matches credits against settlement reports (FR-RC2).
 
 ### 8.5 Dispute evidence (phase 22)
 - **FR-D2** A merchant submits evidence (documents and a statement) for an open dispute through the API, or accepts the dispute. The gateway forwards it to the PSP where the PSP supports it, and tracks the submission and the PSP's deadline.

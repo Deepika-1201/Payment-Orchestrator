@@ -1258,3 +1258,89 @@ Amount ranges **(assumed)**, the same for every PSP above: wallets and pay later
 - `payment_attempts.method_type` accepts `WALLET`, `EMI`, `CARDLESS_EMI` and `PAY_LATER`. The provider is part of `method_details`.
 - New columns `emi_tenure_months`, `emi_interest_rate_bps` and `emi_issuer`, with `CHECK (CASE WHEN emi_tenure_months IS NULL THEN emi_interest_rate_bps IS NULL AND emi_issuer IS NULL ELSE coalesce(card_network IS NOT NULL AND emi_tenure_months BETWEEN 1 AND 120 AND (emi_interest_rate_bps IS NULL OR emi_interest_rate_bps BETWEEN 0 AND 10000), false) END)`.
 
+## 21. Bank transfers and virtual accounts (phase 21, ADR-038)
+
+Requirements: [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21). The customer pushes money to an account the PSP issued for the attempt. Each transfer that arrives is a **credit**; the gateway decides how much of it pays the payment and sends the rest back.
+
+### 21.1 Merchant API
+
+- **Confirm** with `payment_method: {type: bank_transfer}`. Routing needs a PSP that declares `BANK_TRANSFER`, and capture is automatic only. NEFT can take hours, so merchants create these payments with a longer `expires_in_seconds` (up to 24 h).
+- **Next action** `{type: bank_transfer, bank_transfer: {account_number, ifsc, beneficiary_name, bank_name, vpa}, expires_at}`; `vpa` only where the PSP issued a UPI ID. The payment stays `requires_action` until it is funded.
+- **Credits** `GET /v1/payments/{id}/credits` → `{data: [credit]}`. A credit has `id`, `payment_id`, `amount`, `currency`, `mode` (`neft`, `rtgs`, `imps` or `upi`, null when unknown), `utr`, `received_at`, `applied_amount`, `returned_amount` and `return_id` (the refund sending it back).
+- **Refunds** gain `credit_id`. Returns have `initiated_by: system_credit_return` and the `reason` `excess`, `inexact`, `late` or `short_at_expiry`.
+- **Settings** (admin, `PATCH /admin/v1/merchants/{id}`): `bank_transfer_credits` (`add_up` or `exact`) and `bank_transfer_short_at_expiry` (`refund` or `accept`).
+
+### 21.2 Credits and allocation
+
+A credit is recorded once per PSP id (`transfer_credits`, unique per provider), whether a webhook or a status check reports it first; later reports change nothing. It is placed on an attempt by the account's reference (the attempt's provider reference), else by the attempt id the PSP echoes back. Placement and allocation run under the payment's lock; a credit's ledger posting (§21.5) commits with it.
+
+The attempt **awaits the transfer** while it is the latest attempt, both it and the payment are `requires_action`, and the payment has not reached `expires_at`.
+
+| Situation | Applied | Sent back (reason) |
+|---|---|---|
+| Awaiting, `add_up` | up to the outstanding amount | the rest (`excess`) |
+| Awaiting, `exact`, the credit equals the amount | all | — |
+| Awaiting, `exact`, any other credit | nothing | all (`inexact`) |
+| Not awaiting: succeeded, expired, failed, cancelled, or not the latest attempt | nothing | all (`late`) |
+| No attempt can be found | nothing | nothing; queued for review (`unmatched_credit`) |
+
+When the applied credits reach the amount, the attempt succeeds with the amount as its reported amount, and the payment succeeds. After commit the gateway closes the account at the PSP (best effort; the PSP closes it at expiry anyway).
+
+### 21.3 Waiting and expiry
+
+- **Status checks** of an awaiting attempt fetch the account's credits instead of a status, on the usual backoff (§10). Webhooks are the main path; polling recovers lost ones.
+- **Expiry.** For a `requires_action` payment with a bank transfer attempt, the expiry job first fetches the account's credits (best effort), then decides under the lock:
+  - credits applied and `accept`: the attempt succeeds for what arrived (capture amount = applied total, ADR-036), so the payment succeeds with `amount_captured` below `amount`;
+  - otherwise the payment expires, the attempt fails (`transfer_not_completed`, category `customer`) and each applied credit is sent back (`short_at_expiry`).
+- After commit the account is closed at the PSP.
+
+### 21.4 Returns and merchant refunds
+
+- **Returns.** Sending a credit back creates a refund with `credit_id`, created in the allocation's transaction and submitted after commit, against the credit's PSP payment. A return does not change the payment's `amount_refunded` and is not part of its refundable amount. It is listed with the payment's refunds and sends the usual `refund.*` events. A credit is sent back at most once: an excess only arises when the payment is funded, so its applied part never comes back.
+- **A return that fails** is queued for review (`credit_return_failed`): the customer's money is still at the PSP.
+- **Merchant refunds** of a transfer-paid payment go against one credit, the oldest whose applied amount, less the merchant's refunds against it that are not failed, covers the refund. Otherwise 422 `amount_exceeds_refundable`, naming the largest amount one refund can take.
+
+### 21.5 Ledger
+
+| Event | Debit | Credit |
+|---|---|---|
+| Credit recorded (`credit_received`, reference `CREDIT`) | `psp_receivable` | `customer_funds` |
+| Payment funded by credits (`credit_applied`, reference `ATTEMPT`), in place of `payment_captured` | `customer_funds` | `sales_clearing` |
+| Return succeeded (`credit_returned`, reference `REFUND`), in place of `refund_succeeded` | `customer_funds` | `psp_receivable` |
+
+`customer_funds` (normal side credit) holds credits applied to payments still awaiting a transfer, returns in flight and unmatched credits. It is zero when every credit has been applied or sent back.
+
+### 21.6 Reconciliation
+
+- A payment line whose PSP reference names no attempt is looked up among the credits. Its amount must equal the credit's; a recorded credit needs no healing.
+- Missing at provider: the credits received in the window are expected lines. Bank transfer attempts are not, as the PSP never reports them.
+- Returns are refunds and match as such.
+
+### 21.7 Provider SPI
+
+- `MethodType.BANK_TRANSFER`. `NextAction.bankTransfer(BankTransferDetails, expiresAt)` with `BankTransferDetails(accountNumber, ifsc, beneficiaryName, bankName, vpa)` in the shared model. `InitiatePaymentRequest` gains `expiresAt`.
+- `ProviderCredit(providerReference, collectionReference, merchantReference, amount, mode, utr, receivedAt)`, reported by `ProviderEvent` kind `CREDIT`.
+- `fetchCredits(account, CreditsQuery(attemptId, collectionReference))` lists an account's credits; `closeCollection(account, CloseCollectionRequest(attemptId, collectionReference))` closes it. Both are required of PSPs that declare `BANK_TRANSFER`.
+
+### 21.8 Mock PSP
+
+- **Accounts.** `MOCK_ALPHA` declares `BANK_TRANSFER` for ₹1 to ₹1 crore. An account has a 14-digit number, IFSC `MOCK0000001`, beneficiary `Mock Collections`, bank `Mock Bank` and the UPI ID `pay.<number>@mockbank`. Amount suffixes 01 and 05 select the confirm timeouts as for other methods (§5).
+- **Credits.** `POST /simulator/{provider}/collections/{reference}/credits {amount, mode, webhook}` credits an account (`mode` defaults to `neft`; `webhook: false` leaves it to the status check); an unknown reference is 404. `POST /simulator/{provider}/collections {merchant_id}` opens an account outside the gateway, for unmatched credits.
+- **Behaviour.** Each credit is a captured mock payment without a merchant reference, so refunds and settlement report lines work as for any payment. Webhook type `collection.credited`. Closed accounts still accept credits.
+
+### 21.9 Razorpay mapping
+
+- **Create.** `POST /v1/virtual_accounts {receivers: {types: [bank_account]}, description, close_by, notes: {pg_attempt_id}}`, with `close_by` the payment's expiry, at least 16 minutes ahead. `receivers[0]` gives the next action.
+- **Timeouts.** A virtual account cannot be searched by our id, so an attempt whose create timed out is resolved as not submitted. An account that was created anyway closes by itself, and its credits are placed through `notes.pg_attempt_id` as late.
+- **Credits.** The `virtual_account.credited` webhook gives the payment, the account (with its notes) and the `bank_transfer` (mode, `bank_reference`) or `upi_transfer` (`rrn`, mode UPI). Polling uses `GET /v1/virtual_accounts/{id}/payments?count=100`, which gives neither mode nor UTR.
+- **Close.** `POST /v1/virtual_accounts/{id}/close`; an account already closed is fine.
+- **Returns and refunds** use `POST /v1/payments/{id}/refund` on the credit's payment; references starting with `pay_` are used as they are.
+
+### 21.10 Schema (`V17__bank_transfers.sql`)
+
+- `payment_attempts.method_type` accepts `BANK_TRANSFER`.
+- `transfer_credits`: `id`, `merchant_id`, `provider_code`, `provider_reference` (unique per provider), `collection_reference`, `attempt_id` and `payment_id` (null when unmatched), `amount`, `currency`, `mode`, `utr`, `received_at`, `applied_amount`, `returned_amount`, `return_refund_id`, the review columns, `version` and timestamps. Checks: `applied_amount + returned_amount <= amount`; an unmatched credit has nothing applied or returned.
+- `refunds.credit_id` references `transfer_credits`; `initiated_by` accepts `SYSTEM_CREDIT_RETURN`, which requires a `credit_id`.
+- `merchants.bank_transfer_credits` (`ADD_UP` or `EXACT`) and `merchants.bank_transfer_short_at_expiry` (`REFUND` or `ACCEPT`).
+- Ledger: account type `CUSTOMER_FUNDS`; transaction types `CREDIT_RECEIVED`, `CREDIT_APPLIED` and `CREDIT_RETURNED`; reference type `CREDIT`.
+

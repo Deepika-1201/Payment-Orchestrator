@@ -114,6 +114,22 @@ No partial credit: the phase's 1.5 units count when all steps are done.
 | 7 | Tests: each method end to end on the mock PSP and through the Razorpay stub, routing by provider, checkout, contract, database rules; mutation checks; `payment/domain` unchanged. Then commit and push on a green build | Done: 29 mutants, 28 killed (one first survived and got a stronger test) and 1 equivalent: the Razorpay guard that skips a missing plan, which validation would refuse anyway |
 | 8 | Docs: README, progress and changelog | Done |
 
+### Phase 21 steps
+
+No partial credit: the phase's 1.5 units count when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-038](decisions/ADR-038-bank-transfers.md), [LLD §21](low-level-design.md#21-bank-transfers-and-virtual-accounts-phase-21-adr-038), [requirements §8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) refined | Done |
+| 2 | Model, SPI and schema V17: `BANK_TRANSFER`, bank details in the next action, provider credits, `transfer_credits`, refunds against credits, merchant settings, ledger types | |
+| 3 | Allocation and expiry ([LLD §21.2](low-level-design.md#212-credits-and-allocation), [§21.3](low-level-design.md#213-waiting-and-expiry)): recording, allocation under the payment lock, returns, polling, accepting a short payment, closing the account | |
+| 4 | Refunds, review, ledger and reconciliation ([§21.4](low-level-design.md#214-returns-and-merchant-refunds) to [§21.6](low-level-design.md#216-reconciliation)) | |
+| 5 | Merchant API and `openapi.yaml`: confirm, next action, credits, refund fields; admin settings | |
+| 6 | Mock PSP and simulator ([§21.8](low-level-design.md#218-mock-psp)) | |
+| 7 | Razorpay Smart Collect ([§21.9](low-level-design.md#219-razorpay-mapping)) with stub tests | |
+| 8 | Tests: exact, short (refund and accept), excess, exact-only, late, repeated and unmatched credits end to end; polling; returns that fail; merchant refunds; ledger; reconciliation; database rules; mutation checks. Then commit and push on a green build | |
+| 9 | Docs: README, runbooks if an alert changes, progress and changelog | |
+
 ## Changelog
 
 | Date | Change | Progress |
