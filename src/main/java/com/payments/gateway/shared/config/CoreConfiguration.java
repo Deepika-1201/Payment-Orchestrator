@@ -1,5 +1,6 @@
 package com.payments.gateway.shared.config;
 
+import com.payments.gateway.shared.crypto.BlobCipher;
 import com.payments.gateway.shared.crypto.SecretCipher;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.net.UrlSafetyValidator;
@@ -61,6 +62,11 @@ public class CoreConfiguration {
     }
 
     @Bean
+    BlobCipher blobCipher(SecretCipher secretCipher) {
+        return new BlobCipher(secretCipher);
+    }
+
+    @Bean
     UrlSafetyValidator urlSafetyValidator(OutboundWebhookProperties properties) {
         return new UrlSafetyValidator(properties.requireHttps(), properties.allowPrivateTargets());
     }
@@ -76,9 +82,10 @@ public class CoreConfiguration {
     /** Before authentication, so oversized bodies are refused without any lookup. */
     @Bean
     FilterRegistrationBean<ApiSecurityFilter> apiSecurityFilter(JsonCodec json,
-            @Value("${pg.api.max-request-body:256KB}") DataSize maxRequestBody) {
-        FilterRegistrationBean<ApiSecurityFilter> registration =
-                new FilterRegistrationBean<>(new ApiSecurityFilter(maxRequestBody.toBytes(), json));
+            @Value("${pg.api.max-request-body:256KB}") DataSize maxRequestBody,
+            @Value("${pg.api.max-evidence-request-body:7MB}") DataSize maxEvidenceRequestBody) {
+        FilterRegistrationBean<ApiSecurityFilter> registration = new FilterRegistrationBean<>(new ApiSecurityFilter(
+                maxRequestBody.toBytes(), ApiSecurityFilter.EVIDENCE_UPLOAD, maxEvidenceRequestBody.toBytes(), json));
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 15);
         registration.addUrlPatterns("/v1/*", "/admin/*");
         return registration;

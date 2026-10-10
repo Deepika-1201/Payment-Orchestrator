@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -23,6 +24,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class ApiSecurityFilter extends OncePerRequestFilter {
 
     public static final String HSTS = "max-age=31536000; includeSubDomains";
+    /** Dispute evidence uploads carry a file, so they get their own body limit (ADR-039). */
+    public static final Pattern EVIDENCE_UPLOAD = Pattern.compile("/v1/disputes/[^/]+/evidence_files");
 
     /** Thrown while reading a chunked body that grows past the limit. */
     public static final class PayloadTooLargeException extends IOException {
@@ -35,10 +38,19 @@ public class ApiSecurityFilter extends OncePerRequestFilter {
     }
 
     private final long maxBodyBytes;
+    private final Pattern largeBodyPath;
+    private final long largeBodyBytes;
     private final JsonCodec json;
 
     public ApiSecurityFilter(long maxBodyBytes, JsonCodec json) {
+        this(maxBodyBytes, Pattern.compile("(?!)"), maxBodyBytes, json);
+    }
+
+    /** {@code largeBodyPath}: requests to these paths may send up to {@code largeBodyBytes} instead. */
+    public ApiSecurityFilter(long maxBodyBytes, Pattern largeBodyPath, long largeBodyBytes, JsonCodec json) {
         this.maxBodyBytes = maxBodyBytes;
+        this.largeBodyPath = largeBodyPath;
+        this.largeBodyBytes = largeBodyBytes;
         this.json = json;
     }
 
@@ -53,13 +65,14 @@ public class ApiSecurityFilter extends OncePerRequestFilter {
         if (request.isSecure()) {
             response.setHeader("Strict-Transport-Security", HSTS);
         }
+        long limit = largeBodyPath.matcher(request.getRequestURI()).matches() ? largeBodyBytes : maxBodyBytes;
         long declared = request.getContentLengthLong();
-        if (declared > maxBodyBytes) {
+        if (declared > limit) {
             ProblemResponses.write(response, json, ErrorCode.PAYLOAD_TOO_LARGE,
-                    "Request bodies are limited to " + maxBodyBytes + " bytes");
+                    "Request bodies are limited to " + limit + " bytes");
             return;
         }
-        chain.doFilter(declared >= 0 ? request : new LimitedRequest(request, maxBodyBytes), response);
+        chain.doFilter(declared >= 0 ? request : new LimitedRequest(request, limit), response);
     }
 
     private static final class LimitedRequest extends HttpServletRequestWrapper {

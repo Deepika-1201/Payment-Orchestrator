@@ -333,10 +333,7 @@ paths:
       operationId: getDispute
       summary: Retrieve a dispute
       parameters:
-        - name: dispute_id
-          in: path
-          required: true
-          schema: {type: string, pattern: '^dsp_'}
+        - $ref: '#/components/parameters/DisputeId'
         - $ref: '#/components/parameters/RequestId'
       responses:
         '200':
@@ -348,6 +345,152 @@ paths:
               schema: {$ref: '#/components/schemas/Dispute'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/disputes/{dispute_id}/evidence_files:
+    post:
+      tags: [Disputes]
+      operationId: uploadDisputeEvidence
+      summary: Upload an evidence file for a dispute
+      description: |
+        Stores one file, encrypted, for a later contest. PDF, JPEG or PNG, up to 5 MB and 10 files per dispute; the
+        type is checked against the file's first bytes. Files are only ever sent on to the PSP, never served back.
+        Accepted while the dispute can still be answered (`409 dispute_invalid_state` otherwise), on PSPs that take
+        dispute responses (`422 dispute_response_unsupported` otherwise). Bodies on this path may be up to 7 MB.
+      parameters:
+        - $ref: '#/components/parameters/DisputeId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UploadEvidenceFileRequest'}
+            example:
+              category: shipping_proof
+              file_name: courier-receipt.pdf
+              content_type: application/pdf
+              content_base64: JVBERi0xLjcKJcfsj6IK
+      responses:
+        '201':
+          description: The stored file (or the original response replayed).
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EvidenceFile'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+    get:
+      tags: [Disputes]
+      operationId: listDisputeEvidence
+      summary: List the evidence files uploaded for a dispute
+      parameters:
+        - $ref: '#/components/parameters/DisputeId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Files, oldest first.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EvidenceFileList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/disputes/{dispute_id}/contest:
+    post:
+      tags: [Disputes]
+      operationId: contestDispute
+      summary: Contest a dispute with evidence
+      description: |
+        Sends the statement and the chosen evidence files to the PSP, which then reviews the dispute. One response
+        per dispute, while it is `open` and before `respond_by` (`409 dispute_invalid_state` otherwise); a response
+        that `failed` can be replaced. `200` when the PSP took it at once; `202` while the gateway is still
+        delivering it (it retries until `respond_by`; follow `response.status`, or the `dispute.updated` and
+        `dispute.response_failed` events).
+      parameters:
+        - $ref: '#/components/parameters/DisputeId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ContestDisputeRequest'}
+            example:
+              statement: The order was delivered on 2 October; the signed courier receipt is attached.
+              evidence_file_ids: [dsf_01K5Z9V4J6Q2X8N3M7B1C0D4E5]
+      responses:
+        '200':
+          description: The PSP took the contest.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dispute'}
+        '202':
+          description: Recorded; delivery to the PSP continues (`response.status` is `pending`), or it already failed.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dispute'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
+  /v1/disputes/{dispute_id}/accept:
+    post:
+      tags: [Disputes]
+      operationId: acceptDispute
+      summary: Accept a dispute
+      description: |
+        Tells the PSP you will not contest; the dispute becomes `lost`. This cannot be undone. The disputed amount was
+        withheld when the dispute opened and stays with the customer. Same rules and status codes as a contest.
+      parameters:
+        - $ref: '#/components/parameters/DisputeId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: The PSP took the acceptance.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dispute'}
+        '202':
+          description: Recorded; delivery to the PSP continues (`response.status` is `pending`), or it already failed.
+          headers:
+            Idempotent-Replayed: {$ref: '#/components/headers/IdempotentReplayed'}
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Dispute'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/Unprocessable'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/UnexpectedError'}
 
@@ -644,6 +787,11 @@ components:
       in: path
       required: true
       schema: {type: string, pattern: '^mdd_'}
+    DisputeId:
+      name: dispute_id
+      in: path
+      required: true
+      schema: {type: string, pattern: '^dsp_'}
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -699,8 +847,8 @@ components:
     Conflict:
       description: |
         `payment_invalid_state` (re-read the resource), `refund_already_exists`, `mandate_invalid_state`,
-        `mandate_debit_already_exists`, or `idempotency_request_in_progress` (retry with the same key after
-        `Retry-After`).
+        `mandate_debit_already_exists`, `dispute_invalid_state`, or `idempotency_request_in_progress` (retry with the
+        same key after `Retry-After`).
       headers:
         X-Request-Id: {$ref: '#/components/headers/RequestId'}
         Retry-After: {$ref: '#/components/headers/RetryAfter'}
@@ -710,7 +858,15 @@ components:
     Unprocessable:
       description: |
         `idempotency_key_reuse`, `amount_exceeds_refundable`, `amount_exceeds_mandate_limit`,
-        `capture_amount_mismatch`, `unsupported_payment_method` or `unsupported_currency`. Do not retry unchanged.
+        `capture_amount_mismatch`, `unsupported_payment_method`, `unsupported_currency` or
+        `dispute_response_unsupported`. Do not retry unchanged.
+      headers:
+        X-Request-Id: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    PayloadTooLarge:
+      description: '`payload_too_large`: the body is over the limit for this path.'
       headers:
         X-Request-Id: {$ref: '#/components/headers/RequestId'}
       content:
@@ -774,8 +930,11 @@ components:
       type: string
       enum: [payment.authorized, payment.succeeded, payment.attempt_failed, payment.failed, payment.cancelled,
              payment.expired, refund.succeeded, refund.failed, dispute.created, dispute.updated, dispute.won,
-             dispute.lost, mandate.activated, mandate.paused, mandate.resumed, mandate.revoked, mandate.expired,
-             mandate.failed]
+             dispute.lost, dispute.evidence_due, dispute.response_failed, mandate.activated, mandate.paused,
+             mandate.resumed, mandate.revoked, mandate.expired, mandate.failed]
+      description: |
+        `dispute.evidence_due`: the dispute's `respond_by` is 3 days away (or less) and it has not been answered.
+        `dispute.response_failed`: the PSP refused your contest or acceptance, or it could not be delivered in time.
     MandateStatus:
       type: string
       enum: [created, pending_authorization, active, paused, revoked, expired, failed]
@@ -968,8 +1127,8 @@ components:
       type: object
       description: |
         A chargeback or UPI dispute on a succeeded payment. Until it is won, the PSP withholds `amount` from your
-        settlements and it cannot also be refunded. Respond with evidence on the PSP's dashboard before
-        `respond_by`.
+        settlements and it cannot also be refunded. Answer it before `respond_by`: through this API (contest or
+        accept) where the PSP supports it, otherwise on the PSP's dashboard.
       required: [id, object, payment_id, attempt_id, amount, currency, status, provider, provider_reference,
                  created_at, updated_at, version]
       properties:
@@ -984,9 +1143,73 @@ components:
         provider: {type: string}
         provider_reference: {type: string, description: The PSP's dispute id.}
         respond_by: {$ref: '#/components/schemas/Timestamp'}
+        response: {$ref: '#/components/schemas/DisputeAnswer'}
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
         version: {type: integer, format: int64}
+    DisputeAnswer:
+      type: object
+      description: Your contest or acceptance, and its delivery to the PSP. Absent until you answer.
+      required: [type, status, requested_at]
+      properties:
+        type: {type: string, enum: [contest, accept]}
+        status:
+          type: string
+          enum: [pending, sent, failed]
+          description: |
+            `pending`: being delivered (retried until `respond_by`). `sent`: the PSP has it. `failed`: refused by
+            the PSP or not delivered in time (`failure_reason`); you may answer again while the dispute is open.
+        statement: {type: string, maxLength: 1000}
+        evidence_file_ids:
+          type: array
+          items: {type: string, pattern: '^dsf_'}
+        requested_at: {$ref: '#/components/schemas/Timestamp'}
+        sent_at: {$ref: '#/components/schemas/Timestamp'}
+        failure_reason: {type: string, examples: [evidence_rejected, deadline_passed, dispute_already_lost]}
+    EvidenceCategory:
+      type: string
+      enum: [shipping_proof, billing_proof, cancellation_proof, customer_communication, proof_of_service,
+             explanation_letter, refund_confirmation, access_activity_log, refund_cancellation_policy,
+             terms_and_conditions, other]
+    EvidenceFile:
+      type: object
+      required: [id, object, dispute_id, category, file_name, content_type, size, sha256, created_at]
+      properties:
+        id: {type: string, pattern: '^dsf_'}
+        object: {const: dispute_evidence_file}
+        dispute_id: {type: string, pattern: '^dsp_'}
+        category: {$ref: '#/components/schemas/EvidenceCategory'}
+        file_name: {type: string}
+        content_type: {type: string, enum: [application/pdf, image/jpeg, image/png]}
+        size: {type: integer, description: Bytes.}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the file as uploaded.}
+        created_at: {$ref: '#/components/schemas/Timestamp'}
+    EvidenceFileList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/EvidenceFile'}
+    UploadEvidenceFileRequest:
+      type: object
+      required: [category, file_name, content_type, content_base64]
+      properties:
+        category: {$ref: '#/components/schemas/EvidenceCategory'}
+        file_name: {type: string, minLength: 1, maxLength: 255, description: 'No path separators or control characters.'}
+        content_type: {type: string, enum: [application/pdf, image/jpeg, image/png]}
+        content_base64: {type: string, contentEncoding: base64, description: The file, base64-encoded (up to 5 MB decoded).}
+    ContestDisputeRequest:
+      type: object
+      required: [statement, evidence_file_ids]
+      properties:
+        statement: {type: string, minLength: 1, maxLength: 1000}
+        evidence_file_ids:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items: {type: string, pattern: '^dsf_'}
     DisputeList:
       type: object
       required: [data]
@@ -1117,11 +1340,12 @@ components:
         code:
           type: string
           enum: [validation_error, malformed_request, idempotency_key_required, authentication_required,
-                 invalid_api_key, invalid_signature, resource_not_found, method_not_allowed, unsupported_media_type,
-                 payment_invalid_state, refund_already_exists, mandate_invalid_state, mandate_debit_already_exists,
-                 idempotency_request_in_progress, idempotency_key_reuse, amount_exceeds_refundable,
-                 amount_exceeds_mandate_limit, capture_amount_mismatch, unsupported_payment_method,
-                 unsupported_currency, rate_limited, no_provider_available, internal_error]
+                 invalid_api_key, invalid_signature, resource_not_found, method_not_allowed, payload_too_large,
+                 unsupported_media_type, payment_invalid_state, refund_already_exists, mandate_invalid_state,
+                 mandate_debit_already_exists, dispute_invalid_state, idempotency_request_in_progress,
+                 idempotency_key_reuse, amount_exceeds_refundable, amount_exceeds_mandate_limit,
+                 capture_amount_mismatch, unsupported_payment_method, unsupported_currency,
+                 dispute_response_unsupported, rate_limited, no_provider_available, internal_error]
         request_id: {type: string}
         errors:
           type: array

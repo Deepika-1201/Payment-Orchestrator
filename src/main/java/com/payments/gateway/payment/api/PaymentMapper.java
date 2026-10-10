@@ -7,18 +7,22 @@ import com.payments.gateway.payment.api.PaymentResponses.CustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.DisputeResponse;
 import com.payments.gateway.payment.api.PaymentResponses.EmiPlanResponse;
 import com.payments.gateway.payment.api.PaymentResponses.ErrorResponse;
+import com.payments.gateway.payment.api.PaymentResponses.EvidenceFileResponse;
 import com.payments.gateway.payment.api.PaymentResponses.MandateCustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.MandateDebitResponse;
 import com.payments.gateway.payment.api.PaymentResponses.MandateResponse;
+import com.payments.gateway.payment.api.PaymentResponses.MerchantResponseView;
 import com.payments.gateway.payment.api.PaymentResponses.NextActionResponse;
 import com.payments.gateway.payment.api.PaymentResponses.PaymentResponse;
 import com.payments.gateway.payment.api.PaymentResponses.RefundResponse;
 import com.payments.gateway.payment.domain.Customer;
 import com.payments.gateway.payment.domain.Dispute;
+import com.payments.gateway.payment.domain.EvidenceFile;
 import com.payments.gateway.payment.domain.Failure;
 import com.payments.gateway.payment.domain.Mandate;
 import com.payments.gateway.payment.domain.MandateCustomer;
 import com.payments.gateway.payment.domain.MandateDebit;
+import com.payments.gateway.payment.domain.MerchantResponse;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
@@ -156,9 +160,20 @@ public class PaymentMapper {
                 dispute.providerCode(),
                 dispute.providerDisputeId(),
                 dispute.respondBy(),
+                toResponse(dispute.response()),
                 dispute.createdAt(),
                 dispute.updatedAt(),
                 dispute.version());
+    }
+
+    public EvidenceFileResponse toResponse(EvidenceFile file) {
+        return new EvidenceFileResponse(file.id(), "dispute_evidence_file", file.disputeId(), wire(file.category()),
+                file.fileName(), file.contentType(), file.size(), file.sha256(), file.createdAt());
+    }
+
+    private static MerchantResponseView toResponse(MerchantResponse response) {
+        return response == null ? null : new MerchantResponseView(wire(response.type()), wire(response.status()),
+                response.statement(), response.fileIds(), response.requestedAt(), response.sentAt(), response.failure());
     }
 
     private AttemptResponse toResponse(PaymentAttempt attempt) {

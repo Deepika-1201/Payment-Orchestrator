@@ -396,7 +396,7 @@ Razorpay and Cashfree report by settlement date, a few days after a capture. A c
 - **Traces:** OpenTelemetry via Micrometer Tracing, exported over OTLP to AWS X-Ray or Grafana Tempo. Spans cover inbound HTTP requests; PSP calls and outbound webhooks use the JDK `HttpClient`, which is not instrumented, so their timing comes from the `pg_provider_call_seconds` metric instead.
 - **Metrics:** Prometheus format at `/actuator/prometheus` (scraped by the ADOT collector into Amazon Managed Prometheus).
   - Key series: `pg_payments_total` (payments created), `pg_payment_attempts_total{provider,method,outcome}`, `pg_provider_call_seconds{provider,operation,result}`, `pg_webhooks_inbound_total{provider,result}`, `pg_webhook_deliveries_total{result}`, `pg_status_checks_total{outcome}`, `pg_payments_late_success_total{action}`, `pg_provider_amount_mismatches_total`.
-  - Operational gauges: `pg_attempts_unknown` and `pg_attempts_unknown_oldest_age_seconds`, `pg_webhook_deliveries_due` and `pg_webhook_deliveries_lag_seconds`, `pg_reviews_open{kind}`, `pg_reconciliation_exceptions_open` / `_overdue`.
+  - Operational gauges: `pg_attempts_unknown` and `pg_attempts_unknown_oldest_age_seconds`, `pg_webhook_deliveries_due` and `pg_webhook_deliveries_lag_seconds`, `pg_reviews_open{kind}`, `pg_reconciliation_exceptions_open` / `_overdue`, `pg_disputes_evidence_due`.
   - Latency histograms (`http_server_requests`, `pg_provider_call`) include buckets at the NFR-2 boundaries (40, 150, 200 ms). Counters for rare events are registered at zero so `increase()` alerts see the first one ([ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)).
 - **Logs:** JSON (ECS format) in the `prod` profile; never bodies, keys, secrets, PAN, or CVV.
 - **Alerts (SLO-based, [ADR-027](decisions/ADR-027-observability-slos-and-alerts.md)):**
@@ -405,7 +405,7 @@ Razorpay and Cashfree report by settlement date, a few days after a capture. A c
   - Latency p99 above NFR-2 for PSP-free requests and webhook acknowledgements.
   - PSP success rate more than 10 points below its daily baseline; PSP p99 latency and error ratio.
   - Unknown attempts older than 1 h; DEAD webhook deliveries; merchant outbox lag above 5 min.
-  - Amount mismatches and evidence conflicts; overdue reconciliation exceptions; review backlog.
+  - Amount mismatches and evidence conflicts; overdue reconciliation exceptions; review backlog; disputes due within 3 days with no answer.
   - Admin denials and rejected PSP webhooks; instance down, DB pool saturation and heap.
 - **Dashboards:** *Payment Gateway - Overview* (Grafana, provisioned from `deploy/observability/grafana/`; [screenshots](../README.md#screenshots)). `docker compose --profile observability up` runs Prometheus, Grafana, Tempo and an OpenTelemetry Collector locally; in AWS, ADOT feeds Amazon Managed Prometheus and X-Ray with the same rule file.
 

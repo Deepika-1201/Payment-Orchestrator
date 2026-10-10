@@ -1,6 +1,8 @@
 package com.payments.gateway.provider.spi;
 
+import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.Money;
+import java.util.List;
 
 public final class ProviderRequests {
 
@@ -39,5 +41,24 @@ public final class ProviderRequests {
     }
 
     public record CloseCollectionRequest(String attemptId, String collectionReference) {
+    }
+
+    /** One evidence file for a dispute (ADR-039); {@code disputeReference} is the PSP's dispute id. */
+    public record DisputeEvidenceUpload(String disputeReference, String fileId, String fileName, String contentType,
+                                        byte[] content) {
+    }
+
+    /** A document already at the PSP, as evidence of {@code category}. */
+    public record EvidenceDocument(EvidenceCategory category, String documentId) {
+    }
+
+    public record ContestDisputeRequest(String disputeReference, String statement, List<EvidenceDocument> documents) {
+
+        public ContestDisputeRequest {
+            documents = List.copyOf(documents);
+        }
+    }
+
+    public record AcceptDisputeRequest(String disputeReference) {
     }
 }

@@ -39,7 +39,7 @@ FR-D2 and FR-D3 cite no RBI or NPCI rule. The deadline is the PSP's `respond_by`
 
 | Option | Trade-off |
 |---|---|
-| Multipart uploads, as Razorpay and Stripe take them | A third smaller, but a retried multipart body differs in its boundary, so an `Idempotency-Key` retry would be refused as a different request. The contract tests also cover only JSON |
+| Multipart uploads, as Razorpay and Stripe take them | A third smaller, but the merchant API is JSON end to end: request validation, problem details, the OpenAPI contract tests and idempotency (which hashes the parsed request) would each need a second path for one endpoint |
 | Send files to the PSP as they arrive (PSP drafts) | Nothing kept at the gateway, but evidence would not be kept with the dispute record (FR-D3), drafts differ between PSPs, and abandoned uploads would pile up at the PSP |
 | Store files in S3 | Cheaper per GB and the usual home for files, but it needs a bucket, KMS keys and cross-region replication in Terraform and an AWS SDK. PostgreSQL handles the expected volume (hundreds of files a day). Revisit when evidence passes about 100 GB |
 | Encrypt files directly with the data key ring | One scheme instead of two, but rotating a data key would mean re-encrypting every file |

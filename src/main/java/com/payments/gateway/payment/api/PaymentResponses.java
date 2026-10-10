@@ -76,11 +76,19 @@ public final class PaymentResponses {
                                  ErrorResponse failure, Instant createdAt, Instant updatedAt, long version) {
     }
 
-    /** {@code respondBy}: the PSP's deadline for evidence, which is submitted on the PSP's dashboard. */
+    /** {@code respondBy}: the PSP's deadline; {@code response}: the merchant's contest or acceptance (ADR-039). */
     public record DisputeResponse(String id, String object, String paymentId, String attemptId, long amount,
                                   String currency, String status, String reason, String provider,
-                                  String providerReference, Instant respondBy, Instant createdAt, Instant updatedAt,
-                                  long version) {
+                                  String providerReference, Instant respondBy, MerchantResponseView response,
+                                  Instant createdAt, Instant updatedAt, long version) {
+    }
+
+    public record MerchantResponseView(String type, String status, String statement, List<String> evidenceFileIds,
+                                       Instant requestedAt, Instant sentAt, String failureReason) {
+    }
+
+    public record EvidenceFileResponse(String id, String object, String disputeId, String category, String fileName,
+                                       String contentType, int size, String sha256, Instant createdAt) {
     }
 
     public record ListResponse<T>(List<T> data) {

@@ -190,6 +190,27 @@ tests:
               summary: A PSP reported a different amount for an attempt; the update was not applied
               runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#provideramountmismatch
 
+  - name: a dispute left unanswered within 3 days of its deadline opens a ticket, and an answer clears it
+    interval: 1m
+    input_series:
+      - series: 'pg_disputes_evidence_due{instance="worker-1"}'
+        values: '0x5 1x40 0x10'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DisputeEvidenceDue
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: DisputeEvidenceDue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Disputes due within 3 days have not been answered
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#disputeevidencedue
+      - eval_time: 55m
+        alertname: DisputeEvidenceDue
+        exp_alerts: []
+
   - name: an instance that stops answering scrapes pages
     interval: 1m
     input_series:

@@ -50,7 +50,7 @@ public class MockProvidersConfiguration {
                         CARDLESS_EMI_MAX),
                 MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay", "simpl"), 100, UPI_MAX),
                 MethodType.BANK_TRANSFER, new MethodSupport(Set.of(), 100, TRANSFER_MAX, false)),
-                Set.of("INR"), true, true, true).withMandates(MANDATES);
+                Set.of("INR"), true, true, true).withMandates(MANDATES).withDisputeResponses();
         return new MockPaymentProvider(MOCK_ALPHA, capabilities, properties, json, clock);
     }
 

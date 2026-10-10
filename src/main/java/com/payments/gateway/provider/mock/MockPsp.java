@@ -1,6 +1,7 @@
 package com.payments.gateway.provider.mock;
 
 import com.payments.gateway.shared.Ids;
+import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.PaymentMethod;
@@ -358,6 +359,14 @@ public final class MockPsp {
         LOST
     }
 
+    /** An evidence document the simulated PSP received for a dispute (ADR-039). */
+    public record MockDocument(String id, String fileName, String contentType, int size, String sha256) {
+    }
+
+    /** A submitted contest: the statement and the document ids per evidence category. */
+    public record MockContest(String statement, Map<EvidenceCategory, List<String>> documents, Instant submittedAt) {
+    }
+
     /** A chargeback on a captured transaction; the disputed amount is withheld from the next settlement. */
     public static final class DisputeTxn {
         private final String reference;
@@ -368,6 +377,10 @@ public final class MockPsp {
         private final Instant respondBy;
         private DisputeState state = DisputeState.OPEN;
         private Instant wonAt;
+        private final List<MockDocument> documents = new ArrayList<>();
+        private MockContest contest;
+        private Instant acceptedAt;
+        private int responseCalls;
 
         DisputeTxn(String reference, Txn payment, Money amount, String reason, Instant createdAt, Instant respondBy) {
             this.reference = reference;
@@ -415,6 +428,44 @@ public final class MockPsp {
             if (newState == DisputeState.WON && wonAt == null) {
                 wonAt = now;
             }
+        }
+
+        public synchronized List<MockDocument> documents() {
+            return List.copyOf(documents);
+        }
+
+        public synchronized MockContest contest() {
+            return contest;
+        }
+
+        public synchronized Instant acceptedAt() {
+            return acceptedAt;
+        }
+
+        synchronized MockDocument addDocument(String fileName, String contentType, int size, String sha256) {
+            MockDocument document = new MockDocument(reference + "_doc" + (documents.size() + 1), fileName, contentType,
+                    size, sha256);
+            documents.add(document);
+            return document;
+        }
+
+        synchronized boolean hasDocument(String documentId) {
+            return documents.stream().anyMatch(document -> document.id().equals(documentId));
+        }
+
+        synchronized void submitContest(MockContest submitted) {
+            contest = submitted;
+            state = DisputeState.UNDER_REVIEW;
+        }
+
+        synchronized void accept(Instant now) {
+            acceptedAt = now;
+            state = DisputeState.LOST;
+        }
+
+        /** Counts contest and accept calls, for the scenarios that act on the first one only. */
+        synchronized int nextResponseCall() {
+            return ++responseCalls;
         }
     }
 

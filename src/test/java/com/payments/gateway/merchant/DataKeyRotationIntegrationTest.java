@@ -4,6 +4,7 @@ import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.crypto.SecretCipher;
 import com.payments.gateway.support.IntegrationTest;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +37,7 @@ class DataKeyRotationIntegrationTest extends IntegrationTest {
         assertThat(str(admin("GET", "/admin/v1/security/data-keys", null).body(), "primary_key_id")).isEqualTo("legacy");
 
         SecretCipher rotated = new SecretCipher(Map.of(SecretCipher.LEGACY_KEY_ID, TEST_KEY, "k2026-10", NEW_KEY), "k2026-10");
-        SecretRotationService rotation = new SecretRotationService(repository, rotated, audit);
+        SecretRotationService rotation = new SecretRotationService(repository, List.of(), rotated, audit);
         assertThat(rotation.usage().complete()).isFalse();
 
         SecretRotationService.RotationResult result = rotation.reEncryptAll("admin-token-0");

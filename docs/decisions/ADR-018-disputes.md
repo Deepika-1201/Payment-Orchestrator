@@ -1,6 +1,6 @@
 # ADR-018: Disputes and chargebacks: tracked from PSP evidence, ledger impact and refund guard
 
-**Status:** Accepted (2026-09-26)
+**Status:** Accepted (2026-09-26). Extended by [ADR-039](ADR-039-dispute-evidence.md) (2026-10-10): merchants can contest or accept disputes through the API on PSPs that support it.
 
 ## Context
 FR-D1 asks for three things:

@@ -14,6 +14,7 @@ import com.payments.gateway.provider.spi.ProviderCapabilities;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MandateSupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredit;
+import com.payments.gateway.provider.spi.ProviderDisputeResponse;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
@@ -21,9 +22,14 @@ import com.payments.gateway.provider.spi.ProviderMandateResult;
 import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
+import com.payments.gateway.provider.spi.ProviderRefusedException;
+import com.payments.gateway.provider.spi.ProviderRequests.AcceptDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.ContestDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.DisputeEvidenceUpload;
+import com.payments.gateway.provider.spi.ProviderRequests.EvidenceDocument;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -38,6 +44,7 @@ import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.EmiPlan;
+import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.MethodType;
@@ -134,7 +141,8 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)));
         properties.extraMethods().forEach(type -> methods.put(type, EXTRA_METHODS.get(type)));
         this.capabilities = new ProviderCapabilities(methods, Set.of("INR"), false, true, true)
-                .withMandates(properties.mandates() ? MANDATES : Map.of());
+                .withMandates(properties.mandates() ? MANDATES : Map.of())
+                .withDisputeResponses();
     }
 
     @Override
@@ -762,6 +770,11 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
     }
 
     private static ProviderEvent disputeEvent(String eventId, String type, JsonNode dispute, JsonNode payment) {
+        return ProviderEvent.dispute(eventId, type, text(payment.path("notes"), ATTEMPT_NOTE),
+                disputeResult(dispute, text(payment, "order_id")));
+    }
+
+    private static ProviderDisputeResult disputeResult(JsonNode dispute, String paymentReference) {
         ProviderDisputeResult.Status status = switch (status(dispute)) {
             case "under_review" -> ProviderDisputeResult.Status.UNDER_REVIEW;
             case "won" -> ProviderDisputeResult.Status.WON;
@@ -772,10 +785,81 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             default -> ProviderDisputeResult.Status.OPEN;
         };
         long respondBy = dispute.path("respond_by").asLong(0);
-        ProviderDisputeResult result = new ProviderDisputeResult(text(dispute, "id"), text(payment, "order_id"), status,
-                amount(dispute), text(dispute, "reason_code"), respondBy > 0 ? Instant.ofEpochSecond(respondBy) : null,
+        return new ProviderDisputeResult(text(dispute, "id"), paymentReference, status, amount(dispute),
+                text(dispute, "reason_code"), respondBy > 0 ? Instant.ofEpochSecond(respondBy) : null,
                 text(dispute, "status"));
-        return ProviderEvent.dispute(eventId, type, text(payment.path("notes"), ATTEMPT_NOTE), result);
+    }
+
+    // ------------------------------------------------------------------ dispute responses (ADR-039, LLD §22.7)
+
+    @Override
+    public String uploadDisputeEvidence(MerchantAccount account, DisputeEvidenceUpload upload) {
+        try {
+            return text(api.postFile(account, "/documents", Map.of("purpose", "dispute_evidence"), upload.fileName(),
+                    upload.contentType(), upload.content()), "id");
+        } catch (RazorpayApi.BadRequest e) {
+            if (lower(e.getMessage()).contains("already in progress")) {
+                throw new ProviderUnavailableException(RazorpayApi.CODE,
+                        "Razorpay is still taking another upload of this account");
+            }
+            throw new ProviderRefusedException(RazorpayApi.CODE, "document_rejected", e.getMessage());
+        }
+    }
+
+    @Override
+    public ProviderDisputeResponse contestDispute(MerchantAccount account, ContestDisputeRequest request) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("summary", request.statement());
+        List<String> others = new ArrayList<>();
+        for (EvidenceDocument document : request.documents()) {
+            if (document.category() == EvidenceCategory.OTHER) {
+                others.add(document.documentId());
+            } else {
+                @SuppressWarnings("unchecked")
+                List<String> ids = (List<String>) body.computeIfAbsent(evidenceField(document.category()),
+                        field -> new ArrayList<String>());
+                ids.add(document.documentId());
+            }
+        }
+        if (!others.isEmpty()) {
+            body.put("others", List.of(Map.of("type", "other", "document_ids", others)));
+        }
+        body.put("action", "submit");
+        return answerDispute(account, request.disputeReference(), () -> api.patch(account,
+                "/disputes/" + RazorpayApi.segment(request.disputeReference()) + "/contest", body));
+    }
+
+    @Override
+    public ProviderDisputeResponse acceptDispute(MerchantAccount account, AcceptDisputeRequest request) {
+        return answerDispute(account, request.disputeReference(), () -> api.post(account,
+                "/disputes/" + RazorpayApi.segment(request.disputeReference()) + "/accept", Map.of()));
+    }
+
+    /** A refusal because the dispute has moved on is checked against the dispute's current status. */
+    private ProviderDisputeResponse answerDispute(MerchantAccount account, String disputeId, Supplier<JsonNode> call) {
+        try {
+            return ProviderDisputeResponse.accepted(disputeResult(call.get(), null));
+        } catch (RazorpayApi.BadRequest e) {
+            String message = lower(e.getMessage());
+            if (message.contains("deadline")) {
+                return ProviderDisputeResponse.refused("deadline_passed", e.getMessage());
+            }
+            if (message.contains("not allowed when dispute is in")) {
+                return ProviderDisputeResponse.notOpen(disputeResult(
+                        api.get(account, "/disputes/" + RazorpayApi.segment(disputeId), Map.of()), null));
+            }
+            return ProviderDisputeResponse.refused("refused_by_psp", e.getMessage());
+        }
+    }
+
+    /** Razorpay's evidence field for a category; it spells terms and conditions in the singular. */
+    private static String evidenceField(EvidenceCategory category) {
+        return category == EvidenceCategory.TERMS_AND_CONDITIONS ? "term_and_conditions"
+                : category.name().toLowerCase(Locale.ROOT);
+    }
+
+    private static String lower(String message) {
+        return message == null ? "" : message.toLowerCase(Locale.ROOT);
     }
 
     /** Token webhooks carry no receipt of ours: the mandate is found by its token. */

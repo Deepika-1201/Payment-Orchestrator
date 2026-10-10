@@ -113,6 +113,13 @@ More than 25 items of one kind have waited for manual review for an hour.
 - `GET $ADMIN/reviews?kind=...` lists them oldest first. A sudden rise usually has one cause: one provider's conflicts, a failing risk rule, or a dispute batch. Fix the cause before working the queue.
 - `kind=credit`, `unmatched_credit` (ADR-038): a bank transfer arrived that no attempt can be found for. Ask the PSP who sent it (UTR, account), have it returned through the PSP, then resolve it with `POST $ADMIN/reviews/credits/{id}/resolve`.
 - `kind=refund`, `credit_return_failed`: the PSP refused to send a bank transfer credit back, so the customer's money is still at the PSP. Ask the PSP why, have it returned another way, then resolve the refund.
+- `kind=dispute`, `response_failed` (ADR-039): the merchant's contest or acceptance was refused by the PSP or not delivered before the deadline; the dispute's `response.failure_reason` says which. While the dispute is open and in time the merchant can answer again; otherwise tell the merchant the PSP decides without its evidence.
+
+### DisputeEvidenceDue
+Open disputes are due within 3 days, or already overdue, and have no response pending or sent. Each merchant got `dispute.evidence_due` once.
+- `GET $ADMIN/disputes?evidence_due=true` lists them, earliest deadline first, with the merchant. The worker logs each notice (`Evidence for dispute ... is due by ...`).
+- Contact the merchant. It can upload evidence and contest (`POST /v1/disputes/{id}/evidence_files`, then `.../contest`), or accept (`.../accept`). On PSPs without dispute responses (Cashfree), it answers on the PSP's dashboard.
+- A dispute stays on the list until it is answered or the PSP decides it. Past `respond_by` the PSP decides without evidence; if no decision arrives, check the dispute at the PSP.
 
 ## Security
 

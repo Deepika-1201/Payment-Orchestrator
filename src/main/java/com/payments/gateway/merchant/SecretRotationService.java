@@ -2,7 +2,9 @@ package com.payments.gateway.merchant;
 
 import com.payments.gateway.merchant.MerchantRepository.StoredCiphertext;
 import com.payments.gateway.shared.audit.AuditLogger;
+import com.payments.gateway.shared.crypto.KeyRingCiphertexts;
 import com.payments.gateway.shared.crypto.SecretCipher;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import org.slf4j.Logger;
@@ -10,9 +12,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Moves every stored secret to the primary data key (ADR-025): merchant webhook secrets and PSP credentials, keeping
- * each ciphertext's authenticated context. Idempotent and safe to rerun; a row changed concurrently keeps its newer
- * value (compare-and-swap) and is picked up by the next run.
+ * Moves every stored secret to the primary data key (ADR-025): merchant webhook secrets, PSP credentials and the
+ * other modules' ciphertexts (such as dispute evidence keys), keeping each ciphertext's authenticated context.
+ * Idempotent and safe to rerun; a row changed concurrently keeps its newer value (compare-and-swap) and is picked up by
+ * the next run.
  */
 @Service
 public class SecretRotationService {
@@ -31,11 +34,14 @@ public class SecretRotationService {
     }
 
     private final MerchantRepository repository;
+    private final List<KeyRingCiphertexts> others;
     private final SecretCipher cipher;
     private final AuditLogger audit;
 
-    public SecretRotationService(MerchantRepository repository, SecretCipher cipher, AuditLogger audit) {
+    public SecretRotationService(MerchantRepository repository, List<KeyRingCiphertexts> others, SecretCipher cipher,
+                                 AuditLogger audit) {
         this.repository = repository;
+        this.others = others;
         this.cipher = cipher;
         this.audit = audit;
     }
@@ -47,6 +53,7 @@ public class SecretRotationService {
             count(byKey, row.second());
         }
         repository.findCredentialCiphertexts().forEach(row -> count(byKey, row.first()));
+        others.forEach(source -> source.keyRingCiphertexts().forEach(row -> count(byKey, row.ciphertext())));
         return new KeyUsage(cipher.primaryKeyId(), byKey);
     }
 
@@ -65,6 +72,14 @@ public class SecretRotationService {
             if (stale(row.first()) && repository.swapCredentialCiphertext(row.rowId(), row.first(),
                     reEncrypt(row.first(), ProviderAccountService.context(row.rowId())))) {
                 changed++;
+            }
+        }
+        for (KeyRingCiphertexts source : others) {
+            for (KeyRingCiphertexts.Stored row : source.keyRingCiphertexts()) {
+                if (stale(row.ciphertext()) && source.swapKeyRingCiphertext(row.rowId(), row.ciphertext(),
+                        reEncrypt(row.ciphertext(), row.context()))) {
+                    changed++;
+                }
             }
         }
         KeyUsage usage = usage();

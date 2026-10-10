@@ -16,10 +16,10 @@ V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists it
 | Scope | Planned units | Done | Progress |
 |---|---|---|---|
 | V1 (phases 1–17) | 23 | 22 | 96% |
-| V2 (phases 18–28) | 15.5 | 6.5 | 42% |
-| **Project** | **38.5** | **28.5** | **74%** |
+| V2 (phases 18–28) | 15.5 | 7.5 | 48% |
+| **Project** | **38.5** | **29.5** | **77%** |
 
-*As of 2026-10-09.*
+*As of 2026-10-10.*
 
 - **Unit:** the work of a typical V1 phase, such as phase 9 (routing engine). A phase's size includes its design, tests and docs.
 - **Counting:** progress = completed units ÷ planned units. A phase counts only when it is done, with no partial credit. V1's close-out items count one by one.
@@ -71,7 +71,7 @@ These items belong to the phases above but need access the project does not have
 | 19 | Partial capture | [§8.2](requirements.md#82-partial-capture-phase-19) | — | 0.5 | Capturing less than the authorization releases the rest at the PSP; refunds, disputes and the ledger use the captured amount; capturing more is refused | Done: [ADR-036](decisions/ADR-036-partial-capture.md), [LLD §19](low-level-design.md#19-partial-capture-phase-19-adr-036). Only the mock PSPs capture partially: Razorpay requires the full amount, and the Cashfree adapter captures automatically |
 | 20 | Wallets, EMI and pay later | [§8.3](requirements.md#83-wallets-emi-and-pay-later-phase-20) | — | 1.5 | Each method pays end to end on the mock PSP and through a real adapter's stub, and the hosted checkout offers it when routable. The phase changes nothing in `payment/domain` (NFR-11) | Done: [ADR-037](decisions/ADR-037-wallets-emi-pay-later.md), [LLD §20](low-level-design.md#20-wallets-emi-and-pay-later-phase-20-adr-037), [steps](#phase-20-steps). Razorpay offers them behind `extra-methods` once enabled on the account; its sandbox check needs keys, as C1 does |
 | 21 | Bank transfers and virtual accounts | [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) | — | 1.5 | An exact transfer pays the payment. Short, excess, repeated and unmatched credits follow the policy. Credits reconcile against settlement reports | Done: [ADR-038](decisions/ADR-038-bank-transfers.md), [LLD §21](low-level-design.md#21-bank-transfers-and-virtual-accounts-phase-21-adr-038), [steps](#phase-21-steps). Razorpay Smart Collect is behind `extra-methods`; its sandbox check needs keys, as C1 does |
-| 22 | Dispute evidence | [§8.5](requirements.md#85-dispute-evidence-phase-22) | — | 1 | Evidence reaches the PSP (mock and a real adapter's stub) before the deadline. An approaching deadline raises the event and the alert. Accepting a dispute books the loss | |
+| 22 | Dispute evidence | [§8.5](requirements.md#85-dispute-evidence-phase-22) | — | 1 | Evidence reaches the PSP (mock and a real adapter's stub) before the deadline. An approaching deadline raises the event and the alert. Accepting a dispute books the loss | Done: [ADR-039](decisions/ADR-039-dispute-evidence.md), [LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039), [steps](#phase-22-steps). Razorpay's Documents and Disputes APIs; its sandbox check needs keys, as C1 does. Cashfree merchants keep answering on its dashboard |
 | 23 | International cards and multi-currency | [§8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) | — | 1.5 | Payments in 0-, 2- and 3-decimal currencies are created, captured and refunded in minor units (NFR-20). The ledger balances in both currencies with the FX difference booked. Reconciliation matches in INR | |
 | 24 | Cost-aware and adaptive routing | [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24) | — | 1 | In simulated traffic, `COST` picks the cheapest healthy PSP, and `ADAPTIVE` converges on the better success rate without ever routing to an unhealthy PSP. Shadow mode changes no route | |
 | 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | |
@@ -81,7 +81,7 @@ These items belong to the phases above but need access the project does not have
 
 **Not planned:** a merchant dashboard UI, a card vault, direct acquirer integrations, ML-based fraud and multi-region active-active. [ADR-034](decisions/ADR-034-post-v1-scope.md) gives the reasons and when to revisit each. The scale-driven changes in [architecture §11](architecture.md#11-evolution-path) wait for their triggers and are not counted.
 
-**Order of work:** phases 22 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 10 units, 9 in V2 and 1 in the close-out.
+**Order of work:** phases 23 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 9 units, 8 in V2 and 1 in the close-out.
 
 ### Phase 18 steps
 
@@ -137,15 +137,15 @@ No partial credit: the phase's unit counts when all steps are done.
 | Step | Work | Status |
 |---|---|---|
 | 1 | Design: [ADR-039](decisions/ADR-039-dispute-evidence.md), [LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039), [requirements §8.5](requirements.md#85-dispute-evidence-phase-22) refined | Done |
-| 2 | Schema V18 and domain: dispute responses, evidence files with per-file encryption, error codes | |
-| 3 | Merchant API and `openapi.yaml`: evidence upload, contest, accept, the dispute's `response` and `evidence_files`, two events; the upload path's body limit | |
-| 4 | Delivery ([§22.3](low-level-design.md#223-responding-and-delivery)): recorded first, sent after commit, retried until the deadline, review and event on failure | |
-| 5 | Deadline notice ([§22.4](low-level-design.md#224-deadline-notice-and-alert)): job, event, gauge, alert with runbook and promtool test, admin listing | |
-| 6 | Provider SPI, mock PSP and simulator ([§22.5](low-level-design.md#225-provider-spi), [§22.6](low-level-design.md#226-mock-psp)) | |
-| 7 | Razorpay documents, contest and accept ([§22.7](low-level-design.md#227-razorpay-mapping)) with stub tests | |
-| 8 | Data key rotation covers file keys ([§22.2](low-level-design.md#222-evidence-storage)) | |
-| 9 | Tests: contest and accept end to end on the mock PSP and the Razorpay stub; retries, refusals and the deadline; the notice; file checks; encryption at rest; contract; database rules; mutation checks. Then commit and push on a green build | |
-| 10 | Docs: README, runbooks, progress and changelog | |
+| 2 | Schema V18 and domain: dispute responses, evidence files with per-file encryption, error codes | Done |
+| 3 | Merchant API and `openapi.yaml`: evidence upload and listing, contest, accept, the dispute's `response`, two events; the upload path's body limit | Done |
+| 4 | Delivery ([§22.3](low-level-design.md#223-responding-and-delivery)): recorded first, sent after commit, retried until the deadline, review and event on failure | Done |
+| 5 | Deadline notice ([§22.4](low-level-design.md#224-deadline-notice-and-alert)): job, event, gauge, alert with runbook and promtool test, admin listing | Done |
+| 6 | Provider SPI, mock PSP and simulator ([§22.5](low-level-design.md#225-provider-spi), [§22.6](low-level-design.md#226-mock-psp)) | Done |
+| 7 | Razorpay documents, contest and accept ([§22.7](low-level-design.md#227-razorpay-mapping)) with stub tests | Done |
+| 8 | Data key rotation covers file keys ([§22.2](low-level-design.md#222-evidence-storage)) | Done |
+| 9 | Tests: contest and accept end to end on the mock PSP and the Razorpay stub; retries, refusals and the deadline; the notice; file checks; encryption at rest; contract; database rules; mutation checks. Then commit and push on a green build | Done: 55 mutants, 54 killed and 1 equivalent: the service's content-type check, which the request's own pattern makes unreachable, now removed. Listing the mutants first removed six redundant pieces of code and added seven test cases; the two surviving query mutants added one test case and extended another |
+| 10 | Docs: README, runbooks, progress and changelog | Done (new alert `DisputeEvidenceDue` with its runbook; the review-queue runbook covers `response_failed`) |
 
 ## Changelog
 
@@ -158,3 +158,4 @@ No partial credit: the phase's unit counts when all steps are done.
 | 2026-10-07 | Phase 19 done: one partial capture per payment on PSPs that declare it per method, so far the mock PSPs (Razorpay requires the full amount; the Cashfree adapter captures automatically). Refunds, disputes, the ledger and reconciliation use the attempt's capture amount, which a database check keeps within the authorization. 36 mutants, all killed. Also fixed: a late authorization of another attempt during a capture moved the payment back to `authorized` instead of being voided | 25.5 of 38.5 units (66%) |
 | 2026-10-08 | Phase 20 done: wallets, card EMI, cardless EMI and pay later on the mock PSPs and the Razorpay adapter, with no change to `payment/domain`. Routing matches the wallet or lender against what each PSP declares; the card EMI plan comes from the PSP with the card, set once. Decided while building ([LLD §20](low-level-design.md#20-wallets-emi-and-pay-later-phase-20-adr-037)): Razorpay EMI payments missing their plan in a listing are fetched again with `expand[]=card&expand[]=emi`, and an unreadable plan keeps the card. 29 mutants: 28 killed, 1 equivalent | 27 of 38.5 units (70%) |
 | 2026-10-09 | Phase 21 done: bank transfers to a virtual account per attempt, on the mock PSP and Razorpay Smart Collect. Each credit is recorded once and allocated under the payment lock; excess, late and repeated credits go back as refunds against that credit; a payment still short at expiry is refunded or, if the merchant accepts short payments, captured for what arrived. Decided while building ([LLD §21.2](low-level-design.md#212-credits-and-allocation)): a credit in another currency goes back as late; an unplaceable credit on the platform-level webhook endpoint is logged and left to reconciliation, as no merchant can be named. 52 mutants: 51 killed, 1 equivalent | 28.5 of 38.5 units (74%) |
+| 2026-10-10 | Phase 22 done: merchants contest or accept disputes through the API on PSPs that take answers that way (the mock PSPs and Razorpay; Cashfree merchants keep its dashboard). Evidence files are checked by their leading bytes and stored encrypted under a key per file, which data key rotation re-wraps. An answer is recorded first, delivered after commit and retried until the deadline; a refusal or the deadline fails it with a review item and an event. `dispute.evidence_due` goes out once, 3 days before the deadline, and a gauge with an alert covers disputes nobody answers. Decided while building ([LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039)): an answer counts as sent only when the PSP takes it or reports the status it leads to; delivery has no retry cap of its own, as the first attempt after the deadline fails it; refused uploads are not retried; files are listed on their own endpoint. 55 mutants: 54 killed, 1 equivalent | 29.5 of 38.5 units (77%) |

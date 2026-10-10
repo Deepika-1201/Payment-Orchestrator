@@ -5,6 +5,7 @@ import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.json.JsonCodec;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.URI;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import javax.net.ssl.SSLHandshakeException;
 import tools.jackson.databind.JsonNode;
@@ -109,6 +111,29 @@ final class RazorpayApi {
         return send(account, HttpRequest.newBuilder(uri(path))
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(json.write(body))), true);
+    }
+
+    JsonNode patch(MerchantAccount account, String path, Map<String, ?> body) {
+        return send(account, HttpRequest.newBuilder(uri(path))
+                .header("Content-Type", "application/json")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(json.write(body))), true);
+    }
+
+    /** A {@code multipart/form-data} POST with text {@code fields} and one {@code file} part. */
+    JsonNode postFile(MerchantAccount account, String path, Map<String, String> fields, String fileName,
+                      String contentType, byte[] content) {
+        String boundary = "pg-" + UUID.randomUUID();
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        fields.forEach((name, value) -> body.writeBytes(("--" + boundary + "\r\nContent-Disposition: form-data; name=\""
+                + name + "\"\r\n\r\n" + value + "\r\n").getBytes(StandardCharsets.UTF_8)));
+        body.writeBytes(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\""
+                + fileName.replace("\"", "%22") + "\"\r\nContent-Type: " + contentType + "\r\n\r\n")
+                .getBytes(StandardCharsets.UTF_8));
+        body.writeBytes(content);
+        body.writeBytes(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        return send(account, HttpRequest.newBuilder(uri(path))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray())), true);
     }
 
     JsonNode delete(MerchantAccount account, String path) {

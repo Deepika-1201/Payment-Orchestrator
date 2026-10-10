@@ -16,6 +16,8 @@ public record PaymentEvent(Type type, String resourceId) {
         DISPUTE_UPDATED("dispute.updated"),
         DISPUTE_WON("dispute.won"),
         DISPUTE_LOST("dispute.lost"),
+        DISPUTE_EVIDENCE_DUE("dispute.evidence_due"),
+        DISPUTE_RESPONSE_FAILED("dispute.response_failed"),
         MANDATE_ACTIVATED("mandate.activated"),
         MANDATE_PAUSED("mandate.paused"),
         MANDATE_RESUMED("mandate.resumed"),

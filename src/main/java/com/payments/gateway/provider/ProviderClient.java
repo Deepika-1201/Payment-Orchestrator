@@ -16,6 +16,11 @@ import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.AcceptDisputeRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.ContestDisputeRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.DisputeEvidenceUpload;
+import com.payments.gateway.provider.spi.ProviderDisputeResponse;
+import com.payments.gateway.provider.spi.ProviderRefusedException;
 import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
@@ -139,6 +144,19 @@ public class ProviderClient {
         });
     }
 
+    public String uploadDisputeEvidence(String merchantId, String providerCode, DisputeEvidenceUpload upload) {
+        return call(merchantId, providerCode, "dispute_evidence_upload",
+                (provider, account) -> provider.uploadDisputeEvidence(account, upload));
+    }
+
+    public ProviderDisputeResponse contestDispute(String merchantId, String providerCode, ContestDisputeRequest request) {
+        return call(merchantId, providerCode, "dispute_contest", (provider, account) -> provider.contestDispute(account, request));
+    }
+
+    public ProviderDisputeResponse acceptDispute(String merchantId, String providerCode, AcceptDisputeRequest request) {
+        return call(merchantId, providerCode, "dispute_accept", (provider, account) -> provider.acceptDispute(account, request));
+    }
+
     /**
      * Settlement reports are batch reads that can span many pages: they bypass the circuit breaker and routing latency, so
      * a slow or failing report never steers live payments (ADR-032). Adapter errors surface with their message.
@@ -203,6 +221,11 @@ public class ProviderClient {
             breaker.releasePermission();
             record(providerCode, operation, "credentials_rejected", System.nanoTime() - start);
             log.warn("PSP rejected the credentials of merchant account {}: {}", account.id(), e.getMessage());
+            throw e;
+        } catch (ProviderRefusedException e) {
+            long elapsed = System.nanoTime() - start;
+            breaker.onSuccess(elapsed, TimeUnit.NANOSECONDS);
+            record(providerCode, operation, "refused", elapsed);
             throw e;
         } catch (ProviderUnavailableException | ProviderTimeoutException e) {
             long elapsed = System.nanoTime() - start;

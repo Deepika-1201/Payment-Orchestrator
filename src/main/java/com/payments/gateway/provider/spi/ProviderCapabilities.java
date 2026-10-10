@@ -13,15 +13,23 @@ import java.util.Set;
  * Declares what a provider supports; routing and the orchestrator consult this instead of type checks.
  * {@code requiresCustomerPhone}: the PSP rejects payments without the customer's phone number (Cashfree, ADR-031), so
  * routing skips it for payments that have none. {@code mandates}: recurring instruments it can register (ADR-035).
+ * {@code disputeResponses}: merchants can contest or accept disputes through the gateway (ADR-039).
  */
 public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies,
                                    boolean voidSupported, boolean partialRefunds, boolean settlementReports,
-                                   boolean requiresCustomerPhone, Map<MandateInstrument, MandateSupport> mandates) {
+                                   boolean requiresCustomerPhone, Map<MandateInstrument, MandateSupport> mandates,
+                                   boolean disputeResponses) {
 
     public ProviderCapabilities {
         methods = Map.copyOf(methods);
         currencies = Set.copyOf(currencies);
         mandates = Map.copyOf(mandates);
+    }
+
+    public ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies, boolean voidSupported,
+                                boolean partialRefunds, boolean settlementReports, boolean requiresCustomerPhone,
+                                Map<MandateInstrument, MandateSupport> mandates) {
+        this(methods, currencies, voidSupported, partialRefunds, settlementReports, requiresCustomerPhone, mandates, false);
     }
 
     public ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies, boolean voidSupported,
@@ -72,7 +80,12 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
 
     public ProviderCapabilities withMandates(Map<MandateInstrument, MandateSupport> supported) {
         return new ProviderCapabilities(methods, currencies, voidSupported, partialRefunds, settlementReports,
-                requiresCustomerPhone, supported);
+                requiresCustomerPhone, supported, disputeResponses);
+    }
+
+    public ProviderCapabilities withDisputeResponses() {
+        return new ProviderCapabilities(methods, currencies, voidSupported, partialRefunds, settlementReports,
+                requiresCustomerPhone, mandates, true);
     }
 
     public boolean supportsMandate(MandateInstrument instrument, Money maxAmount) {

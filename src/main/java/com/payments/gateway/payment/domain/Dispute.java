@@ -1,15 +1,18 @@
 package com.payments.gateway.payment.domain;
 
+import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.Money;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * A chargeback or UPI dispute on a captured attempt (FR-D1, ADR-018). Its own aggregate, never a payment state
- * (ADR-007); created and mutated only while holding the parent payment's row lock. The gateway only records what
- * the PSP reports: evidence is submitted on the PSP's side.
+ * (ADR-007); created and mutated only while holding the parent payment's row lock. The PSP reports its status; the
+ * merchant may answer it once through the gateway, by contesting or accepting it (ADR-039).
  */
 public final class Dispute {
 
@@ -25,6 +28,8 @@ public final class Dispute {
     private DisputeStatus status;
     private Instant respondBy;
     private Review review;
+    private MerchantResponse response;
+    private Instant evidenceDueNotifiedAt;
     private long version;
     private Instant updatedAt;
     private boolean isNew;
@@ -44,6 +49,8 @@ public final class Dispute {
         this.status = s.status();
         this.respondBy = s.respondBy();
         this.review = s.review();
+        this.response = s.response();
+        this.evidenceDueNotifiedAt = s.evidenceDueNotifiedAt();
         this.version = s.version();
         this.updatedAt = s.updatedAt();
         this.isNew = isNew;
@@ -54,7 +61,7 @@ public final class Dispute {
                                DisputeStatus reported, Instant respondBy, TransitionSource source, Instant now) {
         Dispute dispute = new Dispute(new DisputeSnapshot(id, attempt.paymentId(), attempt.id(), attempt.merchantId(),
                 attempt.providerCode(), providerDisputeId, amount, reason, DisputeStatus.OPEN, respondBy, Review.NONE, 0,
-                now, now), true);
+                now, now, null, null), true);
         dispute.changes.add(new StatusChange(StatusChange.Entity.DISPUTE, id, null, DisputeStatus.OPEN.name(), source,
                 reason, now));
         dispute.events.add(new PaymentEvent(PaymentEvent.Type.DISPUTE_CREATED, id));
@@ -70,7 +77,7 @@ public final class Dispute {
 
     public DisputeSnapshot snapshot() {
         return new DisputeSnapshot(id, paymentId, attemptId, merchantId, providerCode, providerDisputeId, amount, reason,
-                status, respondBy, review, version, createdAt, updatedAt);
+                status, respondBy, review, version, createdAt, updatedAt, response, evidenceDueNotifiedAt);
     }
 
     public TransitionOutcome apply(DisputeStatus target, Instant newRespondBy, TransitionSource source, Instant now) {
@@ -118,6 +125,82 @@ public final class Dispute {
     /** Until a dispute is won, the PSP holds its amount back from the merchant, so it cannot also be refunded. */
     public boolean holdsFunds() {
         return status != DisputeStatus.WON;
+    }
+
+    /** Open, before the deadline, and no response pending or sent: the merchant may still answer (ADR-039). */
+    public boolean openForResponse(Instant now) {
+        return status == DisputeStatus.OPEN && (respondBy == null || now.isBefore(respondBy))
+                && (response == null || response.status() == MerchantResponse.Status.FAILED);
+    }
+
+    /** Records the merchant's answer as pending; it is delivered to the PSP after commit. */
+    public void requestResponse(MerchantResponse.Type type, String statement, List<String> fileIds, Instant firstAttemptAt,
+                                Instant now) {
+        requireOpenForResponse(now);
+        response = MerchantResponse.pending(type, statement, fileIds, now, firstAttemptAt);
+        updatedAt = now;
+    }
+
+    public void requireOpenForResponse(Instant now) {
+        if (!openForResponse(now)) {
+            throw new GatewayException(ErrorCode.DISPUTE_INVALID_STATE,
+                    "Dispute " + id + " cannot take a response: " + whyClosed(now));
+        }
+    }
+
+    /** The PSP took the response. The dispute status it reports is applied separately. */
+    public void responseSent(Instant now) {
+        requirePendingResponse();
+        response = response.sent(now);
+        updatedAt = now;
+    }
+
+    /** Refused by the PSP, or the deadline passed before delivery: the merchant may answer again while it can. */
+    public void responseFailed(String failure, Instant now) {
+        requirePendingResponse();
+        response = response.failed(failure);
+        review = review.flag(Review.RESPONSE_FAILED, now);
+        events.add(new PaymentEvent(PaymentEvent.Type.DISPUTE_RESPONSE_FAILED, id));
+        updatedAt = now;
+    }
+
+    public void retryResponseAt(Instant next, Instant now) {
+        requirePendingResponse();
+        response = response.retryAt(next);
+        updatedAt = now;
+    }
+
+    /** Open, with its deadline within {@code notice} (or passed), and nothing pending or sent. */
+    public boolean evidenceDue(Instant now, Duration notice) {
+        return status == DisputeStatus.OPEN && respondBy != null && !respondBy.isAfter(now.plus(notice))
+                && (response == null || response.status() == MerchantResponse.Status.FAILED);
+    }
+
+    /** Sends {@code dispute.evidence_due} once per dispute; returns whether it did. */
+    public boolean notifyEvidenceDue(Instant now, Duration notice) {
+        if (evidenceDueNotifiedAt != null || !evidenceDue(now, notice)) {
+            return false;
+        }
+        evidenceDueNotifiedAt = now;
+        events.add(new PaymentEvent(PaymentEvent.Type.DISPUTE_EVIDENCE_DUE, id));
+        updatedAt = now;
+        return true;
+    }
+
+    private void requirePendingResponse() {
+        if (response == null || response.status() != MerchantResponse.Status.PENDING) {
+            throw new IllegalStateException("dispute " + id + " has no pending response");
+        }
+    }
+
+    private String whyClosed(Instant now) {
+        if (status != DisputeStatus.OPEN) {
+            return "it is " + status.name().toLowerCase(Locale.ROOT);
+        }
+        if (respondBy != null && !now.isBefore(respondBy)) {
+            return "its deadline " + respondBy + " has passed";
+        }
+        return "a response is already " + response.status().name().toLowerCase(Locale.ROOT);
     }
 
     public void markPersisted() {
@@ -189,6 +272,14 @@ public final class Dispute {
 
     public boolean needsReview() {
         return review.open();
+    }
+
+    public MerchantResponse response() {
+        return response;
+    }
+
+    public Instant evidenceDueNotifiedAt() {
+        return evidenceDueNotifiedAt;
     }
 
     public long version() {

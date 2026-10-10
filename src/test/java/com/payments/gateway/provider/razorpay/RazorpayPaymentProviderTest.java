@@ -8,11 +8,17 @@ import com.payments.gateway.provider.spi.InboundWebhook;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
+import com.payments.gateway.provider.spi.ProviderDisputeResponse;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderPaymentResult.Outcome;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
+import com.payments.gateway.provider.spi.ProviderRefusedException;
+import com.payments.gateway.provider.spi.ProviderRequests.AcceptDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.ContestDisputeRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.DisputeEvidenceUpload;
+import com.payments.gateway.provider.spi.ProviderRequests.EvidenceDocument;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -26,6 +32,7 @@ import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
@@ -466,6 +473,89 @@ class RazorpayPaymentProviderTest {
         var closed = provider(true).fetchPaymentStatus(ACCOUNT, new PaymentStatusQuery(ATTEMPT, "va_1"));
         assertThat(closed.outcome()).isEqualTo(Outcome.FAILED);
         assertThat(closed.failure().code()).isEqualTo("virtual_account_closed");
+    }
+
+    @Test
+    void disputeEvidenceIsUploadedAsDocumentsAndSubmittedAsAContest() {
+        byte[] pdf = "%PDF-1.7\nreceipt".getBytes(StandardCharsets.US_ASCII);
+        stub.on("POST /v1/documents", 200, "{\"id\":\"doc_1\",\"entity\":\"document\",\"purpose\":\"dispute_evidence\"}")
+                .on("PATCH /v1/disputes/disp_1/contest", 200, "{\"id\":\"disp_1\",\"entity\":\"dispute\","
+                        + "\"payment_id\":\"pay_1\",\"amount\":10000,\"currency\":\"INR\",\"status\":\"under_review\","
+                        + "\"respond_by\":" + NOW.plus(Duration.ofDays(5)).getEpochSecond() + "}");
+        RazorpayPaymentProvider provider = provider(false);
+
+        String documentId = provider.uploadDisputeEvidence(ACCOUNT,
+                new DisputeEvidenceUpload("disp_1", "dsf_1", "receipt \"final\".pdf", "application/pdf", pdf));
+        ProviderDisputeResponse answer = provider.contestDispute(ACCOUNT, new ContestDisputeRequest("disp_1",
+                "Delivered on 2 October.", List.of(new EvidenceDocument(EvidenceCategory.SHIPPING_PROOF, "doc_1"),
+                        new EvidenceDocument(EvidenceCategory.TERMS_AND_CONDITIONS, "doc_2"),
+                        new EvidenceDocument(EvidenceCategory.OTHER, "doc_3"),
+                        new EvidenceDocument(EvidenceCategory.SHIPPING_PROOF, "doc_4"),
+                        new EvidenceDocument(EvidenceCategory.OTHER, "doc_5"))));
+
+        assertThat(provider.capabilities().disputeResponses()).isTrue();
+        assertThat(documentId).isEqualTo("doc_1");
+        StubPsp.Recorded upload = stub.last("POST /v1/documents");
+        assertThat(upload.header("Content-Type")).startsWith("multipart/form-data; boundary=");
+        assertThat(upload.body()).contains("name=\"purpose\"\r\n\r\ndispute_evidence\r\n",
+                "name=\"file\"; filename=\"receipt %22final%22.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.7\nreceipt\r\n");
+        assertThat(answer.outcome()).isEqualTo(ProviderDisputeResponse.Outcome.ACCEPTED);
+        assertThat(answer.dispute().status()).isEqualTo(ProviderDisputeResult.Status.UNDER_REVIEW);
+        JsonNode contest = body(stub.last("PATCH /v1/disputes/disp_1/contest"));
+        assertThat(contest.path("summary").asString()).isEqualTo("Delivered on 2 October.");
+        assertThat(contest.path("action").asString()).isEqualTo("submit");
+        assertThat(contest.path("shipping_proof").toString()).isEqualTo("[\"doc_1\",\"doc_4\"]");
+        assertThat(contest.path("term_and_conditions").toString()).isEqualTo("[\"doc_2\"]");
+        assertThat(contest.path("others"))
+                .isEqualTo(json.read("[{\"type\":\"other\",\"document_ids\":[\"doc_3\",\"doc_5\"]}]", JsonNode.class));
+        assertThat(contest.has("terms_and_conditions")).isFalse();
+    }
+
+    @Test
+    void anAcceptanceLosesTheDisputeAndRefusalsAreReadBack() {
+        stub.on("POST /v1/disputes/disp_1/accept", 200, "{\"id\":\"disp_1\",\"status\":\"lost\",\"amount\":10000,"
+                        + "\"currency\":\"INR\",\"amount_deducted\":10000}")
+                .on("PATCH /v1/disputes/disp_2/contest", 400, "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\","
+                        + "\"description\":\"Action not allowed when dispute is in under_review status.\"}}")
+                .on("GET /v1/disputes/disp_2", 200, "{\"id\":\"disp_2\",\"status\":\"under_review\",\"amount\":10000,"
+                        + "\"currency\":\"INR\"}")
+                .on("PATCH /v1/disputes/disp_3/contest", 400, "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\","
+                        + "\"description\":\"Action not allowed as deadline to respond has elapsed.\"}}")
+                .on("PATCH /v1/disputes/disp_4/contest", 400, "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\","
+                        + "\"description\":\"Invalid file id provided or merchant is unauthorized to access the fileId(s) provided\"}}");
+        RazorpayPaymentProvider provider = provider(false);
+        List<EvidenceDocument> documents = List.of(new EvidenceDocument(EvidenceCategory.BILLING_PROOF, "doc_1"));
+
+        ProviderDisputeResponse accepted = provider.acceptDispute(ACCOUNT, new AcceptDisputeRequest("disp_1"));
+        ProviderDisputeResponse movedOn = provider.contestDispute(ACCOUNT, new ContestDisputeRequest("disp_2", "s", documents));
+        ProviderDisputeResponse late = provider.contestDispute(ACCOUNT, new ContestDisputeRequest("disp_3", "s", documents));
+        ProviderDisputeResponse refused = provider.contestDispute(ACCOUNT, new ContestDisputeRequest("disp_4", "s", documents));
+
+        assertThat(accepted.outcome()).isEqualTo(ProviderDisputeResponse.Outcome.ACCEPTED);
+        assertThat(accepted.dispute().status()).isEqualTo(ProviderDisputeResult.Status.LOST);
+        assertThat(movedOn.outcome()).isEqualTo(ProviderDisputeResponse.Outcome.REFUSED);
+        assertThat(movedOn.dispute().status()).isEqualTo(ProviderDisputeResult.Status.UNDER_REVIEW);
+        assertThat(late.failureCode()).isEqualTo("deadline_passed");
+        assertThat(late.dispute()).isNull();
+        assertThat(refused.failureCode()).isEqualTo("refused_by_psp");
+        assertThat(refused.failureMessage()).startsWith("Invalid file id");
+    }
+
+    @Test
+    void uploadsWaitForRazorpaysUploadLockAndStopOnARejectedFile() {
+        RazorpayPaymentProvider provider = provider(false);
+        DisputeEvidenceUpload upload = new DisputeEvidenceUpload("disp_1", "dsf_1", "a.pdf", "application/pdf",
+                "%PDF-1.7".getBytes(StandardCharsets.US_ASCII));
+
+        stub.on("POST /v1/documents", 400,
+                "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\",\"description\":\"Document upload already in progress.\"}}");
+        assertThatThrownBy(() -> provider.uploadDisputeEvidence(ACCOUNT, upload)).isInstanceOf(ProviderUnavailableException.class);
+
+        stub.on("POST /v1/documents", 400, "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\","
+                + "\"description\":\"The file must be a file of type: jpg, jpeg, png, pdf.\"}}");
+        assertThatThrownBy(() -> provider.uploadDisputeEvidence(ACCOUNT, upload))
+                .isInstanceOfSatisfying(ProviderRefusedException.class,
+                        e -> assertThat(e.failureCode()).isEqualTo("document_rejected"));
     }
 
     // ------------------------------------------------------------------ webhooks

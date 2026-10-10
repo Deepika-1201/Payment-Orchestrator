@@ -10,6 +10,7 @@ import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -200,6 +201,28 @@ public class SimulatorController {
         mock.psp().moveDispute(found, state, clock.instant());
         notifyDispute(mock, found, request.sendWebhook());
         return Map.of("dispute_id", found.reference(), "status", state.name().toLowerCase(java.util.Locale.ROOT));
+    }
+
+    /** What the simulated PSP received in answer to the dispute (LLD §22.6): documents, contest, acceptance. */
+    @GetMapping("/{provider}/disputes/{dispute}")
+    public Map<String, Object> dispute(@PathVariable String provider, @PathVariable String dispute) {
+        MockPsp.DisputeTxn found = provider(provider).psp().findDispute(dispute)
+                .orElseThrow(() -> GatewayException.notFound("Mock dispute", dispute));
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("dispute_id", found.reference());
+        view.put("status", found.state().name().toLowerCase(Locale.ROOT));
+        view.put("documents", found.documents().stream()
+                .map(document -> Map.of("id", document.id(), "file_name", document.fileName(), "content_type",
+                        document.contentType(), "size", document.size(), "sha256", document.sha256()))
+                .toList());
+        MockPsp.MockContest contest = found.contest();
+        if (contest != null) {
+            Map<String, Object> evidence = new LinkedHashMap<>();
+            contest.documents().forEach((category, ids) -> evidence.put(category.name().toLowerCase(Locale.ROOT), ids));
+            view.put("contest", Map.of("statement", contest.statement(), "evidence", evidence));
+        }
+        view.put("accepted", found.acceptedAt() != null);
+        return view;
     }
 
     private void notifyDispute(MockPaymentProvider mock, MockPsp.DisputeTxn dispute, Boolean sendWebhook) {

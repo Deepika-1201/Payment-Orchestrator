@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 has started: phase 18, recurring payments (UPI AutoPay, card and eNACH mandates), phase 19, partial capture, phase 20, wallets, card and cardless EMI and pay later, and phase 21, bank transfers to a virtual account per attempt, are built and tested. V1 includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 has started: phase 18, recurring payments (UPI AutoPay, card and eNACH mandates), phase 19, partial capture, phase 20, wallets, card and cardless EMI and pay later, phase 21, bank transfers to a virtual account per attempt, and phase 22, dispute responses with evidence through the API, are built and tested. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 74% done (28.5 of 38.5).
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 77% done (29.5 of 38.5).
 
 ## Documentation
 
@@ -135,7 +135,8 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `POST /v1/payments/{id}/confirm` · `/capture` · `/cancel` | Start an attempt (UPI, card, netbanking, wallet, card EMI, cardless EMI, pay later or bank transfer; wallets and lenders are named by `provider`, ADR-037; a bank transfer gets a virtual account for the attempt, ADR-038) / capture an authorization, in full or for less where the PSP supports it (ADR-036) / cancel or void |
 | `POST /v1/payments/{id}/refunds` · `GET /v1/payments/{id}/refunds` · `GET /v1/refunds/{id}` | Refunds. A bank transfer payment is refunded against one credit (`credit_id`); credits sent back by the gateway (excess, late, repeated, or short at expiry) are refunds initiated by `system_credit_return` |
 | `GET /v1/payments/{id}/credits` | Bank transfer credits on the payment's accounts: amount, mode, UTR, and how much was applied or sent back (ADR-038) |
-| `GET /v1/payments/{id}/disputes` · `GET /v1/disputes/{id}` | Chargebacks and UPI disputes reported by the PSP (read-only; `dispute.*` webhooks) |
+| `GET /v1/payments/{id}/disputes` · `GET /v1/disputes/{id}` | Chargebacks and UPI disputes reported by the PSP (`dispute.*` webhooks, including `dispute.evidence_due` 3 days before `respond_by`) |
+| `POST /v1/disputes/{id}/evidence_files` · `GET …/evidence_files` · `POST …/contest` · `POST …/accept` | Answer a dispute on PSPs that take responses (ADR-039): upload evidence (PDF, JPEG or PNG, base64, up to 5 MB each, stored encrypted), then contest with a statement or accept the loss; the gateway delivers it before the deadline, retrying as needed |
 | `POST /v1/mandates` · `GET /v1/mandates/{id}` · `POST /v1/mandates/{id}/revoke` | Recurring payments: register a UPI AutoPay, card or eNACH mandate (the customer authorizes it at the PSP), follow `mandate.*` webhooks, revoke (ADR-035) |
 | `POST /v1/mandates/{id}/debits` · `GET …/debits[/{debit_id}]` · `POST …/debits/{debit_id}/cancel` | Debit an active mandate: the gateway notifies the customer at least 24 h ahead (UPI, card), executes, and retries up to 3 times a day apart; each debit is a payment with `payment.*` webhooks |
 | `POST /v1/checkout-sessions` · `GET/POST /checkout/{token}` | Hosted checkout session; the customer-facing page (HTML, no JavaScript; UPI app, UPI ID or scannable QR, card, netbanking, and the wallets, EMI and pay-later providers that can be routed) |
@@ -146,8 +147,9 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/ledger/adjustments` · `POST …/{id}/approve` · `/reject` | Manual ledger corrections: one operator requests, a different one approves (maker-checker, ADR-024) |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/assign` · `/resolve` · `GET …/reports/daily?date=` | Reconcile a merchant PSP account for a window; work the exception queue (owner, 48 h SLA, overdue filter); daily report per business day |
-| `GET /admin/v1/reviews` · `POST /admin/v1/reviews/{attempts\|refunds\|credits}/{id}/resolve` | Manual review queue (amount mismatch, PSP conflict, unresolved after 72 h, risk review, unmatched bank transfer credits, failed credit returns); audited acknowledgement |
-| `/simulator/...` | Mock PSP hosted page, completion, outage simulation, disputes (`…/payments/{ref}/dispute`, `…/disputes/{id}/status`), mandate authorization and the customer's pause, resume or revoke (`…/mandates/{ref}/complete`, `…/mandates/{ref}/status`), bank transfer credits (`…/collections/{ref}/credits`) and settlement-report anomalies (local and test only) |
+| `GET /admin/v1/reviews` · `POST /admin/v1/reviews/{attempts\|refunds\|disputes\|credits}/{id}/resolve` | Manual review queue (amount mismatch, PSP conflict, unresolved after 72 h, risk review, unmatched bank transfer credits, failed credit returns, failed dispute responses); audited acknowledgement |
+| `GET /admin/v1/disputes?evidence_due=true` | Disputes due within 3 days that nobody has answered, with their merchant (the `DisputeEvidenceDue` alert) |
+| `/simulator/...` | Mock PSP hosted page, completion, outage simulation, disputes (`…/payments/{ref}/dispute`, `…/disputes/{id}/status`, and `GET …/disputes/{id}` for the evidence it received), mandate authorization and the customer's pause, resume or revoke (`…/mandates/{ref}/complete`, `…/mandates/{ref}/status`), bank transfer credits (`…/collections/{ref}/credits`) and settlement-report anomalies (local and test only) |
 
 Merchant endpoints have per-merchant rate limits, with separate budgets for reads and writes. When a limit is hit, the API answers `429` with `Retry-After`. The request was not processed and its Idempotency-Key was not used up, so it can be retried unchanged. Operators can raise or lower one merchant's budgets with `PUT /admin/v1/merchants/{id}/rate-limits`, and the change applies from that merchant's next request (ADR-020).
 
@@ -173,6 +175,12 @@ Mock PSP test scenarios are selected by the last two digits of the amount:
 | `max_amount` `01` / `05` | Registration times out, processed / never processed (the poller finds it, or fails it as `not_submitted`) |
 | debit `amount` `06` | The pre-debit notification is never delivered |
 | debit `amount` `01`, `03`, `04`, `05` | As for payments |
+
+| Suffix of the dispute amount | Dispute response scenario (`MOCK_ALPHA`) |
+|---|---|
+| `01` / `05` | The first contest or acceptance times out, processed / not processed (the retry settles it) |
+| `02` | Every evidence upload is refused |
+| `03` | The contest is refused |
 
 Manual capture of `MOCK_ALPHA` cards may take any amount up to the authorization and releases the rest; `MOCK_BETA` cards capture only the full amount.
 
@@ -254,9 +262,9 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 19 | Partial capture (ADR-036): one capture of up to the authorized amount on PSPs that declare it (the mock PSPs; Razorpay requires the full amount); the PSP releases the rest; refunds, disputes, the ledger and reconciliation use the captured amount | Done |
 | 20 | Wallets, card EMI, cardless EMI and pay later (ADR-037): routing by the wallet or lender each PSP offers, the EMI plan the PSP reports, the hosted checkout's provider choice; mock PSPs and the Razorpay adapter (behind `pg.providers.razorpay.extra-methods`), with `payment/domain` unchanged | Done (sandbox run needs keys) |
 | 21 | Bank transfers (ADR-038): a virtual account per attempt; each credit recorded once and applied under the payment lock, added up or exact per merchant; excess, late and repeated credits sent back; a short payment refunded or accepted at expiry; unmatched credits reviewed; ledger and reconciliation by credit; the mock PSP and Razorpay Smart Collect (behind `pg.providers.razorpay.extra-methods`) | Done (sandbox run needs keys) |
+| 22 | Dispute evidence (ADR-039): evidence files uploaded through the API, encrypted per file and never deleted; one contest or acceptance per dispute, delivered to the PSP with retries until its deadline; `dispute.evidence_due` 3 days ahead and an operator alert; the mock PSP and Razorpay's Documents and Disputes APIs | Done (sandbox run needs keys) |
 
-**Next: V2, phases 22–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- dispute evidence;
+**Next: V2, phases 23–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
 - international cards;
 - cost-aware routing;
 - merchant billing;

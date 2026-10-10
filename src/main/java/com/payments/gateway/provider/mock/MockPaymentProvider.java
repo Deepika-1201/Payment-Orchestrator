@@ -13,6 +13,7 @@ import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
+import com.payments.gateway.provider.spi.ProviderDisputeResponse;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderCredit;
 import com.payments.gateway.provider.spi.ProviderEvent;
@@ -21,9 +22,13 @@ import com.payments.gateway.provider.spi.ProviderMandateResult;
 import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
+import com.payments.gateway.provider.spi.ProviderRefusedException;
+import com.payments.gateway.provider.spi.ProviderRequests.AcceptDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.ContestDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.DisputeEvidenceUpload;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -47,6 +52,7 @@ import com.payments.gateway.shared.model.CaptureMethod;
 import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.EmiPlan;
+import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.FailureCategory;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
@@ -58,8 +64,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Simulated PSP with deterministic scenarios selected by the amount's last two digits (see LLD §5):
@@ -672,6 +682,85 @@ public class MockPaymentProvider implements PaymentProvider {
     public void closeCollection(MerchantAccount account, CloseCollectionRequest request) {
         simulateNetwork(account);
         psp.find(request.collectionReference(), request.attemptId()).ifPresent(psp::close);
+    }
+
+    @Override
+    public String uploadDisputeEvidence(MerchantAccount account, DisputeEvidenceUpload upload) {
+        simulateNetwork(account);
+        MockPsp.DisputeTxn dispute = dispute(upload.disputeReference());
+        if (dispute.amount().amount() % 100 == 2) {
+            throw new ProviderRefusedException(code, "document_rejected", "Simulated: the document was rejected");
+        }
+        return dispute.addDocument(upload.fileName(), upload.contentType(), upload.content().length,
+                HexFormat.of().formatHex(Hashing.sha256(upload.content()))).id();
+    }
+
+    /**
+     * Dispute amount suffixes (LLD §22.6): 01 the first answer times out after processing, 05 before; 03 refuses a
+     * contest; 02 refuses every upload.
+     */
+    @Override
+    public ProviderDisputeResponse contestDispute(MerchantAccount account, ContestDisputeRequest request) {
+        simulateNetwork(account);
+        MockPsp.DisputeTxn dispute = dispute(request.disputeReference());
+        return respond(dispute, () -> {
+            if (request.documents().stream().anyMatch(document -> !dispute.hasDocument(document.documentId()))) {
+                return ProviderDisputeResponse.refused("unknown_document", "A document was not uploaded for this dispute");
+            }
+            if (dispute.amount().amount() % 100 == 3) {
+                return ProviderDisputeResponse.refused("evidence_rejected", "Simulated: the evidence was rejected");
+            }
+            Map<EvidenceCategory, List<String>> documents = new EnumMap<>(EvidenceCategory.class);
+            request.documents().forEach(document -> documents.computeIfAbsent(document.category(),
+                    category -> new ArrayList<>()).add(document.documentId()));
+            dispute.submitContest(new MockPsp.MockContest(request.statement(), documents, clock.instant()));
+            return null;
+        });
+    }
+
+    @Override
+    public ProviderDisputeResponse acceptDispute(MerchantAccount account, AcceptDisputeRequest request) {
+        simulateNetwork(account);
+        MockPsp.DisputeTxn dispute = dispute(request.disputeReference());
+        return respond(dispute, () -> {
+            dispute.accept(clock.instant());
+            return null;
+        });
+    }
+
+    /** Applies {@code action} (null = taken) once the dispute is open and in time, with the timeout scenarios. */
+    private ProviderDisputeResponse respond(MockPsp.DisputeTxn dispute, Supplier<ProviderDisputeResponse> action) {
+        if (dispute.state() != MockPsp.DisputeState.OPEN) {
+            return ProviderDisputeResponse.notOpen(toResult(dispute));
+        }
+        if (!clock.instant().isBefore(dispute.respondBy())) {
+            return ProviderDisputeResponse.refused("deadline_passed", "The deadline to respond has passed");
+        }
+        int scenario = (int) (dispute.amount().amount() % 100);
+        boolean first = dispute.nextResponseCall() == 1;
+        if (first && scenario == 5) {
+            throw new ProviderTimeoutException(code, "simulated read timeout (response not processed)");
+        }
+        ProviderDisputeResponse refused = action.get();
+        if (refused != null) {
+            return refused;
+        }
+        if (first && scenario == 1) {
+            throw new ProviderTimeoutException(code, "simulated read timeout (response was processed)");
+        }
+        return ProviderDisputeResponse.accepted(toResult(dispute));
+    }
+
+    private MockPsp.DisputeTxn dispute(String reference) {
+        return psp.findDispute(reference)
+                .orElseThrow(() -> new IllegalArgumentException("unknown mock dispute " + reference));
+    }
+
+    private static ProviderDisputeResult toResult(MockPsp.DisputeTxn dispute) {
+        String status = dispute.state().name().toLowerCase(Locale.ROOT);
+        return new ProviderDisputeResult(dispute.reference(), dispute.payment().reference(),
+                ProviderDisputeResult.Status.valueOf(dispute.state().name()), dispute.amount(), dispute.reason(),
+                dispute.respondBy(), status);
     }
 
     private Txn createDebit(MandateTxn mandate, String reference, ExecuteDebitRequest request, TxnState state) {

@@ -20,6 +20,8 @@ public record Review(boolean open, String reasons, Instant flaggedAt) {
     public static final String UNMATCHED_CREDIT = "unmatched_credit";
     /** The PSP refused to send a credit back: the customer's money is still at the PSP. */
     public static final String CREDIT_RETURN_FAILED = "credit_return_failed";
+    /** The merchant's dispute response was refused by the PSP or not delivered before the deadline (ADR-039). */
+    public static final String RESPONSE_FAILED = "response_failed";
 
     public static final Review NONE = new Review(false, null, null);
 

@@ -793,6 +793,10 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.webhooks.outbound.allow-private-targets` | `false` | Only `true` for local/test |
 | `pg.webhooks.inbound.allowed-sources.<PROVIDER>` | — | Optional source CIDRs for that PSP's webhooks; others get `403` (ADR-022) |
 | `pg.api.max-request-body` | `256KB` | Larger `/v1` and `/admin` bodies get `413 payload_too_large`, declared or chunked |
+| `pg.api.max-evidence-request-body` | `7MB` | Body limit of the dispute evidence upload path only (§22.1) |
+| `pg.disputes.evidence-max-file-size` / `.evidence-max-files` | `5MB` / `10` | Evidence file size and files per dispute (ADR-039) |
+| `pg.disputes.evidence-due-notice` / `.notice-batch` | `3d` / `100` | When `dispute.evidence_due` is sent, before `respond_by`; disputes per notice batch |
+| `pg.disputes.response-retry` / `.response-retry-max` / `.response-lease` | `1m` / `30m` / `2m` | Backoff for undelivered dispute responses, and the claim lease |
 | `pg.security.admin-users` | — | Named operators: `name` (audit actor), `token-sha256`, `roles` (`admin`, `ops`, `finance`, `read_only`); see ADR-019 |
 | `pg.security.admin-tokens` | — | Plaintext break-glass tokens with the `admin` role (local development; a warning is logged) |
 | `pg.security.oidc.issuer` / `.jwks-uri` / `.audience` | unset | Admin SSO: accept JWT access tokens from this identity provider (ADR-023) |
@@ -1356,14 +1360,14 @@ The POSTs take an `Idempotency-Key`. The dispute must be the merchant's (404 oth
 
 - **Upload** `POST /v1/disputes/{id}/evidence_files {category, file_name, content_type, content_base64}` → 201 with the evidence file `{id (dsf_…), object, dispute_id, category, file_name, content_type, size, sha256, created_at}`.
   - `category`: `shipping_proof`, `billing_proof`, `cancellation_proof`, `customer_communication`, `proof_of_service`, `explanation_letter`, `refund_confirmation`, `access_activity_log`, `refund_cancellation_policy`, `terms_and_conditions` or `other`.
-  - `content_type`: `application/pdf`, `image/jpeg` or `image/png`. The decoded content must start with that format's signature (`%PDF-`; `FF D8 FF`; `89 50 4E 47 0D 0A 1A 0A`) and be 1 byte to 5 MB (`pg.disputes.evidence-max-file-bytes`). `file_name`: 1 to 255 characters, no path separators or control characters. Otherwise 400 `validation_error`.
+  - `content_type`: `application/pdf`, `image/jpeg` or `image/png`. The decoded content must start with that format's signature (`%PDF-`; `FF D8 FF`; `89 50 4E 47 0D 0A 1A 0A`) and be at most 5 MB (`pg.disputes.evidence-max-file-size`). `file_name`: 1 to 255 characters, no path separators or control characters. Otherwise 400 `validation_error`.
   - At most 10 files per dispute (`pg.disputes.evidence-max-files`), counted under the payment lock.
   - Uploads are taken while a response could still be made (below); otherwise 409 `dispute_invalid_state`.
   - This path accepts bodies up to 7 MB (`pg.api.max-evidence-request-body`); larger ones get 413 `payload_too_large`. Every other path keeps 256 KB.
 - **Contest** `POST /v1/disputes/{id}/contest {statement, evidence_file_ids}`: `statement` of 1 to 1,000 characters, and 1 to 10 distinct ids of this dispute's files.
 - **Accept** `POST /v1/disputes/{id}/accept`, without a body.
 - A response can be made while the dispute is `open`, `respond_by` (if known) has not passed, and no earlier response is `pending` or `sent`; otherwise 409 `dispute_invalid_state`. Contest and accept answer 200 with the dispute when the PSP took the response at once, else 202 with the response `pending`.
-- **Disputes** gain `evidence_files` (as above, oldest first) and `response`, null until the merchant responds: `{type: contest | accept, status: pending | sent | failed, statement, evidence_file_ids, requested_at, sent_at, failure_reason}`.
+- **Disputes** gain `response`, null until the merchant responds: `{type: contest | accept, status: pending | sent | failed, statement, evidence_file_ids, requested_at, sent_at, failure_reason}`. `GET /v1/disputes/{id}/evidence_files` lists the uploaded files, oldest first.
 - **Events:** `dispute.evidence_due` (§22.4) and `dispute.response_failed`, with the dispute as payload. A response that is sent shows in the usual events: `dispute.updated` (under review) or `dispute.lost`.
 
 ### 22.2 Evidence storage
@@ -1408,10 +1412,11 @@ deliver(d):                                            -- after commit, and by D
     tx: lock p; respond_by passed ? responseFailed(deadline_passed) + review + event : retry later (backoff)
 ```
 
-- **Retries:** `DisputeResponseJob` claims due `PENDING` responses with a lease (§10) every 10 s. The backoff (`pg.disputes.response-retry`) is 1 min, doubling to 30 min, until `respond_by`.
-- **A dispute that moved on:** when the PSP refuses because the dispute is no longer open, the adapter reports its current status. A contest counts as sent if that status is `under_review`, `won` or `lost`, and an acceptance if it is `lost`. Anything else fails the response with `dispute_already_<status>`. Either way the status is applied.
+- **Retries:** `DisputeResponseJob` claims due `PENDING` responses with a lease (§10) every 10 s. The backoff (`pg.disputes.response-retry`, `response-retry-max`) is 1 min, doubling to 30 min. The first attempt after `respond_by` fails the response (`deadline_passed`) without calling the PSP again.
+- **Refusals:** a PSP that refuses a file (Razorpay: wrong type or size) or the contest fails the response with its reason; nothing is retried.
+- **A dispute that moved on:** when the PSP refuses because the dispute is no longer open, the adapter reports its current status. The response counts as sent only if that status is what it leads to: `under_review` for a contest, `lost` for an acceptance. Anything else fails it with `dispute_already_<status>`. Either way the status is applied.
 - **Applying the PSP's answer:** statuses are applied as in §3.5 (ranks, conflicts), with source `PROVIDER_RESPONSE`. An acceptance leads to `lost` and `dispute.lost`, and posts nothing: the chargeback posted at opening stands (ADR-018).
-- **Metric:** `pg.disputes.responses{provider, type, outcome}` with outcome `sent` or `failed`, registered at zero.
+- **Metric:** `pg.disputes.responses{type, outcome}` with outcome `sent` or `failed`, registered at zero.
 
 ### 22.4 Deadline notice and alert
 
@@ -1419,7 +1424,7 @@ deliver(d):                                            -- after commit, and by D
   - have `respond_by` within `pg.disputes.evidence-due-notice` (3 days) or already passed;
   - have not been notified;
   - have no response `pending` or `sent`.
-- It takes them in order of deadline, in batches of 100, until none is left. For each, under the payment lock and after checking again, it sets `evidence_due_notified_at` and sends `dispute.evidence_due` in the same transaction.
+- It takes them in order of deadline, in batches of 100 (`pg.disputes.notice-batch`), until none is left. For each, under the payment lock and after checking again, it sets `evidence_due_notified_at` and sends `dispute.evidence_due` in the same transaction.
 - Gauge `pg.disputes.evidence_due`: the open disputes whose `respond_by` is within the window or passed, with no response `pending` or `sent`, notified or not. It is counted by its own query, not from the job's batches.
 - Alert `DisputeEvidenceDue`: `max(pg_disputes_evidence_due) > 0` for 30 minutes, ticket severity, runbook section of the same name.
 - `GET /admin/v1/disputes?evidence_due=true[&merchant_id=]` (permission `read`) lists those disputes, earliest deadline first, with their merchant.
@@ -1427,7 +1432,7 @@ deliver(d):                                            -- after commit, and by D
 ### 22.5 Provider SPI
 
 - `ProviderCapabilities.disputeResponses`, false by default.
-- `uploadDisputeEvidence(account, DisputeEvidenceUpload(disputeReference, fileId, fileName, contentType, content))` returns the PSP's document id.
+- `uploadDisputeEvidence(account, DisputeEvidenceUpload(disputeReference, fileId, fileName, contentType, content))` returns the PSP's document id. A refusal that retrying cannot fix is a `ProviderRefusedException` (failure code and message).
 - `contestDispute(account, ContestDisputeRequest(disputeReference, statement, documents))`, with documents as (category, document id) pairs, and `acceptDispute(account, AcceptDisputeRequest(disputeReference))` return `ProviderDisputeResponse(outcome, dispute, failureCode, failureMessage)`. The outcome is `ACCEPTED` or `REFUSED`, and `dispute` is a `ProviderDisputeResult` with the PSP's status.
 - `ProviderClient` wraps the three calls like the others (circuit breaker, timeouts). Timeouts and unavailability are retried (§22.3).
 
@@ -1439,12 +1444,13 @@ deliver(d):                                            -- after commit, and by D
   - `01`: the first contest or acceptance times out after the mock processed it.
   - `05`: the first one times out and is not processed.
   - `03`: the mock refuses the contest (`evidence_rejected`).
+  - `02`: the mock refuses every upload (`document_rejected`).
 - `GET /simulator/{provider}/disputes/{reference}` shows what the mock received: documents, contest and acceptance.
 
 ### 22.7 Razorpay mapping
 
 - Razorpay declares dispute responses without a flag: the Disputes API is part of every account.
-- **Upload:** `POST /v1/documents` as multipart, with `file` and `purpose=dispute_evidence`, returns the document `id`. "Document upload already in progress" counts as unavailability and is retried.
+- **Upload:** `POST /v1/documents` as multipart, with `file` and `purpose=dispute_evidence`, returns the document `id`. "Document upload already in progress" counts as unavailability and is retried; any other 400 refuses the file (`document_rejected`).
 - **Contest:** `PATCH /v1/disputes/{id}/contest` with `summary` (the statement), the category lists and `action: submit`. `terms_and_conditions` is sent as `term_and_conditions`, and `other` as `others: [{type: "other", document_ids}]`.
 - **Accept:** `POST /v1/disputes/{id}/accept`.
 - **Refusals:** a 400 for a dispute no longer open is followed by `GET /v1/disputes/{id}` for its status (§22.3). "Deadline to respond has elapsed" is refused with `deadline_passed`. Other 400s are refused with Razorpay's description.

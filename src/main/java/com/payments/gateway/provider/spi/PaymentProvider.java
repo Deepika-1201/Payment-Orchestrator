@@ -5,9 +5,12 @@ import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationQuery;
 import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationRequest;
 import com.payments.gateway.provider.spi.MandateRequests.ExecuteDebitRequest;
 import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.AcceptDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.ContestDisputeRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
+import com.payments.gateway.provider.spi.ProviderRequests.DisputeEvidenceUpload;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -104,5 +107,21 @@ public interface PaymentProvider {
     /** Stops the account from taking further credits; closing an account already closed succeeds. */
     default void closeCollection(MerchantAccount account, CloseCollectionRequest request) {
         throw new UnsupportedOperationException(code() + " does not support bank transfers");
+    }
+
+    // Dispute responses (ADR-039): only called when capabilities().disputeResponses() is true.
+
+    /** Sends one evidence file to the PSP; returns its document id. A permanent refusal is a {@link ProviderRefusedException}. */
+    default String uploadDisputeEvidence(MerchantAccount account, DisputeEvidenceUpload upload) {
+        throw new UnsupportedOperationException(code() + " does not take dispute responses");
+    }
+
+    /** Submits the contest. A refusal because the dispute is no longer open reports the dispute's current status. */
+    default ProviderDisputeResponse contestDispute(MerchantAccount account, ContestDisputeRequest request) {
+        throw new UnsupportedOperationException(code() + " does not take dispute responses");
+    }
+
+    default ProviderDisputeResponse acceptDispute(MerchantAccount account, AcceptDisputeRequest request) {
+        throw new UnsupportedOperationException(code() + " does not take dispute responses");
     }
 }

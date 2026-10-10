@@ -1,5 +1,7 @@
 package com.payments.gateway.platform;
 
+import com.payments.gateway.payment.application.DisputeDeadlineJob;
+import com.payments.gateway.payment.application.DisputeResponseService;
 import com.payments.gateway.payment.application.ExpiryJob;
 import com.payments.gateway.payment.application.MandateScheduler;
 import com.payments.gateway.payment.application.StatusResolver;
@@ -27,10 +29,13 @@ public class WorkerScheduler {
     private final ReconciliationService reconciliation;
     private final RetentionJob retention;
     private final MandateScheduler mandates;
+    private final DisputeResponseService disputeResponses;
+    private final DisputeDeadlineJob disputeDeadlines;
 
     public WorkerScheduler(StatusResolver statusResolver, ExpiryJob expiryJob, ProviderWebhookService inbox,
                            WebhookDeliveryWorker deliveries, ReconciliationService reconciliation,
-                           RetentionJob retention, MandateScheduler mandates) {
+                           RetentionJob retention, MandateScheduler mandates, DisputeResponseService disputeResponses,
+                           DisputeDeadlineJob disputeDeadlines) {
         this.statusResolver = statusResolver;
         this.expiryJob = expiryJob;
         this.inbox = inbox;
@@ -38,6 +43,8 @@ public class WorkerScheduler {
         this.reconciliation = reconciliation;
         this.retention = retention;
         this.mandates = mandates;
+        this.disputeResponses = disputeResponses;
+        this.disputeDeadlines = disputeDeadlines;
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
@@ -67,6 +74,16 @@ public class WorkerScheduler {
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
     void webhookDeliveries() {
         run("webhook-deliveries", deliveries::deliverDue);
+    }
+
+    @Scheduled(fixedDelay = 10, timeUnit = TimeUnit.SECONDS)
+    void disputeResponses() {
+        run("dispute-responses", disputeResponses::deliverDue);
+    }
+
+    @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.MINUTES)
+    void disputeDeadlines() {
+        run("dispute-deadlines", disputeDeadlines::notifyDue);
     }
 
     @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
