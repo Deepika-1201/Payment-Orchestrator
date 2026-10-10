@@ -32,7 +32,8 @@ public class MerchantAdminService {
     /** Null fields are left unchanged. */
     public record SettingsUpdate(String name, String webhookUrl, Merchant.LateSuccessPolicy lateSuccessPolicy,
                                  Duration paymentExpiry, Long mandateDebitLimit,
-                                 Merchant.TransferCredits transferCredits, Merchant.TransferShortfall transferShortfall) {
+                                 Merchant.TransferCredits transferCredits, Merchant.TransferShortfall transferShortfall,
+                                 Boolean internationalCards) {
     }
 
     public record CreatedMerchant(Merchant merchant, List<String> providers, String webhookSecret) {
@@ -106,7 +107,9 @@ public class MerchantAdminService {
                 .withMandateDebitLimit(update.mandateDebitLimit() == null
                         ? merchant.mandateDebitLimit() : update.mandateDebitLimit())
                 .withBankTransfers(Objects.requireNonNullElse(update.transferCredits(), merchant.transferCredits()),
-                        Objects.requireNonNullElse(update.transferShortfall(), merchant.transferShortfall())),
+                        Objects.requireNonNullElse(update.transferShortfall(), merchant.transferShortfall()))
+                .withInternationalCards(Objects.requireNonNullElse(update.internationalCards(),
+                        merchant.internationalCards())),
                 "merchant.updated", actor);
     }
 
@@ -241,6 +244,9 @@ public class MerchantAdminService {
         }
         if (before.transferShortfall() != after.transferShortfall()) {
             changed.put("bank_transfer_short_at_expiry", after.transferShortfall().name());
+        }
+        if (before.internationalCards() != after.internationalCards()) {
+            changed.put("international_cards", after.internationalCards());
         }
         if (before.status() != after.status() || !Objects.equals(before.statusReason(), after.statusReason())) {
             List<String> status = new ArrayList<>(List.of(after.status().name()));

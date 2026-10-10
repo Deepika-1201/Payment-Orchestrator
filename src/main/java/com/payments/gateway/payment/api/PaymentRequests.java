@@ -17,8 +17,9 @@ public final class PaymentRequests {
     private PaymentRequests() {
     }
 
+    /** {@code amount}: INR 100 to 100,000,000; other currencies within their PSPs' limits (LLD §23.1). */
     public record CreatePayment(
-            @NotNull @Min(100) @Max(100_000_000) Long amount,
+            @NotNull @Min(1) @Max(1_000_000_000_000L) Long amount,
             @NotBlank @Pattern(regexp = "[A-Z]{3}", message = "must be an upper-case ISO 4217 code") String currency,
             @NotBlank @Size(max = 64) @Pattern(regexp = "[A-Za-z0-9_\\-:.]+", message = "may contain letters, digits, _ - : .") String merchantOrderId,
             @Pattern(regexp = "(?i)automatic|manual", message = "must be automatic or manual") String captureMethod,

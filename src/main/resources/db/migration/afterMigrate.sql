@@ -13,7 +13,7 @@ BEGIN
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', app);
     EXECUTE format('REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM %I', app);
     EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', app);
-    EXECUTE format('REVOKE UPDATE, DELETE ON ledger_transactions, ledger_entries, audit_log, payment_transitions, mandate_transitions FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON ledger_transactions, ledger_entries, audit_log, payment_transitions, mandate_transitions, fx_conversions FROM %I', app);
     -- Evidence is kept with the dispute record (ADR-039): only the PSP's document id and the wrapped key may change.
     EXECUTE format('REVOKE UPDATE, DELETE ON dispute_evidence_files FROM %I', app);
     EXECUTE format('GRANT UPDATE (provider_document_id, content_key_enc) ON dispute_evidence_files TO %I', app);

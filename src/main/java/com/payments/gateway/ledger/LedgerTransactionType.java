@@ -10,5 +10,6 @@ public enum LedgerTransactionType {
     ADJUSTMENT,
     CREDIT_RECEIVED,
     CREDIT_APPLIED,
-    CREDIT_RETURNED
+    CREDIT_RETURNED,
+    FX_CONVERSION
 }

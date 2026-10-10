@@ -2,6 +2,8 @@ package com.payments.gateway.ledger;
 
 import com.payments.gateway.ledger.LedgerModel.Leg;
 import com.payments.gateway.ledger.LedgerModel.Posting;
+import com.payments.gateway.shared.events.CurrencyConversion;
+import com.payments.gateway.shared.events.CurrencyConversion.Kind;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.support.IntegrationTest;
 import java.time.Duration;
@@ -25,6 +27,10 @@ class LedgerIntegrationTest extends IntegrationTest {
     private LedgerService ledger;
     @Autowired
     private TransactionTemplate tx;
+        @Autowired
+        private LedgerPostingListener postings;
+        @Autowired
+        private LedgerRepository repository;
 
     @Test
     void capturesAndRefundsArePostedAsBalancedDoubleEntries() {
@@ -107,5 +113,74 @@ class LedgerIntegrationTest extends IntegrationTest {
 
         assertThat(error).hasMessageContaining("append-only");
         assertThat(num(Map.of("v", count("SELECT count(*) FROM ledger_entries")), "v")).isEqualTo(2);
+    }
+
+    @Test
+    void eachCurrencyMustBalanceEvenWhenTheCombinedTotalIsZero() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        Posting unbalanced = new Posting(merchant.id(), ALPHA, LedgerTransactionType.FX_CONVERSION,
+                "TEST", "cross-currency", "bad", clock.instant(), List.of(
+                Leg.debit(LedgerAccountType.FX_CONVERSION, Money.of(100, "USD")),
+                Leg.credit(LedgerAccountType.FX_CONVERSION, Money.of(100, "INR"))));
+        assertThatThrownBy(() -> ledger.post(unbalanced)).hasMessageContaining("unbalanced");
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            repository.insertTransaction("ltx_cross", unbalanced, clock.instant());
+            for (Leg leg : unbalanced.legs()) {
+                String accountId = repository.accountId(merchant.id(), ALPHA, leg.account(), leg.amount().currency(), clock.instant());
+                repository.insertEntry("ltx_cross", accountId, leg.direction(), leg.amount(), clock.instant());
+            }
+        })).hasStackTraceContaining("not balanced");
+        assertThat(count("SELECT count(*) FROM ledger_transactions")).isZero();
+
+        Posting balanced = new Posting(merchant.id(), ALPHA, LedgerTransactionType.FX_CONVERSION,
+                "TEST", "balanced-currencies", "balanced", clock.instant(), List.of(
+                Leg.debit(LedgerAccountType.FX_CONVERSION, Money.of(100, "USD")),
+                Leg.credit(LedgerAccountType.SALES_CLEARING, Money.of(100, "USD")),
+                Leg.debit(LedgerAccountType.PSP_RECEIVABLE, Money.of(8325, "INR")),
+                Leg.credit(LedgerAccountType.FX_CONVERSION, Money.of(8325, "INR"))));
+        assertThat(ledger.post(balanced)).isTrue();
+    }
+
+    @Test
+    void entriesCannotUseACurrencyDifferentFromTheirAccount() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            Posting posting = new Posting(merchant.id(), ALPHA, LedgerTransactionType.ADJUSTMENT,
+                    "TEST", "wrong-currency", "bad", clock.instant(), List.of());
+            repository.insertTransaction("ltx_wrong_currency", posting, clock.instant());
+            String accountId = repository.accountId(merchant.id(), ALPHA, LedgerAccountType.FX_CONVERSION, "INR", clock.instant());
+            repository.insertEntry("ltx_wrong_currency", accountId, EntryDirection.DEBIT, Money.of(100, "USD"), clock.instant());
+        })).hasStackTraceContaining("fk_ledger_entry_account_currency");
+    }
+
+    @Test
+    void convertedRefundsBookTheDifferenceFromTheCaptureValue() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        postings.on(new CurrencyConversion("capture", Kind.CAPTURE, merchant.id(), ALPHA,
+                Money.of(834_567, "INR"), 834_567, clock.instant()));
+        CurrencyConversion first = new CurrencyConversion("first", Kind.REFUND, merchant.id(), ALPHA,
+                Money.of(340_000, "INR"), 333_827, clock.instant());
+        postings.on(first);
+        postings.on(first);
+        postings.on(new CurrencyConversion("rest", Kind.REFUND, merchant.id(), ALPHA,
+                Money.of(499_000, "INR"), 500_740, clock.instant()));
+        assertThat(ledgerBalances(merchant)).containsEntry("fx_conversion", 0L)
+                .containsEntry("fx_gain_loss", -4433L).containsEntry("psp_receivable", -4433L);
+        assertThat(count("SELECT count(*) FROM ledger_transactions")).isEqualTo(3);
+    }
+
+    @Test
+    void convertedChargebacksAndReversalsBookGainsAndLosses() {
+        TestMerchant merchant = createMerchant(ALPHA);
+        postings.on(new CurrencyConversion("chargeback", Kind.CHARGEBACK, merchant.id(), ALPHA,
+                Money.of(90, "INR"), 100, clock.instant()));
+        postings.on(new CurrencyConversion("reversal", Kind.CHARGEBACK_REVERSAL, merchant.id(), ALPHA,
+                Money.of(120, "INR"), 100, clock.instant()));
+        postings.on(new CurrencyConversion("chargeback2", Kind.CHARGEBACK, merchant.id(), ALPHA,
+                Money.of(130, "INR"), 100, clock.instant()));
+        postings.on(new CurrencyConversion("reversal2", Kind.CHARGEBACK_REVERSAL, merchant.id(), ALPHA,
+                Money.of(80, "INR"), 100, clock.instant()));
+        assertThat(ledgerBalances(merchant)).containsEntry("fx_conversion", 0L)
+                .containsEntry("fx_gain_loss", -20L).containsEntry("psp_receivable", -20L);
     }
 }

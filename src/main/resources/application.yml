@@ -87,7 +87,6 @@ pg:
     processing-grace: 30m
     authorization-ttl: 5d
     max-attempts: 5
-    supported-currencies: [INR]
   idempotency:
     ttl: 7d
     lease: 30s

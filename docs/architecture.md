@@ -119,7 +119,7 @@ flowchart TB
 | `routing` | Rules, candidate selection, health tracking | shared, provider (SPI) |
 | `risk` | Risk rules and decisions | shared |
 | `webhook` | Inbound PSP webhook inbox; outbound merchant events and deliveries | shared, payment (events + inbound port), merchant, provider (SPI) |
-| `ledger` | Double-entry shadow ledger, balances | shared (listens to `FundsMovement`) |
+| `ledger` | Double-entry shadow ledger, balances and FX gains/losses | shared (listens to `FundsMovement` and `CurrencyConversion`) |
 | `reconciliation` | Settlement-report matching, auto-heal, exception queue | payment (application API), provider (SPI), ledger, merchant |
 | `checkout` | Hosted checkout sessions and server-rendered pages (ADR-013) | payment (application API), merchant, idempotency |
 
@@ -320,11 +320,13 @@ flowchart LR
 
 Razorpay and Cashfree report by settlement date, a few days after a capture. A capture therefore counts as missing at the PSP only once its settlement lag has passed. Money the PSP moved for anything else (reserves, transfers, manual corrections) becomes an exception for finance, who books it in the ledger once it is explained. A payout still pending fails the run, which the next daily runs retry. See ADR-032.
 
+International cards (ADR-040) charge in the PSP's supported currencies but settle in INR. Foreign movements post against `fx_conversion`; immutable conversion records post their INR effect to the PSP receivable. Refunds and chargebacks allocate the original capture's INR value cumulatively and book the difference to `fx_gain_loss`. Reconciliation compares original amounts when supplied and matches in INR; missing dependent conversions remain exceptions until their prerequisite evidence arrives.
+
 ## 5. Data architecture
 
 - **PostgreSQL is the single source of truth** for payments, attempts, refunds, idempotency, the webhook inbox and outbox, routing rules, and audit logs. Strong consistency comes from row locks on the payment row plus database constraints (e.g. `amount_refunded <= amount_captured`).
 - **Shard-ready from day one:** every table carries `merchant_id`, no transaction spans merchants, and ids are globally unique and time-ordered (ULID-style). The first scaling step is vertical plus partitioning; the second is sharding by `merchant_id` (e.g. Citus) — see §10.
-- **Append-only records:** `payment_transitions`, `audit_log`, `ledger_transactions` and `ledger_entries` reject `UPDATE`/`DELETE` via triggers. Ledger balance is also enforced by a deferred constraint trigger at commit.
+- **Append-only records:** `payment_transitions`, `audit_log`, `ledger_transactions`, `ledger_entries` and `fx_conversions` reject `UPDATE`/`DELETE` via triggers. Ledger balance is enforced per currency by a deferred constraint trigger at commit; entries must use their account's currency.
 - **Partitioning plan** (when volume demands it, roughly 10× launch): monthly range partitions on the append-heavy tables (`payment_transitions`, `provider_webhook_events`, `merchant_events`, `webhook_deliveries`, `idempotency_records`), managed with pg_partman; retention is enforced by dropping partitions.
 - **Read path:** reporting and analytics go to a read replica (Aurora reader), never the writer.
 

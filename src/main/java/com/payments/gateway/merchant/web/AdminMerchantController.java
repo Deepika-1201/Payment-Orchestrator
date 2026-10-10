@@ -56,6 +56,7 @@ public class AdminMerchantController {
      * {@code mandateDebitLimit}: frictionless mandate debit limit in minor units, ₹1 to ₹1,00,000 (ADR-035).
      * {@code bankTransferCredits} ({@code add_up} or {@code exact}) and {@code bankTransferShortAtExpiry}
      * ({@code refund} or {@code accept}): how bank transfer credits pay a payment (ADR-038).
+     * {@code internationalCards}: payments in the other currencies the merchant's PSPs charge cards in (ADR-040).
      */
     public record UpdateMerchantRequest(
             @Size(min = 1, max = 200) String name,
@@ -64,7 +65,8 @@ public class AdminMerchantController {
             @Min(60) @Max(86400) Integer paymentExpirySeconds,
             @Min(100) @Max(10_000_000) Long mandateDebitLimit,
             String bankTransferCredits,
-            String bankTransferShortAtExpiry) {
+            String bankTransferShortAtExpiry,
+            Boolean internationalCards) {
     }
 
     public record SuspendRequest(@NotBlank @Size(max = 500) String reason) {
@@ -80,7 +82,8 @@ public class AdminMerchantController {
     public record MerchantResponse(String id, String name, String status, String statusReason, String webhookUrl,
                                    String lateSuccessPolicy, long paymentExpirySeconds, List<String> providers,
                                    String webhookSecret, Instant createdAt, Long mandateDebitLimit,
-                                   String bankTransferCredits, String bankTransferShortAtExpiry) {
+                                   String bankTransferCredits, String bankTransferShortAtExpiry,
+                                   boolean internationalCards) {
     }
 
     public record ApiKeyResponse(String id, String apiKey, String hint, String mode, String status, Instant createdAt,
@@ -159,7 +162,7 @@ public class AdminMerchantController {
                 : WireEnums.parse(Merchant.TransferShortfall.class, request.bankTransferShortAtExpiry(),
                 "bank_transfer_short_at_expiry");
         return toResponse(admin.update(id, new MerchantAdminService.SettingsUpdate(request.name(), request.webhookUrl(),
-                policy, expiry, request.mandateDebitLimit(), credits, shortfall), actor));
+                policy, expiry, request.mandateDebitLimit(), credits, shortfall, request.internationalCards()), actor));
     }
 
     @DeleteMapping("/{id}/webhook-url")
@@ -272,7 +275,7 @@ public class AdminMerchantController {
                 merchant.statusReason(), merchant.webhookUrl(), WireEnums.wire(merchant.lateSuccessPolicy()),
                 merchant.paymentExpiry().toSeconds(), providers, webhookSecret, merchant.createdAt(),
                 merchant.mandateDebitLimit(), WireEnums.wire(merchant.transferCredits()),
-                WireEnums.wire(merchant.transferShortfall()));
+                WireEnums.wire(merchant.transferShortfall()), merchant.internationalCards());
     }
 
     private static ApiKeyResponse toResponse(ApiKeyRow key) {

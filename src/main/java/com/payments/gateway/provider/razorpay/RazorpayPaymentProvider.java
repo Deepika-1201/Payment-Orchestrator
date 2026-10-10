@@ -11,6 +11,7 @@ import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCapabilities.CurrencySupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MandateSupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredit;
@@ -43,6 +44,7 @@ import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.FailureCategory;
@@ -58,6 +60,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Currency;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -140,9 +143,12 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                 MethodType.CARD, new MethodSupport(Set.of(), 100, CARD_MAX, false),
                 MethodType.NETBANKING, new MethodSupport(Set.of(), 100, CARD_MAX, false)));
         properties.extraMethods().forEach(type -> methods.put(type, EXTRA_METHODS.get(type)));
+        Map<String, CurrencySupport> foreignCurrencies = new LinkedHashMap<>();
+        properties.foreignCurrencies().forEach((currency, maximum) -> foreignCurrencies.put(currency,
+            new CurrencySupport(100, maximum, Currency.getInstance(currency).getDefaultFractionDigits() == 3 ? 10 : 1)));
         this.capabilities = new ProviderCapabilities(methods, Set.of("INR"), false, true, true)
                 .withMandates(properties.mandates() ? MANDATES : Map.of())
-                .withDisputeResponses();
+            .withDisputeResponses().withForeignCurrencies(foreignCurrencies);
     }
 
     @Override
@@ -601,7 +607,11 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
      */
     private SettlementReport.Line reconLine(MerchantAccount account, JsonNode item) {
         String id = text(item, "entity_id");
-        String currency = Optional.ofNullable(text(item, "currency")).orElse("INR");
+        String currency = text(item, "currency");
+        if (!Money.SETTLEMENT_CURRENCY.equals(currency)) {
+            throw new ProviderUnavailableException(RazorpayApi.CODE,
+                "Settlement recon row " + id + " must explicitly report INR amounts; got " + currency);
+        }
         Money amount = Money.of(item.path("amount").asLong(0), currency);
         long credit = item.path("credit").asLong(0);
         long debit = item.path("debit").asLong(0);
@@ -623,9 +633,10 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         }
         if (type.equals("adjustment") && disputeId != null) {
             boolean withheld = debit > 0;
+            DisputedItem disputed = disputedItem(account, disputeId);
             return new SettlementReport.Line(id, withheld ? LineType.CHARGEBACK : LineType.CHARGEBACK_REVERSAL, disputeId,
-                    disputedAttempt(account, disputeId), amount, withheld ? keptOnDebit : keptOnCredit, settlementId,
-                    createdAt);
+                disputed.attemptId(), amount, withheld ? keptOnDebit : keptOnCredit, settlementId,
+                createdAt, null, disputed.charged());
         }
         String description = text(item, "description");
         boolean credited = credit > 0;
@@ -634,22 +645,27 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                 description == null ? type : type + ": " + description);
     }
 
-    /** The attempt behind a dispute, for a chargeback the gateway only learns about from the report (ADR-018). */
-    private String disputedAttempt(MerchantAccount account, String disputeId) {
+    private record DisputedItem(String attemptId, Money charged) {
+    }
+
+    private DisputedItem disputedItem(MerchantAccount account, String disputeId) {
         try {
-            String paymentId = text(api.get(account, "/disputes/" + RazorpayApi.segment(disputeId), Map.of()), "payment_id");
+            JsonNode dispute = api.get(account, "/disputes/" + RazorpayApi.segment(disputeId), Map.of());
+            Money original = amount(dispute);
+            Money charged = original == null || original.inSettlementCurrency() ? null : original;
+            String paymentId = text(dispute, "payment_id");
             if (paymentId == null) {
-                return null;
+                return new DisputedItem(null, charged);
             }
             JsonNode payment = api.get(account, "/payments/" + RazorpayApi.segment(paymentId), Map.of());
             String attemptId = text(payment.path("notes"), ATTEMPT_NOTE);
             String orderId = text(payment, "order_id");
-            if (attemptId != null || orderId == null) {
-                return attemptId;
+            if (attemptId == null && orderId != null) {
+                attemptId = text(api.get(account, "/orders/" + RazorpayApi.segment(orderId), Map.of()), "receipt");
             }
-            return text(api.get(account, "/orders/" + RazorpayApi.segment(orderId), Map.of()), "receipt");
+            return new DisputedItem(attemptId, charged);
         } catch (RazorpayApi.BadRequest e) {
-            return null;
+            return new DisputedItem(null, null);
         }
     }
 
@@ -1226,6 +1242,12 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
     }
 
     private static ProviderPaymentResult withCard(ProviderPaymentResult result, JsonNode payment) {
+        JsonNode baseAmount = payment.path("base_amount");
+        if (result.outcome() == ProviderPaymentResult.Outcome.SUCCEEDED && result.amount() != null
+                && !result.amount().inSettlementCurrency() && Money.SETTLEMENT_CURRENCY.equals(text(payment, "base_currency"))
+                && baseAmount.isIntegralNumber() && baseAmount.canConvertToLong() && baseAmount.asLong() > 0) {
+            result = result.withConversion(new Conversion(Money.of(baseAmount.asLong(), Money.SETTLEMENT_CURRENCY), null));
+        }
         JsonNode card = payment.path("card");
         String network = text(card, "network");
         String last4 = text(card, "last4");

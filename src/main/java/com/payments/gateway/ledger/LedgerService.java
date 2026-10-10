@@ -7,7 +7,9 @@ import com.payments.gateway.ledger.LedgerModel.TransactionView;
 import com.payments.gateway.shared.Ids;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -65,24 +67,16 @@ public class LedgerService {
         if (posting.legs().size() < 2) {
             throw new IllegalArgumentException("a ledger transaction needs at least two legs");
         }
-        String currency = posting.legs().getFirst().amount().currency();
-        long debits = 0;
-        long credits = 0;
+        Map<String, Long> balances = new LinkedHashMap<>();
         for (Leg leg : posting.legs()) {
-            if (!leg.amount().currency().equals(currency)) {
-                throw new IllegalArgumentException("all legs of a ledger transaction must share one currency");
-            }
             if (leg.amount().amount() <= 0) {
                 throw new IllegalArgumentException("ledger leg amounts must be positive");
             }
-            if (leg.direction() == EntryDirection.DEBIT) {
-                debits = Math.addExact(debits, leg.amount().amount());
-            } else {
-                credits = Math.addExact(credits, leg.amount().amount());
-            }
+            long signed = leg.direction() == EntryDirection.DEBIT ? leg.amount().amount() : -leg.amount().amount();
+            balances.merge(leg.amount().currency(), signed, Math::addExact);
         }
-        if (debits != credits) {
-            throw new IllegalArgumentException("unbalanced ledger transaction: debits " + debits + " != credits " + credits);
+        if (balances.values().stream().anyMatch(balance -> balance != 0)) {
+            throw new IllegalArgumentException("unbalanced ledger transaction by currency: " + balances);
         }
     }
 }

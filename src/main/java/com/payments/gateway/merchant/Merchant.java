@@ -6,10 +6,12 @@ import java.time.Instant;
 /**
  * {@code mandateDebitLimit}: frictionless debit limit raised by an operator (ADR-035); null means the gateway default.
  * {@code transferCredits} and {@code transferShortfall}: how bank transfer credits pay a payment (ADR-038).
+ * {@code internationalCards}: the merchant may charge cards in other currencies (ADR-040).
  */
 public record Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
                        LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt,
-                       Long mandateDebitLimit, TransferCredits transferCredits, TransferShortfall transferShortfall) {
+                       Long mandateDebitLimit, TransferCredits transferCredits, TransferShortfall transferShortfall,
+                       boolean internationalCards) {
 
     public Merchant {
         transferCredits = transferCredits == null ? TransferCredits.ADD_UP : transferCredits;
@@ -17,10 +19,17 @@ public record Merchant(String id, String name, Status status, String statusReaso
     }
 
     public Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
+                LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt,
+                Long mandateDebitLimit, TransferCredits transferCredits, TransferShortfall transferShortfall) {
+        this(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt, mandateDebitLimit,
+            transferCredits, transferShortfall, false);
+        }
+
+        public Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
                     LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt,
                     Long mandateDebitLimit) {
         this(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt, mandateDebitLimit,
-                null, null);
+                null, null, false);
     }
 
     public Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
@@ -57,21 +66,26 @@ public record Merchant(String id, String name, Status status, String statusReaso
 
     public Merchant withSettings(String newName, String newWebhookUrl, LateSuccessPolicy newPolicy, Duration newExpiry) {
         return new Merchant(id, newName, status, statusReason, newWebhookUrl, newPolicy, newExpiry, createdAt,
-                mandateDebitLimit, transferCredits, transferShortfall);
+                mandateDebitLimit, transferCredits, transferShortfall, internationalCards);
     }
 
     public Merchant withMandateDebitLimit(Long newLimit) {
         return new Merchant(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
-                newLimit, transferCredits, transferShortfall);
+                newLimit, transferCredits, transferShortfall, internationalCards);
     }
 
     public Merchant withBankTransfers(TransferCredits credits, TransferShortfall shortfall) {
         return new Merchant(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
-                mandateDebitLimit, credits, shortfall);
+                mandateDebitLimit, credits, shortfall, internationalCards);
+    }
+
+    public Merchant withInternationalCards(boolean enabled) {
+        return new Merchant(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
+                mandateDebitLimit, transferCredits, transferShortfall, enabled);
     }
 
     public Merchant withStatus(Status newStatus, String reason) {
         return new Merchant(id, name, newStatus, reason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
-                mandateDebitLimit, transferCredits, transferShortfall);
+                mandateDebitLimit, transferCredits, transferShortfall, internationalCards);
     }
 }

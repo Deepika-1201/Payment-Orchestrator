@@ -1487,7 +1487,7 @@ Requirements: [§8.6](requirements.md#86-international-cards-and-multi-currency-
 - INR keeps ₹1 to ₹10,00,000 (`amount` 100 to 100,000,000), now checked by the service with the same 400. The request schema allows 1 to 10<sup>12</sup>.
 - **Confirm:** only `card` is routable for such a payment (§23.2); any other method gets 422 `unsupported_payment_method`.
 - **Capture and refunds** are in the payment's currency. A partial capture and a refund must be multiples of the attempt's PSP's step for the currency, else 400 `validation_error`. Refunds stay limited to what was captured less refunds and disputes (FR-FX3).
-- **Responses:** payments, refunds and disputes gain `conversion`. It is null for INR, and for other currencies until the PSP reports it; then `{settled_amount, settled_currency: "INR", rate}`, with `rate` a decimal string, or null when the PSP gives none. A payment shows its capture's, a dispute its chargeback's. Webhook payloads carry the same objects.
+- **Responses:** payments, refunds and disputes gain `conversion`. It is absent for INR, and for other currencies until the PSP reports it; then `{settled_amount, settled_currency: "INR", rate}`, with `rate` a decimal string, omitted when the PSP gives none. A payment shows its capture's, a dispute its chargeback's. Webhook payloads carry the same objects.
 - The hosted checkout shows the amount in its currency and offers only card.
 
 ### 23.2 Currencies, routing and risk
@@ -1519,8 +1519,10 @@ A **conversion** is what the PSP converted for one money movement of a payment i
   ```
 
   The allocations telescope, so a payment refunded or charged back in full carries back exactly S.
+- A closed chargeback and its reversal may be reported after later refunds have already been converted. Recording that historical pair can temporarily take N above C; it is not a new customer refund. Each movement remains bounded by C, and a new refund cannot take the net above C. The reversal returns the cumulative allocation exactly.
 - A refund or chargeback can be recorded only after its capture's conversion, and a reversal only after its chargeback's. Otherwise a PSP answer's amount is not recorded, and reconciliation flags the line (§23.5).
-- The rate is stored as the PSP's decimal (`numeric`), and amounts use integers and `BigDecimal` only; nothing is computed in floating point (NFR-20).
+- The rate is stored as the PSP's finite positive decimal (`numeric`), and amounts use integers and `BigDecimal` only; nothing is computed in floating point (NFR-20).
+- Recording publishes `CurrencyConversion` synchronously; its INR ledger posting commits with the immutable row. A newly learned conversion advances the owning resource's version, including conversions learned after its payment status was already final.
 
 ### 23.4 Ledger
 
@@ -1553,7 +1555,8 @@ Example: a capture of USD 100.00 settled at ₹8,345.67; a refund of USD 40.00 f
 Report lines are in INR, the payout currency. A line for an item charged in another currency also carries `charged`, the amount in that currency.
 
 - A line for a foreign item first compares `charged`, when given, with the item's amount. Then its INR amount is compared with the recorded conversion; a different amount is an `amount_mismatch`. If none is recorded, the line's amount is recorded (source `SETTLEMENT_REPORT`) and the line matches.
-- A line that cannot be valued because the conversion it depends on is unknown (§23.3) is flagged `conversion_missing`. Finance books it with a ledger adjustment (ADR-024).
+- Capture lines are processed before dependent movements. The remaining lines follow their occurrence times, with chargebacks before reversals when timestamps are equal.
+- A line that cannot be valued because the conversion it depends on is unknown (§23.3) is flagged `conversion_missing`. Recover the prerequisite conversion and rerun the affected window; a successful rerun resolves that exception. Do not also book a manual adjustment for the same movement.
 - Healing a foreign capture or refund uses the item's own amount; a chargeback known only from the report is recorded in the payment's currency.
 - The payout check adds the INR amounts.
 
@@ -1577,12 +1580,14 @@ Report lines are in INR, the payout currency. A line for an item charged in anot
 - Payment Links, orders, captures and refunds pass the currency and amount as they are.
 - A payment entity in another currency gives `base_amount` (paise) with `base_currency: INR`: the capture's conversion, without a rate.
 - Refunds and disputes carry no INR amount; it comes from the settlement report.
-- A settlement recon item in another currency (an assumption, confirmed with sandbox keys, C1): `amount` and `currency` are what was charged; the INR amount is `credit + fee` for credits and `debit − fee` for debits, and the fee is `fee`.
+- Settlement recon rows must explicitly name INR. `amount` is the gross settlement amount; the amount actually withheld is derived from its difference from `credit` or `debit`, preserving postpaid pricing with zero withheld fees. A listed fee is not added to guess a gross INR amount.
+- A non-INR or missing-currency row fails the report before any posting. The published examples do not establish conversion semantics for such rows on an Indian account; the real account's INR report format remains a sandbox check (C1).
+- A chargeback's original foreign amount comes from the Disputes API when resolving its attempt, so a report-only dispute can be ingested in its original currency without applying a rate.
 
 ### 23.9 Schema (`V19__international_cards.sql`)
 
 - `merchants.international_cards` (boolean, default false).
 - `fx_conversions`: `id` (`fxc_…`), `merchant_id`, `provider_code`, `payment_id`, `attempt_id`, `kind`, `reference_id`, `amount`, `currency` (not INR), `settled_amount` (INR, > 0), `carried_amount` (≥ 0; equal to `settled_amount` for a capture, whose reference is its attempt), `rate` (numeric, > 0, nullable), `source` (`PSP` or `SETTLEMENT_REPORT`), `recorded_at`. Unique (`kind`, `reference_id`); index on `attempt_id`. Append-only: a trigger refuses `UPDATE` and `DELETE`, and the application role has neither.
-- Ledger: account types `FX_CONVERSION` and `FX_GAIN_LOSS`, transaction type `FX_CONVERSION`; `ledger_assert_balanced` checks each currency.
+- Ledger: account types `FX_CONVERSION` and `FX_GAIN_LOSS`, transaction type `FX_CONVERSION`; `ledger_assert_balanced` checks each currency. A composite foreign key keeps every entry's currency equal to its account's currency.
 - `reconciliation_lines.charged_amount` and `charged_currency`, both or neither; exception type `CONVERSION_MISSING`.
 

@@ -9,6 +9,7 @@ import com.payments.gateway.payment.domain.Failure;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentPolicy;
+import com.payments.gateway.payment.domain.Review;
 import com.payments.gateway.payment.domain.TransitionSource;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository.AttemptLocator;
@@ -22,6 +23,7 @@ import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.events.CurrencyConversion.Kind;
 import com.payments.gateway.shared.model.FailureCategory;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -55,13 +57,15 @@ public class PaymentOutcomeService {
     private final ProviderRegistry providers;
     private final MerchantDirectory merchants;
     private final PaymentProperties properties;
+    private final PaymentConversionService conversions;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final MeterRegistry meters;
 
     public PaymentOutcomeService(PaymentRepository payments, PaymentStore store, RefundService refunds,
                                  ProviderClient providerClient, ProviderRegistry providers, MerchantDirectory merchants,
-                                 PaymentProperties properties, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
+                                 PaymentProperties properties, PaymentConversionService conversions,
+                                 TransactionTemplate tx, Clock clock, MeterRegistry meters) {
         this.payments = payments;
         this.store = store;
         this.refunds = refunds;
@@ -69,6 +73,7 @@ public class PaymentOutcomeService {
         this.providers = providers;
         this.merchants = merchants;
         this.properties = properties;
+        this.conversions = conversions;
         this.tx = tx;
         this.clock = clock;
         this.meters = meters;
@@ -86,6 +91,19 @@ public class PaymentOutcomeService {
         Applied applied = tx.execute(status -> {
             Payment payment = payments.lockById(paymentId).orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
             AttemptApplyResult result = payment.applyAttemptUpdate(attemptId, update, source, policyFor(payment), now);
+            if (update.status() == AttemptStatus.SUCCEEDED && update.reportedAmount() != null
+                    && result.kind() != AttemptApplyResult.Kind.AMOUNT_MISMATCH
+                    && result.kind() != AttemptApplyResult.Kind.CONFLICT) {
+                PaymentConversionService.Result recorded = conversions.record(payment, attemptId, Kind.CAPTURE, attemptId,
+                        update.reportedAmount(), update.conversion(), source == TransitionSource.RECONCILIATION
+                                ? PaymentConversionService.Source.SETTLEMENT_REPORT : PaymentConversionService.Source.PSP);
+                if (recorded == PaymentConversionService.Result.AMOUNT_MISMATCH) {
+                    payment.flagAttemptForReview(attemptId, Review.AMOUNT_MISMATCH, now);
+                    result = AttemptApplyResult.amountMismatch(attemptId);
+                } else if (recorded == PaymentConversionService.Result.RECORDED) {
+                    payment.touch(now);
+                }
+            }
             if (source == TransitionSource.STATUS_CHECK) {
                 payment.recordStatusCheck(attemptId, now);
             }

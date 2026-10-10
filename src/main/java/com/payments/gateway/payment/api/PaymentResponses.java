@@ -33,8 +33,12 @@ public final class PaymentResponses {
             Instant createdAt,
             Instant updatedAt,
             long version,
-            String mandateId) {
+                String mandateId,
+                ConversionResponse conversion) {
     }
+
+            public record ConversionResponse(long settledAmount, String settledCurrency, String rate) {
+            }
 
     public record CustomerResponse(String reference, String email, String phone) {
     }
@@ -73,14 +77,15 @@ public final class PaymentResponses {
     public record RefundResponse(String id, String object, String paymentId, String attemptId, long amount,
                                  String currency, String status, String reason, String merchantRefundId,
                                  String initiatedBy, String creditId, String provider, String providerReference,
-                                 ErrorResponse failure, Instant createdAt, Instant updatedAt, long version) {
+                                 ErrorResponse failure, Instant createdAt, Instant updatedAt, long version,
+                                 ConversionResponse conversion) {
     }
 
     /** {@code respondBy}: the PSP's deadline; {@code response}: the merchant's contest or acceptance (ADR-039). */
     public record DisputeResponse(String id, String object, String paymentId, String attemptId, long amount,
                                   String currency, String status, String reason, String provider,
                                   String providerReference, Instant respondBy, MerchantResponseView response,
-                                  Instant createdAt, Instant updatedAt, long version) {
+                                  Instant createdAt, Instant updatedAt, long version, ConversionResponse conversion) {
     }
 
     public record MerchantResponseView(String type, String status, String statement, List<String> evidenceFileIds,

@@ -71,7 +71,8 @@ public class MerchantRepository {
                 UPDATE merchants SET name = :name, webhook_url = :webhookUrl, late_success_policy = :policy,
                                      payment_expiry_seconds = :expiry, status = :status, status_reason = :reason,
                                      mandate_debit_limit = :mandateDebitLimit, bank_transfer_credits = :transferCredits,
-                                     bank_transfer_short_at_expiry = :transferShortfall, updated_at = :now
+                                     bank_transfer_short_at_expiry = :transferShortfall,
+                                     international_cards = :internationalCards, updated_at = :now
                  WHERE id = :id
                 """)
                 .param("id", merchant.id())
@@ -84,6 +85,7 @@ public class MerchantRepository {
                 .param("mandateDebitLimit", merchant.mandateDebitLimit())
                 .param("transferCredits", merchant.transferCredits().name())
                 .param("transferShortfall", merchant.transferShortfall().name())
+                .param("internationalCards", merchant.internationalCards())
                 .param("now", Sql.ts(now))
                 .update();
     }
@@ -335,7 +337,8 @@ public class MerchantRepository {
                 Sql.instant(rs, "created_at"),
                 Sql.nullableLong(rs, "mandate_debit_limit"),
                 Merchant.TransferCredits.valueOf(rs.getString("bank_transfer_credits")),
-                Merchant.TransferShortfall.valueOf(rs.getString("bank_transfer_short_at_expiry")));
+                Merchant.TransferShortfall.valueOf(rs.getString("bank_transfer_short_at_expiry")),
+                rs.getBoolean("international_cards"));
     }
 
     private static ProviderAccountRow mapProviderAccount(ResultSet rs, int rowNum) throws SQLException {

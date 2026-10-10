@@ -113,6 +113,10 @@ public final class Dispute {
         updatedAt = now;
     }
 
+    public void touch(Instant now) {
+        updatedAt = now;
+    }
+
     /** Acknowledges the review (ADR-016); the dispute's money state is untouched. */
     public void resolveReview(Instant now) {
         if (!review.open()) {

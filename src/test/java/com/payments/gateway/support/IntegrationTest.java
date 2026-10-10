@@ -118,6 +118,7 @@ public abstract class IntegrationTest {
         mockProviders.forEach(provider -> {
             provider.psp().setAvailable(true);
             provider.psp().clearAnomalies();
+            provider.psp().resetFxRates();
         });
         routingRules.refresh();
     }

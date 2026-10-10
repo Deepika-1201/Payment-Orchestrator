@@ -3,6 +3,7 @@ package com.payments.gateway.payment.application;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.AttemptUpdate;
 import com.payments.gateway.payment.domain.Dispute;
+import com.payments.gateway.payment.domain.DisputeStatus;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.Refund;
@@ -17,12 +18,16 @@ import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.payment.infrastructure.TransferCreditRepository;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
+import com.payments.gateway.shared.events.CurrencyConversion;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.Money;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * The payment module's port for reconciliation: look up internal records for PSP report lines and apply
@@ -54,11 +59,16 @@ public class PaymentReconciliationService {
     private final PaymentOutcomeService outcomes;
     private final RefundService refundService;
     private final DisputeService disputeService;
+    private final PaymentConversionService conversions;
+    private final PaymentStore store;
+    private final TransactionTemplate tx;
+    private final Clock clock;
 
     public PaymentReconciliationService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
                                         TransferCreditRepository credits, ReconciliationQueries queries,
                                         PaymentOutcomeService outcomes, RefundService refundService,
-                                        DisputeService disputeService) {
+                                        DisputeService disputeService, PaymentConversionService conversions,
+                                        PaymentStore store, TransactionTemplate tx, Clock clock) {
         this.payments = payments;
         this.refunds = refunds;
         this.disputes = disputes;
@@ -67,6 +77,10 @@ public class PaymentReconciliationService {
         this.outcomes = outcomes;
         this.refundService = refundService;
         this.disputeService = disputeService;
+        this.conversions = conversions;
+        this.store = store;
+        this.tx = tx;
+        this.clock = clock;
     }
 
     /** Scoped to the merchant whose PSP account produced the report. */
@@ -100,7 +114,9 @@ public class PaymentReconciliationService {
     /** Applies a PSP-settled capture; the result reflects the attempt after the domain rules ran. */
     public InternalItem healPayment(InternalItem item, String providerReference, Money settledAmount) {
         outcomes.apply(item.paymentId(), item.entityId(),
-                new AttemptUpdate(AttemptStatus.SUCCEEDED, providerReference, null, null, settledAmount),
+            new AttemptUpdate(AttemptStatus.SUCCEEDED, providerReference, null, null,
+                item.amount().inSettlementCurrency() ? settledAmount : item.amount(), null,
+                item.amount().inSettlementCurrency() ? null : new Conversion(settledAmount, null)),
                 TransitionSource.RECONCILIATION);
         Payment payment = payments.findById(item.paymentId()).orElseThrow();
         return toItem(payment, payment.attempt(item.entityId()).orElseThrow());
@@ -108,7 +124,41 @@ public class PaymentReconciliationService {
 
     public InternalItem healRefund(InternalItem item, String providerReference, Money settledAmount) {
         return toItem(refundService.applyResult(item.entityId(),
-                ProviderRefundResult.succeeded(providerReference, settledAmount), TransitionSource.RECONCILIATION));
+                ProviderRefundResult.succeeded(providerReference, item.amount().inSettlementCurrency() ? settledAmount : item.amount())
+                        .withConversion(item.amount().inSettlementCurrency() ? null : new Conversion(settledAmount, null)),
+                TransitionSource.RECONCILIATION));
+    }
+
+    public Optional<Conversion> conversion(InternalItem item, CurrencyConversion.Kind kind) {
+        return conversions.find(kind, item.entityId());
+    }
+
+    public PaymentConversionService.Result recordConversion(InternalItem item, CurrencyConversion.Kind kind, Money settled) {
+        return tx.execute(status -> {
+            Payment payment = payments.lockById(item.paymentId()).orElseThrow();
+            Refund refund = item.kind() == Kind.REFUND ? refunds.findById(item.entityId()).orElseThrow() : null;
+            Dispute dispute = item.kind() == Kind.DISPUTE ? disputes.findById(item.entityId()).orElseThrow() : null;
+            if ((refund != null && refund.status() != RefundStatus.SUCCEEDED)
+                    || (dispute != null && kind == CurrencyConversion.Kind.CHARGEBACK_REVERSAL && dispute.status() != DisputeStatus.WON)) {
+                return PaymentConversionService.Result.MISSING_DEPENDENCY;
+            }
+            String attemptId = refund != null ? refund.attemptId() : dispute != null ? dispute.attemptId() : item.entityId();
+            PaymentConversionService.Result result = conversions.record(payment, attemptId, kind, item.entityId(), item.amount(),
+                    new Conversion(settled, null), PaymentConversionService.Source.SETTLEMENT_REPORT);
+            if (result == PaymentConversionService.Result.RECORDED) {
+                Instant now = clock.instant();
+                payment.touch(now);
+                if (refund != null) {
+                    refund.touch(now);
+                }
+                store.save(payment, refund, List.of());
+                if (dispute != null) {
+                    dispute.touch(now);
+                    store.saveDispute(payment, dispute);
+                }
+            }
+            return result;
+        });
     }
 
     public List<InternalItem> succeededBetween(String merchantId, String providerCode, Instant from, Instant to) {
@@ -146,7 +196,8 @@ public class PaymentReconciliationService {
                                                 String attemptId, Money amount) {
         Optional<AttemptLocator> locator = attemptId == null ? Optional.empty()
                 : payments.findAttemptById(attemptId)
-                        .filter(l -> l.providerCode().equals(providerCode) && l.merchantId().equals(merchantId));
+                .filter(l -> l.providerCode().equals(providerCode) && l.merchantId().equals(merchantId))
+                .filter(found -> payments.findById(found.paymentId()).orElseThrow().amount().currency().equals(amount.currency()));
         return locator.map(l -> toItem(disputeService.record(l, new ProviderDisputeResult(providerDisputeId, null,
                 ProviderDisputeResult.Status.OPEN, amount, "reported_in_settlement", null, "settlement_report"),
                 TransitionSource.RECONCILIATION)));

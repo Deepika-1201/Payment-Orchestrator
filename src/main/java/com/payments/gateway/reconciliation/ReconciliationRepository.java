@@ -131,9 +131,9 @@ public class ReconciliationRepository {
         jdbc.sql("""
                 INSERT INTO reconciliation_lines (run_id, provider_code, provider_line_id, line_type, provider_reference,
                                                   merchant_reference, amount, fee, currency, settlement_id, occurred_at,
-                                                  result, entity_id)
+                                                  result, entity_id, charged_amount, charged_currency)
                 VALUES (:runId, :provider, :lineId, :type, :providerReference, :merchantReference, :amount, :fee, :currency,
-                        :settlementId, :occurredAt, :result, :entityId)
+                                    :settlementId, :occurredAt, :result, :entityId, :chargedAmount, :chargedCurrency)
                 ON CONFLICT (run_id, provider_line_id) DO NOTHING
                 """)
                 .param("runId", runId)
@@ -149,6 +149,8 @@ public class ReconciliationRepository {
                 .param("occurredAt", Sql.ts(line.occurredAt()))
                 .param("result", result)
                 .param("entityId", entityId)
+                .param("chargedAmount", line.charged() == null ? null : line.charged().amount())
+                .param("chargedCurrency", line.charged() == null ? null : line.charged().currency())
                 .update();
     }
 
@@ -193,7 +195,18 @@ public class ReconciliationRepository {
                 .update();
     }
 
-    public boolean resolveException(String id, String resolution, Instant now) {
+        public int autoResolveConversionMissing(String merchantId, String providerCode, String reference, String runId, Instant now) {
+                return jdbc.sql("""
+                                UPDATE reconciliation_exceptions
+                                     SET status = 'RESOLVED', resolution = :resolution, resolved_at = :now
+                                 WHERE merchant_id = :merchantId AND provider_code = :provider AND type = 'CONVERSION_MISSING'
+                                     AND reference = :reference AND status = 'OPEN'
+                                """)
+                                .param("resolution", "auto-resolved: converted by run " + runId).param("now", Sql.ts(now))
+                                .param("merchantId", merchantId).param("provider", providerCode).param("reference", reference).update();
+        }
+
+        public boolean resolveException(String id, String resolution, Instant now) {
         return jdbc.sql("""
                 UPDATE reconciliation_exceptions SET status = 'RESOLVED', resolution = :resolution, resolved_at = :now
                  WHERE id = :id AND status = 'OPEN'

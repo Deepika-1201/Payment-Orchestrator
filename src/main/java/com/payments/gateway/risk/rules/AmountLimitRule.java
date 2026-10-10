@@ -17,6 +17,9 @@ public class AmountLimitRule implements RiskRule {
 
     @Override
     public RiskDecision evaluate(RiskContext context) {
+        if (!context.amount().inSettlementCurrency()) {
+            return RiskDecision.allow();
+        }
         long amount = context.amount().amount();
         if (properties.blockThreshold() > 0 && amount > properties.blockThreshold()) {
             return RiskDecision.of(RiskDecision.Outcome.BLOCK, "amount_above_block_threshold");

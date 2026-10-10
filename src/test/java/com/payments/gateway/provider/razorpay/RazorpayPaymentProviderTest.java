@@ -49,6 +49,8 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -92,6 +94,57 @@ class RazorpayPaymentProviderTest {
 
     private JsonNode body(StubPsp.Recorded request) {
         return json.read(request.body(), JsonNode.class);
+    }
+
+    @Test
+    void foreignCurrenciesAreOptInAndThreeDecimalCurrenciesUseStepTen() {
+        assertThat(provider(false).capabilities().foreignCurrencies()).isEmpty();
+        RazorpayProperties properties = new RazorpayProperties(true, stub.baseUrl(), false, Duration.ofMinutes(15),
+                Duration.ofDays(5), false, java.util.Set.of(), Map.of("JPY", 1_000_000L, "USD", 1_000_000L, "KWD", 3_000_000L));
+        RazorpayPaymentProvider foreign = new RazorpayPaymentProvider(properties,
+                new RazorpayApi(stub.baseUrl(), Duration.ofSeconds(1), Duration.ofSeconds(2), "rzp_test_", json),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        assertThat(foreign.capabilities().step("JPY")).isEqualTo(1);
+        assertThat(foreign.capabilities().step("USD")).isEqualTo(1);
+        assertThat(foreign.capabilities().step("KWD")).isEqualTo(10);
+        assertThat(foreign.capabilities().supports(PaymentMethod.card(), Money.of(1000, "KWD"), CaptureMethod.AUTOMATIC)).isTrue();
+        assertThat(foreign.capabilities().supports(PaymentMethod.card(), Money.of(1001, "KWD"), CaptureMethod.AUTOMATIC)).isFalse();
+        for (String currency : List.of("INR", "XXX", "CLF", "usd", "ZZZ")) {
+            assertThatThrownBy(() -> new RazorpayProperties(true, stub.baseUrl(), false, Duration.ofMinutes(15),
+                    Duration.ofDays(5), false, java.util.Set.of(), Map.of(currency, 1000L))).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"JPY,1300,71916", "USD,12000,999000", "KWD,40000,1081800"})
+    void captureKeepsMinorUnitsAndReadsExplicitInrWithoutRequiringCardDetails(String currency, long amount, long settled) {
+        Map<String, Object> authorized = Map.of("id", "pay_fx", "status", "authorized", "amount", amount,
+                "currency", currency, "base_amount", settled, "base_currency", "INR");
+        Map<String, Object> captured = Map.of("id", "pay_fx", "status", "captured", "amount", amount,
+                "currency", currency, "base_amount", settled, "base_currency", "INR");
+        stub.on("GET /v1/orders/order_fx/payments", 200, json.write(Map.of("items", List.of(authorized))))
+                .on("POST /v1/payments/pay_fx/capture", 200, json.write(captured));
+        var result = provider(false).capture(ACCOUNT, new CaptureRequest(ATTEMPT, "order_fx", Money.of(amount, currency)));
+        assertThat(result.outcome()).isEqualTo(Outcome.SUCCEEDED);
+        assertThat(result.amount()).isEqualTo(Money.of(amount, currency));
+        assertThat(result.conversion().settled()).isEqualTo(Money.of(settled, "INR"));
+        assertThat(result.conversion().rate()).isNull();
+        assertThat(body(stub.last("POST /v1/payments/pay_fx/capture")).path("amount").asLong()).isEqualTo(amount);
+        assertThat(body(stub.last("POST /v1/payments/pay_fx/capture")).path("currency").asString()).isEqualTo(currency);
+    }
+
+    @Test
+    void nonInrOrMissingBaseAmountsAreNotInvented() {
+        for (Map<String, Object> payment : List.of(
+                Map.<String, Object>of("id", "pay_fx", "status", "captured", "amount", 100, "currency", "USD"),
+                Map.<String, Object>of("id", "pay_fx", "status", "captured", "amount", 100, "currency", "USD",
+                        "base_amount", 90, "base_currency", "EUR"),
+                Map.<String, Object>of("id", "pay_fx", "status", "captured", "amount", 100, "currency", "USD",
+                        "base_amount", 0, "base_currency", "INR"))) {
+            stub.on("GET /v1/payments/pay_fx", 200, json.write(payment));
+            assertThat(provider(false).capture(ACCOUNT, new CaptureRequest(ATTEMPT, "pay_fx", Money.of(100, "USD"))).conversion())
+                    .isNull();
+        }
     }
 
     @Test
@@ -713,6 +766,43 @@ class RazorpayPaymentProviderTest {
                         "year=2026&month=10&day=05&count=1000&skip=0");
         assertThat(stub.last("GET /v1/settlements/setl_1").authorization())
                 .isEqualTo("Basic " + Base64.getEncoder().encodeToString("rzp_test_abc:secret123".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void settlementReportsRequireExplicitInrAndDoNotWithholdPostpaidFees() {
+        stub.on(RECON, 200, collection(List.of()));
+        for (String currency : new String[] {"USD", "EUR", null}) {
+            var row = json.read(item("pay_fx", "payment", 100, 8000, 0, "setl_fx", NOON, ""),
+                    tools.jackson.databind.node.ObjectNode.class);
+            if (currency == null) {
+                row.remove("currency");
+            } else {
+                row.put("currency", currency);
+            }
+            stub.on(recon("04", 0), 200, json.write(Map.of("items", List.of(row))));
+            assertThatThrownBy(() -> provider(false).fetchSettlementReport(ACCOUNT, DAY))
+                    .isInstanceOf(ProviderUnavailableException.class).hasMessageContaining("explicitly report INR");
+        }
+        stub.on(recon("04", 0), 200, collection(List.of(
+                item("pay_fx", "payment", 832_500, 832_500, 0, "setl_fx", NOON, ",\"fee\":20000"),
+                item("rfnd_fx", "refund", 340_000, 0, 340_000, "setl_fx", NOON, ",\"fee\":500"))));
+        payout("setl_fx", "processed", 492_500);
+        assertThat(provider(false).fetchSettlementReport(ACCOUNT, DAY).lines())
+                .extracting(line -> line.fee().amount()).containsExactly(0L, 0L);
+    }
+
+    @Test
+    void settlementDisputesKeepTheirOriginalForeignAmount() {
+        stub.on(RECON, 200, collection(List.of()))
+                .on(recon("04", 0), 200, collection(List.of(
+                        item("adj_fx", "adjustment", 333_000, 0, 333_000, "setl_fx", NOON, ",\"dispute_id\":\"disp_fx\""))))
+                .on("GET /v1/disputes/disp_fx", 200, "{\"id\":\"disp_fx\",\"payment_id\":\"pay_fx\",\"amount\":4000,\"currency\":\"USD\"}")
+                .on("GET /v1/payments/pay_fx", 200, json.write(Map.of("id", "pay_fx", "notes", Map.of("pg_attempt_id", ATTEMPT))));
+        payout("setl_fx", "processed", -333_000);
+        SettlementReport.Line line = provider(false).fetchSettlementReport(ACCOUNT, DAY).lines().getFirst();
+        assertThat(line.charged()).isEqualTo(Money.of(4000, "USD"));
+        assertThat(line.amount()).isEqualTo(Money.of(333_000, "INR"));
+        assertThat(line.merchantReference()).isEqualTo(ATTEMPT);
     }
 
     @Test

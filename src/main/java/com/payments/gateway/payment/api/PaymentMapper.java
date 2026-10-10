@@ -2,6 +2,7 @@ package com.payments.gateway.payment.api;
 
 import com.payments.gateway.payment.api.PaymentResponses.AttemptResponse;
 import com.payments.gateway.payment.api.PaymentResponses.BankTransferResponse;
+import com.payments.gateway.payment.api.PaymentResponses.ConversionResponse;
 import com.payments.gateway.payment.api.PaymentResponses.CreditResponse;
 import com.payments.gateway.payment.api.PaymentResponses.CustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.DisputeResponse;
@@ -15,6 +16,7 @@ import com.payments.gateway.payment.api.PaymentResponses.MerchantResponseView;
 import com.payments.gateway.payment.api.PaymentResponses.NextActionResponse;
 import com.payments.gateway.payment.api.PaymentResponses.PaymentResponse;
 import com.payments.gateway.payment.api.PaymentResponses.RefundResponse;
+import com.payments.gateway.payment.application.PaymentConversionService;
 import com.payments.gateway.payment.domain.Customer;
 import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.EvidenceFile;
@@ -28,9 +30,11 @@ import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.TransferCredit;
+import com.payments.gateway.shared.events.CurrencyConversion.Kind;
 import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.EmiPlan;
+import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import org.springframework.stereotype.Component;
 
@@ -39,6 +43,12 @@ import static com.payments.gateway.shared.web.WireEnums.wire;
 /** Renders the public representation of payments, refunds and disputes (API responses and webhook payloads). */
 @Component
 public class PaymentMapper {
+
+    private final PaymentConversionService conversions;
+
+    public PaymentMapper(PaymentConversionService conversions) {
+        this.conversions = conversions;
+    }
 
     public PaymentResponse toResponse(Payment payment) {
         PaymentAttempt latest = payment.latestAttempt();
@@ -71,7 +81,8 @@ public class PaymentMapper {
                 payment.createdAt(),
                 payment.updatedAt(),
                 payment.version(),
-                payment.mandateId());
+                payment.mandateId(),
+                conversion(payment.amount(), Kind.CAPTURE, payment.succeededAttemptId()));
     }
 
     public MandateResponse toResponse(Mandate mandate) {
@@ -138,7 +149,8 @@ public class PaymentMapper {
                 toResponse(refund.failure()),
                 refund.createdAt(),
                 refund.updatedAt(),
-                refund.version());
+                refund.version(),
+                conversion(refund.amount(), Kind.REFUND, refund.id()));
     }
 
     public CreditResponse toResponse(TransferCredit credit) {
@@ -163,12 +175,22 @@ public class PaymentMapper {
                 toResponse(dispute.response()),
                 dispute.createdAt(),
                 dispute.updatedAt(),
-                dispute.version());
+                dispute.version(),
+                conversion(dispute.amount(), Kind.CHARGEBACK, dispute.id()));
     }
 
     public EvidenceFileResponse toResponse(EvidenceFile file) {
         return new EvidenceFileResponse(file.id(), "dispute_evidence_file", file.disputeId(), wire(file.category()),
                 file.fileName(), file.contentType(), file.size(), file.sha256(), file.createdAt());
+    }
+
+    private ConversionResponse conversion(Money amount, Kind kind, String referenceId) {
+        if (amount.inSettlementCurrency()) {
+            return null;
+        }
+        return conversions.find(kind, referenceId).map(conversion -> new ConversionResponse(
+                conversion.settled().amount(), conversion.settled().currency(),
+                conversion.rate() == null ? null : conversion.rate().toPlainString())).orElse(null);
     }
 
     private static MerchantResponseView toResponse(MerchantResponse response) {

@@ -82,15 +82,14 @@ public class MandateService {
     private final ProviderRegistry registry;
     private final ProviderClient providerClient;
     private final MandateProperties properties;
-    private final PaymentProperties paymentProperties;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final MeterRegistry meters;
 
     public MandateService(MandateRepository mandates, PaymentRepository payments, PaymentStore store,
                           PaymentOutcomeService outcomes, MerchantDirectory merchants, ProviderRegistry registry,
-                          ProviderClient providerClient, MandateProperties properties,
-                          PaymentProperties paymentProperties, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
+                          ProviderClient providerClient, MandateProperties properties, TransactionTemplate tx,
+                          Clock clock, MeterRegistry meters) {
         this.mandates = mandates;
         this.payments = payments;
         this.store = store;
@@ -99,7 +98,6 @@ public class MandateService {
         this.registry = registry;
         this.providerClient = providerClient;
         this.properties = properties;
-        this.paymentProperties = paymentProperties;
         this.tx = tx;
         this.clock = clock;
         this.meters = meters;
@@ -113,9 +111,8 @@ public class MandateService {
     public Mandate create(String merchantId, CreateCommand command) {
         Instant now = clock.instant();
         Money maxAmount = command.maxAmount();
-        if (!paymentProperties.supportedCurrencies().contains(maxAmount.currency())) {
-            throw new GatewayException(ErrorCode.UNSUPPORTED_CURRENCY,
-                    "Supported currencies: " + String.join(", ", paymentProperties.supportedCurrencies()));
+        if (!maxAmount.inSettlementCurrency()) {
+            throw new GatewayException(ErrorCode.UNSUPPORTED_CURRENCY, "Mandates are in " + Money.SETTLEMENT_CURRENCY);
         }
         merchants.require(merchantId);
         Instant startAt = command.startAt() != null ? command.startAt() : now;

@@ -166,6 +166,11 @@ public final class Payment {
         return next;
     }
 
+    public void flagAttemptForReview(String attemptId, String reason, Instant now) {
+        requireAttempt(attemptId).flagForReview(reason, now);
+        markDirty(now);
+    }
+
     public AttemptApplyResult applyAttemptUpdate(String attemptId, AttemptUpdate update, TransitionSource source,
                                                  PaymentPolicy policy, Instant now) {
         PaymentAttempt attempt = requireAttempt(attemptId);

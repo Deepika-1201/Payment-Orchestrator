@@ -106,6 +106,9 @@ Reconciliation exceptions are open past their SLA (ADR-017).
 - Resolve them with evidence: `POST $ADMIN/reconciliation/exceptions/{id}/resolve`, and a ledger adjustment if money must move.
 - `unmatched_adjustment` (Razorpay or Cashfree, ADR-032): the PSP added or took money outside our payments, such as a risk hold, a transfer or a correction. `details` carries its description. Ask the PSP what it is, book it with a maker-checker ledger adjustment (ADR-024), then resolve the exception.
 - `missing_at_provider` on a real PSP means the settlement lag (`pg.providers.<psp>.settlement-lag`, 5 days) has passed and the capture still hasn't settled. Right after a PSP is enabled, it can also mean the capture settled before the first reconciled day: rerun that earlier day's window.
+- `conversion_missing` (ADR-040): a foreign refund or chargeback needs its capture's INR conversion; a reversal also needs its chargeback's conversion. Reconcile the prerequisite capture or chargeback window, then rerun the affected window. A successful rerun resolves this exception. Do not also make a manual adjustment for the same movement.
+- Foreign-currency `amount_mismatch`: compare both the original charge and the PSP-reported INR amount. The first conversion is immutable; conflicting evidence is not allowed to rewrite it. Confirm the correct figures with the PSP before a finance correction.
+- Razorpay reports must explicitly name INR. A non-INR or missing-currency row fails the run before posting; verify the account's report format with the PSP. Never treat foreign subunits as paise or add a listed postpaid fee to invent an INR gross amount.
 - A day's run that failed, for example because a payout was still pending, shows as `failed` in `GET $ADMIN/reconciliation/reports/daily?date=…`. The daily run retries it for 3 days (`pg.reconciliation.catch-up-days`). After that, rerun it with `POST $ADMIN/reconciliation/runs`.
 
 ### ReviewQueueBacklog

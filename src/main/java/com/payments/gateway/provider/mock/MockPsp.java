@@ -1,12 +1,16 @@
 package com.payments.gateway.provider.mock;
 
 import com.payments.gateway.shared.Ids;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.MandateInstrument;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.PaymentMethod;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Currency;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,7 +41,7 @@ public final class MockPsp {
         FAILED
     }
 
-    public static final class Txn {
+    public final class Txn {
         private final String reference;
         private final String merchantId;
         private final String accountId;
@@ -51,6 +55,7 @@ public final class MockPsp {
         private String failureCode;
         private Instant capturedAt;
         private Money captured;
+        private Conversion conversion;
         private Integer emiTenureMonths;
         private long refunded;
         // Bank transfers (LLD §21.8): an account (collection) and the credits it received.
@@ -74,6 +79,7 @@ public final class MockPsp {
             this.state = state;
             this.capturedAt = state == TxnState.CAPTURED ? now : null;
             this.captured = state == TxnState.CAPTURED ? amount : null;
+            this.conversion = state == TxnState.CAPTURED ? convert(amount) : null;
         }
 
         public String reference() {
@@ -131,12 +137,17 @@ public final class MockPsp {
             return captured;
         }
 
+        public synchronized Conversion conversion() {
+            return conversion;
+        }
+
         synchronized void moveTo(TxnState newState, String newFailureCode, Instant now) {
             this.state = newState;
             this.failureCode = newFailureCode;
             if (newState == TxnState.CAPTURED && capturedAt == null) {
                 capturedAt = now;
                 captured = captured == null ? amount : captured;
+                conversion = convert(captured);
             }
         }
 
@@ -210,7 +221,7 @@ public final class MockPsp {
     }
 
     public record RefundTxn(String reference, String merchantReference, String paymentReference, Money amount,
-                            RefundState state, Instant createdAt) {
+                            RefundState state, Instant createdAt, Conversion conversion) {
     }
 
     public enum MandateState {
@@ -368,7 +379,7 @@ public final class MockPsp {
     }
 
     /** A chargeback on a captured transaction; the disputed amount is withheld from the next settlement. */
-    public static final class DisputeTxn {
+    public final class DisputeTxn {
         private final String reference;
         private final Txn payment;
         private final Money amount;
@@ -377,6 +388,8 @@ public final class MockPsp {
         private final Instant respondBy;
         private DisputeState state = DisputeState.OPEN;
         private Instant wonAt;
+        private final Conversion conversion;
+        private Conversion reversalConversion;
         private final List<MockDocument> documents = new ArrayList<>();
         private MockContest contest;
         private Instant acceptedAt;
@@ -389,6 +402,7 @@ public final class MockPsp {
             this.reason = reason;
             this.createdAt = createdAt;
             this.respondBy = respondBy;
+            this.conversion = convert(amount);
         }
 
         public String reference() {
@@ -423,10 +437,19 @@ public final class MockPsp {
             return wonAt;
         }
 
+        public Conversion conversion() {
+            return conversion;
+        }
+
+        public synchronized Conversion reversalConversion() {
+            return reversalConversion;
+        }
+
         synchronized void moveTo(DisputeState newState, Instant now) {
             state = newState;
             if (newState == DisputeState.WON && wonAt == null) {
                 wonAt = now;
+                reversalConversion = convert(amount);
             }
         }
 
@@ -469,7 +492,12 @@ public final class MockPsp {
         }
     }
 
-    private final ConcurrentMap<String, DisputeTxn> disputes = new ConcurrentHashMap<>();
+        private static final Map<String, BigDecimal> DEFAULT_FX_RATES = Map.of(
+            "USD", new BigDecimal("83.25"), "EUR", new BigDecimal("90.10"), "GBP", new BigDecimal("105.40"),
+            "JPY", new BigDecimal("0.5532"), "KWD", new BigDecimal("270.45"), "BHD", new BigDecimal("220.80"));
+
+        private final ConcurrentMap<String, BigDecimal> fxRates = new ConcurrentHashMap<>(DEFAULT_FX_RATES);
+        private final ConcurrentMap<String, DisputeTxn> disputes = new ConcurrentHashMap<>();
 
     private final String code;
     private final ConcurrentMap<String, Txn> transactions = new ConcurrentHashMap<>();
@@ -489,6 +517,32 @@ public final class MockPsp {
 
     MockPsp(String code) {
         this.code = code;
+    }
+
+    public Map<String, BigDecimal> fxRates() {
+        return Map.copyOf(fxRates);
+    }
+
+    public void setFxRate(String currency, BigDecimal rate) {
+        if (!DEFAULT_FX_RATES.containsKey(currency) || rate.signum() <= 0) {
+            throw new IllegalArgumentException("unsupported currency or nonpositive rate");
+        }
+        fxRates.put(currency, rate);
+    }
+
+    public void resetFxRates() {
+        fxRates.clear();
+        fxRates.putAll(DEFAULT_FX_RATES);
+    }
+
+    Conversion convert(Money amount) {
+        if (amount.inSettlementCurrency()) {
+            return null;
+        }
+        BigDecimal rate = fxRates.get(amount.currency());
+        BigDecimal major = BigDecimal.valueOf(amount.amount(), Currency.getInstance(amount.currency()).getDefaultFractionDigits());
+        long paise = major.multiply(rate).movePointRight(2).setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+        return new Conversion(Money.of(paise, Money.SETTLEMENT_CURRENCY), rate);
     }
 
     Txn create(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
@@ -720,7 +774,8 @@ public final class MockPsp {
     }
 
     long reportedAmount(Txn txn) {
-        return reportedAmountOverrides.getOrDefault(txn.reference(), txn.capturedAmount().amount());
+        long amount = txn.conversion() == null ? txn.capturedAmount().amount() : txn.conversion().settled().amount();
+        return reportedAmountOverrides.getOrDefault(txn.reference(), amount);
     }
 
     long settlementShortfall(String merchantId) {

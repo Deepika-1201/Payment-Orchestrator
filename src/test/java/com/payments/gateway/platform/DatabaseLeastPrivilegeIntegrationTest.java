@@ -68,6 +68,8 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     "DELETE FROM audit_log",
                     "UPDATE ledger_entries SET amount = amount + 1",
                     "DELETE FROM ledger_transactions",
+                    "UPDATE fx_conversions SET settled_amount = settled_amount + 1",
+                    "DELETE FROM fx_conversions",
                     "DELETE FROM payment_transitions",
                     "DELETE FROM dispute_evidence_files",
                     "UPDATE dispute_evidence_files SET content_enc = content_enc",

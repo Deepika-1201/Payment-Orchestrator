@@ -40,13 +40,26 @@ public record SettlementReport(List<Line> lines, List<Settlement> settlements) {
     /**
      * {@code fee} is what the PSP withheld from the payout for this line (zero when its charges are invoiced instead),
      * so a line moves the payout by its signed amount minus the fee. {@code description} is the PSP's own wording.
+     * {@code amount} and {@code fee} are in the payout's currency; for an item charged in another currency,
+     * {@code charged} is the amount in that currency (ADR-040), else null.
      */
     public record Line(String lineId, LineType type, String providerReference, String merchantReference, Money amount,
-                       Money fee, String settlementId, Instant occurredAt, String description) {
+                       Money fee, String settlementId, Instant occurredAt, String description, Money charged) {
+
+        public Line(String lineId, LineType type, String providerReference, String merchantReference, Money amount,
+                    Money fee, String settlementId, Instant occurredAt, String description) {
+            this(lineId, type, providerReference, merchantReference, amount, fee, settlementId, occurredAt, description,
+                    null);
+        }
 
         public Line(String lineId, LineType type, String providerReference, String merchantReference, Money amount,
                     Money fee, String settlementId, Instant occurredAt) {
             this(lineId, type, providerReference, merchantReference, amount, fee, settlementId, occurredAt, null);
+        }
+
+        /** What the item was charged in: {@code charged} when given, else the amount. */
+        public Money chargedAmount() {
+            return charged != null ? charged : amount;
         }
     }
 

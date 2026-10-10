@@ -9,11 +9,18 @@ import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -53,6 +60,30 @@ public class SimulatorController {
     }
 
     public record AvailabilityRequest(boolean available) {
+    }
+
+    public record FxRateRequest(@NotBlank String currency,
+                                @NotNull @DecimalMin(value = "0", inclusive = false)
+                                @Digits(integer = 6, fraction = 12) BigDecimal rate) {
+    }
+
+    @GetMapping("/{provider}/fx-rates")
+    public Map<String, String> fxRates(@PathVariable String provider) {
+        MockPaymentProvider mock = provider(provider);
+        Map<String, String> rates = new TreeMap<>();
+        Map<String, BigDecimal> configured = mock.psp().fxRates();
+        mock.capabilities().foreignCurrencies().keySet().forEach(currency -> rates.put(currency, configured.get(currency).toPlainString()));
+        return rates;
+    }
+
+    @PostMapping("/{provider}/fx-rates")
+    public Map<String, String> setFxRate(@PathVariable String provider, @Valid @RequestBody FxRateRequest request) {
+        MockPaymentProvider mock = provider(provider);
+        if (!mock.capabilities().foreignCurrencies().containsKey(request.currency())) {
+            throw GatewayException.validation("currency", "is not supported by " + provider);
+        }
+        mock.psp().setFxRate(request.currency(), request.rate());
+        return fxRates(provider);
     }
 
     public record AnomalyRequest(String type, String merchantId, String providerReference, Long amount) {

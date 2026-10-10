@@ -9,6 +9,7 @@ import com.payments.gateway.provider.spi.InitiatePaymentRequest;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCapabilities.CurrencySupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
@@ -95,6 +96,25 @@ class RoutingEngineTest {
                 .isEqualTo(RoutingDecision.Reason.NO_CAPABLE_PROVIDER);
     }
 
+        @Test
+        void foreignCurrenciesAreCardOnlyAndUseTheirOwnRangesAndSteps() {
+        for (Money amount : List.of(Money.of(1, "JPY"), Money.of(99, "JPY"), Money.of(100, "KWD"),
+            Money.of(3_000_000, "KWD"))) {
+            assertThat(engine.route(new RoutingContext("mer_1", PaymentMethod.card(), amount,
+                CaptureMethod.MANUAL, Set.of("ALPHA", "BETA"))).providers()).containsExactly("ALPHA");
+            assertThat(engine.route(new RoutingContext("mer_1", PaymentMethod.upi(UpiFlow.INTENT, null), amount,
+                CaptureMethod.AUTOMATIC, Set.of("ALPHA", "BETA"))).isEmpty()).isTrue();
+        }
+        for (Money amount : List.of(Money.of(100, "JPY"), Money.of(90, "KWD"), Money.of(101, "KWD"),
+            Money.of(3_000_010, "KWD"), Money.of(100, "EUR"))) {
+            assertThat(engine.route(new RoutingContext("mer_1", PaymentMethod.card(), amount,
+                CaptureMethod.AUTOMATIC, Set.of("ALPHA", "BETA"))).reason())
+                .isEqualTo(RoutingDecision.Reason.NO_CAPABLE_PROVIDER);
+        }
+        assertThat(engine.route(new RoutingContext("mer_1", PaymentMethod.card(), Money.of(10, "JPY"),
+            CaptureMethod.AUTOMATIC, Set.of("BETA"))).isEmpty()).isTrue();
+        }
+
     @Test
     void dynamicOrderingPrefersHealthierProvider() {
         for (int i = 0; i < 30; i++) {
@@ -176,7 +196,9 @@ class RoutingEngineTest {
         public ProviderCapabilities capabilities() {
             Map<MethodType, MethodSupport> support = new java.util.EnumMap<>(MethodType.class);
             methods.forEach(m -> support.put(m, new MethodSupport(Set.of(UpiFlow.values()), 100, 10_000_000, true)));
-            return new ProviderCapabilities(support, Set.of("INR"), true, true, false);
+                ProviderCapabilities capabilities = new ProviderCapabilities(support, Set.of("INR"), true, true, false);
+                return "ALPHA".equals(code) ? capabilities.withForeignCurrencies(Map.of(
+                    "JPY", new CurrencySupport(1, 99, 1), "KWD", new CurrencySupport(100, 3_000_000, 10))) : capabilities;
         }
 
         @Override

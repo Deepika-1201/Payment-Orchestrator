@@ -51,6 +51,7 @@ import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
 import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.EvidenceCategory;
 import com.payments.gateway.shared.model.FailureCategory;
@@ -190,7 +191,7 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         txn.capture(requested, clock.instant());
         if (txn.state() == TxnState.CAPTURED) {
-            return ProviderPaymentResult.succeeded(txn.reference(), txn.capturedAmount(), "captured");
+            return toResult(txn);
         }
         return ProviderPaymentResult.failed(txn.reference(),
                 new ProviderFailure("invalid_state", "Payment is " + txn.state(), FailureCategory.VALIDATION), "error");
@@ -241,7 +242,7 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         String reference = Ids.newId(code.toLowerCase(Locale.ROOT) + "_rfnd");
         RefundTxn refund = psp.saveRefund(new RefundTxn(reference, request.refundId(), txn.reference(), request.amount(),
-                state, clock.instant()));
+            state, clock.instant(), state == RefundState.SUCCEEDED ? psp.convert(request.amount()) : null));
         return switch (scenario) {
             case 7 -> ProviderRefundResult.pending(refund.reference(), refund.amount());
             case 8 -> throw new ProviderTimeoutException(code, "simulated refund timeout (request was processed)");
@@ -387,7 +388,7 @@ public class MockPaymentProvider implements PaymentProvider {
                 default -> ProviderRefundResult.pending(payload.providerReference(), amount);
             };
             return List.of(ProviderEvent.refund(payload.eventId(), payload.type(), payload.providerReference(),
-                    payload.merchantReference(), result));
+                    payload.merchantReference(), result.withConversion(payload.conversion())));
         }
         if (MockWebhookPayload.DISPUTE_UPDATED.equals(payload.type())) {
             return List.of(parseDispute(payload, amount));
@@ -419,7 +420,7 @@ public class MockPaymentProvider implements PaymentProvider {
             result = result.withCard(new CardDetails(payload.cardNetwork(), payload.cardLast4(), payload.emiPlan()));
         }
         return List.of(ProviderEvent.payment(payload.eventId(), payload.type(), payload.providerReference(),
-                payload.merchantReference(), result));
+            payload.merchantReference(), result.withConversion(payload.conversion())));
     }
 
     private static ProviderEvent parseDispute(MockWebhookPayload payload, Money amount) {
@@ -528,7 +529,7 @@ public class MockPaymentProvider implements PaymentProvider {
                 txn.merchantReference(), status, amount.amount(), amount.currency(), txn.failureCode(),
                 txn.failureCode() == null ? null : "Simulated failure: " + txn.failureCode(),
                 card == null ? null : card.network(), card == null ? null : card.last4(), null, null, null, null, null,
-                null, card == null ? null : card.emiPlan());
+                null, card == null ? null : card.emiPlan()).withConversion(reportedConversion(txn.amount(), txn.conversion()));
     }
 
     /** The simulated hosted page always "collects" the Visa test card; only its network and last 4 are reported. */
@@ -615,38 +616,37 @@ public class MockPaymentProvider implements PaymentProvider {
             if (psp.isDroppedFromReport(txn.reference())) {
                 continue;
             }
-            currency = txn.amount().currency();
             Money gross = Money.of(psp.reportedAmount(txn), currency);
             Money fee = Money.of(gross.amount() * FEE_BASIS_POINTS / 10_000, currency);
             int copies = psp.isDuplicatedInReport(txn.reference()) ? 2 : 1;
             for (int copy = 0; copy < copies; copy++) {
                 lines.add(new SettlementReport.Line("line_" + txn.reference() + (copy == 0 ? "" : "_" + copy),
                         SettlementReport.LineType.PAYMENT, txn.reference(), txn.merchantReference(), gross, fee,
-                        settlementId, txn.capturedAt()));
+                        settlementId, txn.capturedAt(), null, charged(txn.capturedAmount())));
                 net += gross.amount() - fee.amount();
             }
         }
         for (RefundTxn refund : psp.refundsBetween(query.merchantId(), query.from(), query.to())) {
-            currency = refund.amount().currency();
+            Money settled = refund.conversion() == null ? refund.amount() : refund.conversion().settled();
             lines.add(new SettlementReport.Line("line_" + refund.reference(), SettlementReport.LineType.REFUND,
-                    refund.reference(), refund.merchantReference(), refund.amount(), Money.of(0, currency), settlementId,
-                    refund.createdAt()));
-            net -= refund.amount().amount();
+                refund.reference(), refund.merchantReference(), settled, Money.of(0, currency), settlementId,
+                refund.createdAt(), null, charged(refund.amount())));
+            net -= settled.amount();
         }
         for (MockPsp.DisputeTxn dispute : psp.disputesOpenedBetween(query.merchantId(), query.from(), query.to())) {
-            currency = dispute.amount().currency();
+            Money settled = dispute.conversion() == null ? dispute.amount() : dispute.conversion().settled();
             lines.add(new SettlementReport.Line("line_" + dispute.reference(), SettlementReport.LineType.CHARGEBACK,
-                    dispute.reference(), dispute.payment().merchantReference(), dispute.amount(), Money.of(0, currency),
-                    settlementId, dispute.createdAt()));
-            net -= dispute.amount().amount();
+                dispute.reference(), dispute.payment().merchantReference(), settled, Money.of(0, currency),
+                settlementId, dispute.createdAt(), null, charged(dispute.amount())));
+            net -= settled.amount();
         }
         for (MockPsp.DisputeTxn dispute : psp.disputesWonBetween(query.merchantId(), query.from(), query.to())) {
-            currency = dispute.amount().currency();
+            Money settled = dispute.reversalConversion() == null ? dispute.amount() : dispute.reversalConversion().settled();
             lines.add(new SettlementReport.Line("line_" + dispute.reference() + "_reversal",
                     SettlementReport.LineType.CHARGEBACK_REVERSAL, dispute.reference(),
-                    dispute.payment().merchantReference(), dispute.amount(), Money.of(0, currency), settlementId,
-                    dispute.wonAt()));
-            net += dispute.amount().amount();
+                dispute.payment().merchantReference(), settled, Money.of(0, currency), settlementId,
+                dispute.wonAt(), null, charged(dispute.amount())));
+            net += settled.amount();
         }
         if (lines.isEmpty()) {
             return new SettlementReport(List.of(), List.of());
@@ -807,7 +807,7 @@ public class MockPaymentProvider implements PaymentProvider {
                     "Simulated failure: " + txn.failureCode(), failureCategory(txn.failureCode())), "failed");
         };
         CardDetails card = cardOf(txn);
-        return card == null ? result : result.withCard(card);
+        return (card == null ? result : result.withCard(card)).withConversion(reportedConversion(txn.amount(), txn.conversion()));
     }
 
     private static FailureCategory failureCategory(String failureCode) {
@@ -848,10 +848,19 @@ public class MockPaymentProvider implements PaymentProvider {
     private ProviderRefundResult toResult(RefundTxn refund) {
         return switch (refund.state()) {
             case PENDING -> ProviderRefundResult.pending(refund.reference(), refund.amount());
-            case SUCCEEDED -> ProviderRefundResult.succeeded(refund.reference(), refund.amount());
+                case SUCCEEDED -> ProviderRefundResult.succeeded(refund.reference(), refund.amount())
+                    .withConversion(reportedConversion(refund.amount(), refund.conversion()));
             case FAILED -> ProviderRefundResult.failed(refund.reference(),
                     new ProviderFailure("refund_failed", "Simulated refund failure", FailureCategory.PROVIDER));
         };
+    }
+
+    private static Conversion reportedConversion(Money amount, Conversion conversion) {
+        return amount.amount() % 100 == 6 ? null : conversion;
+    }
+
+    private static Money charged(Money amount) {
+        return amount.inSettlementCurrency() ? null : amount;
     }
 
     private void simulateNetwork(MerchantAccount account) {

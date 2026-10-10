@@ -6,6 +6,7 @@ import com.payments.gateway.ledger.LedgerModel.Posting;
 import com.payments.gateway.ledger.LedgerService;
 import com.payments.gateway.ledger.LedgerTransactionType;
 import com.payments.gateway.merchant.MerchantDirectory;
+import com.payments.gateway.payment.application.PaymentConversionService;
 import com.payments.gateway.payment.application.PaymentReconciliationService;
 import com.payments.gateway.payment.application.PaymentReconciliationService.InternalItem;
 import com.payments.gateway.provider.ProviderClient;
@@ -20,6 +21,8 @@ import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.events.CurrencyConversion.Kind;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.Money;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -27,6 +30,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -341,7 +345,15 @@ public class ReconciliationService {
 
     private void reconcileLines(RunContext run, SettlementReport report) {
         Set<String> seen = new HashSet<>();
-        for (SettlementReport.Line line : report.lines()) {
+        List<SettlementReport.Line> ordered = report.lines().stream().sorted(Comparator
+                .comparingInt((SettlementReport.Line line) -> line.type() == SettlementReport.LineType.PAYMENT ? 0 : 1)
+                .thenComparing(SettlementReport.Line::occurredAt, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparingInt(line -> switch (line.type()) {
+                    case CHARGEBACK -> 0;
+                    case CHARGEBACK_REVERSAL -> 1;
+                    default -> 2;
+                })).toList();
+        for (SettlementReport.Line line : ordered) {
             run.total++;
             long fee = line.fee() == null ? 0 : line.fee().amount();
             run.fees += fee;
@@ -377,7 +389,7 @@ public class ReconciliationService {
                 run.healed++;
             }
             repository.autoResolveMissingAtProvider(run.merchantId, run.provider, outcome.item().entityId(), run.runId, run.now);
-            long internal = outcome.item().amount().amount();
+            long internal = line.amount().amount();
             long signedInternal = (line.type().credit() ? internal : -internal) - fee;
             if (line.settlementId() != null) {
                 run.internalNetBySettlement.merge(line.settlementId(), signedInternal, Long::sum);
@@ -396,18 +408,16 @@ public class ReconciliationService {
             return new LineOutcome(Result.EXCEPTION, null);
         }
         InternalItem item = found.get();
-        if (!item.amount().equals(line.amount())) {
-            run.open("AMOUNT_MISMATCH", reference, item.entityId(), item.amount().amount(), line.amount().amount(),
-                    "The PSP settled a different amount than the attempt");
+        if (!amountMatches(run, line, reference, item, Kind.CAPTURE)) {
             return new LineOutcome(Result.EXCEPTION, item);
         }
         if (item.succeeded()) {
-            return new LineOutcome(Result.MATCHED, item);
+            return convertedOutcome(run, line, reference, item, Kind.CAPTURE, Result.MATCHED);
         }
         InternalItem healed = payments.healPayment(item, line.providerReference(), line.amount());
         if (healed.succeeded()) {
             log.info("Reconciliation healed attempt {} from {} to SUCCEEDED", item.entityId(), item.status());
-            return new LineOutcome(Result.AUTO_HEALED, healed);
+            return convertedOutcome(run, line, reference, healed, Kind.CAPTURE, Result.AUTO_HEALED);
         }
         run.open("STATUS_MISMATCH", reference, item.entityId(), null, line.amount().amount(),
                 "The PSP settled a capture but the attempt is " + healed.status());
@@ -422,17 +432,15 @@ public class ReconciliationService {
             return new LineOutcome(Result.EXCEPTION, null);
         }
         InternalItem item = found.get();
-        if (!item.amount().equals(line.amount())) {
-            run.open("AMOUNT_MISMATCH", reference, item.entityId(), item.amount().amount(), line.amount().amount(),
-                    "The PSP settled a different refund amount");
+        if (!amountMatches(run, line, reference, item, Kind.REFUND)) {
             return new LineOutcome(Result.EXCEPTION, item);
         }
         if (item.succeeded()) {
-            return new LineOutcome(Result.MATCHED, item);
+            return convertedOutcome(run, line, reference, item, Kind.REFUND, Result.MATCHED);
         }
         InternalItem healed = payments.healRefund(item, line.providerReference(), line.amount());
         if (healed.succeeded()) {
-            return new LineOutcome(Result.AUTO_HEALED, healed);
+            return convertedOutcome(run, line, reference, healed, Kind.REFUND, Result.AUTO_HEALED);
         }
         run.open("STATUS_MISMATCH", reference, item.entityId(), null, line.amount().amount(),
                 "The PSP settled a refund but it is " + healed.status());
@@ -444,21 +452,19 @@ public class ReconciliationService {
         Optional<InternalItem> found = payments.findDispute(run.merchantId, run.provider, line.providerReference());
         if (found.isEmpty()) {
             Optional<InternalItem> ingested = payments.ingestDispute(run.merchantId, run.provider, line.providerReference(),
-                    line.merchantReference(), line.amount());
+                    line.merchantReference(), line.chargedAmount());
             if (ingested.isEmpty()) {
                 run.open("MISSING_INTERNALLY", reference, null, null, line.amount().amount(),
                         "The PSP withheld a chargeback on a payment the gateway has no record of");
                 return new LineOutcome(Result.EXCEPTION, null);
             }
             log.info("Reconciliation recorded dispute {} seen only in the settlement report", ingested.get().entityId());
-            return new LineOutcome(Result.AUTO_HEALED, ingested.get());
+            return convertedOutcome(run, line, reference, ingested.get(), Kind.CHARGEBACK, Result.AUTO_HEALED);
         }
-        if (!found.get().amount().equals(line.amount())) {
-            run.open("AMOUNT_MISMATCH", reference, found.get().entityId(), found.get().amount().amount(),
-                    line.amount().amount(), "The PSP withheld a different amount than the dispute");
+        if (!amountMatches(run, line, reference, found.get(), Kind.CHARGEBACK)) {
             return new LineOutcome(Result.EXCEPTION, found.get());
         }
-        return new LineOutcome(Result.MATCHED, found.get());
+        return convertedOutcome(run, line, reference, found.get(), Kind.CHARGEBACK, Result.MATCHED);
     }
 
     /** Funds returned after a won dispute. */
@@ -470,21 +476,57 @@ public class ReconciliationService {
             return new LineOutcome(Result.EXCEPTION, null);
         }
         InternalItem item = found.get();
-        if (!item.amount().equals(line.amount())) {
-            run.open("AMOUNT_MISMATCH", reference, item.entityId(), item.amount().amount(), line.amount().amount(),
-                    "The PSP returned a different amount than the dispute");
+        if (!amountMatches(run, line, reference, item, Kind.CHARGEBACK_REVERSAL)) {
             return new LineOutcome(Result.EXCEPTION, item);
         }
         if ("WON".equals(item.status())) {
-            return new LineOutcome(Result.MATCHED, item);
+            return convertedOutcome(run, line, reference, item, Kind.CHARGEBACK_REVERSAL, Result.MATCHED);
         }
         InternalItem healed = payments.healDisputeWon(item);
         if ("WON".equals(healed.status())) {
-            return new LineOutcome(Result.AUTO_HEALED, healed);
+            return convertedOutcome(run, line, reference, healed, Kind.CHARGEBACK_REVERSAL, Result.AUTO_HEALED);
         }
         run.open("STATUS_MISMATCH", reference, item.entityId(), null, line.amount().amount(),
                 "The PSP returned a chargeback but the dispute is " + healed.status());
         return new LineOutcome(Result.EXCEPTION, item);
+    }
+
+    private boolean amountMatches(RunContext run, SettlementReport.Line line, String reference, InternalItem item, Kind kind) {
+        if (line.charged() != null && !line.charged().equals(item.amount())) {
+            run.open("AMOUNT_MISMATCH", reference, item.entityId(), item.amount().amount(), line.charged().amount(),
+                    "Original charge differs: expected " + item.amount() + ", reported " + line.charged());
+            return false;
+        }
+        Money expected = item.amount().inSettlementCurrency() ? item.amount()
+                : payments.conversion(item, kind).map(Conversion::settled).orElse(line.amount());
+        if (!line.amount().inSettlementCurrency() || line.amount().amount() <= 0 || !expected.equals(line.amount())) {
+            run.open("AMOUNT_MISMATCH", reference, item.entityId(), expected.amount(), line.amount().amount(),
+                    "Settlement differs: expected " + expected + ", reported " + line.amount());
+            return false;
+        }
+        return true;
+    }
+
+    private LineOutcome convertedOutcome(RunContext run, SettlementReport.Line line, String reference,
+                                          InternalItem item, Kind kind, Result result) {
+        if (item.amount().inSettlementCurrency()) {
+            return new LineOutcome(result, item);
+        }
+        PaymentConversionService.Result converted = payments.recordConversion(item, kind, line.amount());
+        if (converted == PaymentConversionService.Result.AMOUNT_MISMATCH) {
+            run.open("AMOUNT_MISMATCH", reference, item.entityId(),
+                    payments.conversion(item, kind).map(value -> value.settled().amount()).orElse(null),
+                    line.amount().amount(), "Conversion differs from the amount already recorded");
+            return new LineOutcome(Result.EXCEPTION, item);
+        }
+        String conversionReference = kind.name() + ":" + reference;
+        if (converted == PaymentConversionService.Result.MISSING_DEPENDENCY) {
+            run.open("CONVERSION_MISSING", conversionReference, item.entityId(), null, line.amount().amount(),
+                    "The capture or chargeback conversion needed to value this movement is not yet recorded");
+            return new LineOutcome(Result.EXCEPTION, item);
+        }
+        repository.autoResolveConversionMissing(run.merchantId, run.provider, conversionReference, run.runId, run.now);
+        return new LineOutcome(result, item);
     }
 
     /**

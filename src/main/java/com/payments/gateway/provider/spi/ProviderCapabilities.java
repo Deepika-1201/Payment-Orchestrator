@@ -14,22 +14,33 @@ import java.util.Set;
  * {@code requiresCustomerPhone}: the PSP rejects payments without the customer's phone number (Cashfree, ADR-031), so
  * routing skips it for payments that have none. {@code mandates}: recurring instruments it can register (ADR-035).
  * {@code disputeResponses}: merchants can contest or accept disputes through the gateway (ADR-039).
+ * {@code foreignCurrencies}: the other currencies it charges international cards in (ADR-040); {@code currencies}
+ * are those every method takes.
  */
 public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies,
                                    boolean voidSupported, boolean partialRefunds, boolean settlementReports,
                                    boolean requiresCustomerPhone, Map<MandateInstrument, MandateSupport> mandates,
-                                   boolean disputeResponses) {
+                                   boolean disputeResponses, Map<String, CurrencySupport> foreignCurrencies) {
 
     public ProviderCapabilities {
         methods = Map.copyOf(methods);
         currencies = Set.copyOf(currencies);
         mandates = Map.copyOf(mandates);
+        foreignCurrencies = Map.copyOf(foreignCurrencies);
     }
 
     public ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies, boolean voidSupported,
+                    boolean partialRefunds, boolean settlementReports, boolean requiresCustomerPhone,
+                    Map<MandateInstrument, MandateSupport> mandates, boolean disputeResponses) {
+        this(methods, currencies, voidSupported, partialRefunds, settlementReports, requiresCustomerPhone, mandates,
+            disputeResponses, Map.of());
+        }
+
+        public ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies, boolean voidSupported,
                                 boolean partialRefunds, boolean settlementReports, boolean requiresCustomerPhone,
                                 Map<MandateInstrument, MandateSupport> mandates) {
-        this(methods, currencies, voidSupported, partialRefunds, settlementReports, requiresCustomerPhone, mandates, false);
+        this(methods, currencies, voidSupported, partialRefunds, settlementReports, requiresCustomerPhone, mandates, false,
+                Map.of());
     }
 
     public ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<String> currencies, boolean voidSupported,
@@ -78,14 +89,39 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
     public record MandateSupport(long registrationAmount, long maxAmount) {
     }
 
+    /** Card payments in another currency: the amount range in its minor units, and the multiple amounts must be of. */
+    public record CurrencySupport(long minAmount, long maxAmount, long step) {
+
+        public CurrencySupport {
+            if (minAmount < 1 || maxAmount < minAmount || step < 1) {
+                throw new IllegalArgumentException("invalid currency support: " + minAmount + ".." + maxAmount + " step " + step);
+            }
+        }
+
+        public boolean allows(long amount) {
+            return amount >= minAmount && amount <= maxAmount && amount % step == 0;
+        }
+    }
+
     public ProviderCapabilities withMandates(Map<MandateInstrument, MandateSupport> supported) {
         return new ProviderCapabilities(methods, currencies, voidSupported, partialRefunds, settlementReports,
-                requiresCustomerPhone, supported, disputeResponses);
+                requiresCustomerPhone, supported, disputeResponses, foreignCurrencies);
     }
 
     public ProviderCapabilities withDisputeResponses() {
         return new ProviderCapabilities(methods, currencies, voidSupported, partialRefunds, settlementReports,
-                requiresCustomerPhone, mandates, true);
+                requiresCustomerPhone, mandates, true, foreignCurrencies);
+    }
+
+    public ProviderCapabilities withForeignCurrencies(Map<String, CurrencySupport> supported) {
+        return new ProviderCapabilities(methods, currencies, voidSupported, partialRefunds, settlementReports,
+                requiresCustomerPhone, mandates, disputeResponses, supported);
+    }
+
+    /** The amount step for this currency: 1 unless the PSP charges cards in it with a coarser step. */
+    public long step(String currency) {
+        CurrencySupport support = foreignCurrencies.get(currency);
+        return support == null ? 1 : support.step();
     }
 
     public boolean supportsMandate(MandateInstrument instrument, Money maxAmount) {
@@ -99,8 +135,13 @@ public record ProviderCapabilities(Map<MethodType, MethodSupport> methods, Set<S
 
     public boolean supports(PaymentMethod method, Money amount, CaptureMethod captureMethod) {
         MethodSupport support = methods.get(method.type());
-        if (support == null || !currencies.contains(amount.currency())) {
+        if (support == null) {
             return false;
+        }
+        if (!currencies.contains(amount.currency())) {
+            CurrencySupport foreign = foreignCurrencies.get(amount.currency());
+            return method.type() == MethodType.CARD && foreign != null && foreign.allows(amount.amount())
+                    && (captureMethod != CaptureMethod.MANUAL || support.manualCapture());
         }
         if (method.type() == MethodType.UPI && !support.upiFlows().contains(method.upiFlow())) {
             return false;

@@ -905,7 +905,22 @@ components:
     Currency:
       type: string
       pattern: '^[A-Z]{3}$'
-      examples: [INR]
+      description: ISO 4217 currency. Non-INR payments require international cards enabled and a capable PSP.
+      examples: [INR, USD, JPY, KWD]
+
+    Conversion:
+      type: object
+      description: >-
+        The PSP-reported INR value of a foreign-currency capture, refund or chargeback. Absent for INR and until
+        the PSP reports it, which may be in its settlement report. No gateway exchange rate is applied.
+      required: [settled_amount, settled_currency]
+      properties:
+        settled_amount: {type: integer, format: int64, minimum: 1, description: INR paise reported by the PSP.}
+        settled_currency: {const: INR}
+        rate:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]+)?$'
+          description: The PSP's exact decimal rate, absent when not reported.
 
     PaymentStatus:
       type: string
@@ -994,6 +1009,7 @@ components:
           type: string
           pattern: '^mdt_'
           description: Set on a mandate's debits and its authorization charge, which only the gateway confirms or cancels.
+        conversion: {$ref: '#/components/schemas/Conversion'}
     Customer:
       type: object
       properties:
@@ -1091,6 +1107,7 @@ components:
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
         version: {type: integer, format: int64}
+        conversion: {$ref: '#/components/schemas/Conversion'}
     RefundList:
       type: object
       required: [data]
@@ -1147,6 +1164,7 @@ components:
         created_at: {$ref: '#/components/schemas/Timestamp'}
         updated_at: {$ref: '#/components/schemas/Timestamp'}
         version: {type: integer, format: int64}
+        conversion: {$ref: '#/components/schemas/Conversion'}
     DisputeAnswer:
       type: object
       description: Your contest or acceptance, and its delivery to the PSP. Absent until you answer.
@@ -1360,7 +1378,14 @@ components:
       type: object
       required: [amount, currency, merchant_order_id]
       properties:
-        amount: {type: integer, format: int64, minimum: 100, maximum: 100000000}
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 1000000000000
+          description: >-
+            Integer ISO 4217 minor units (0, 2 or 3 decimals). INR requires 100 to 100000000 paise.
+            Other currencies use the linked PSPs' ranges and amount steps.
         currency: {$ref: '#/components/schemas/Currency'}
         merchant_order_id: {type: string, maxLength: 64, pattern: '^[A-Za-z0-9_\-:.]+$'}
         capture_method: {type: string, enum: [automatic, manual], default: automatic}

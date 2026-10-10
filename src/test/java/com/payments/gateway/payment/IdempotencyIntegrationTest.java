@@ -101,7 +101,7 @@ class IdempotencyIntegrationTest extends IntegrationTest {
     void validationErrorsListFieldsInSnakeCase() {
         TestMerchant merchant = createMerchant(ALPHA);
 
-        Response response = post(merchant, "/v1/payments", "bad-1", Map.of("amount", 5, "currency", "inr"));
+        Response response = post(merchant, "/v1/payments", "bad-1", Map.of("amount", 0, "currency", "inr"));
 
         assertThat(response.status()).isEqualTo(400);
         assertThat(str(response.body(), "code")).isEqualTo("validation_error");

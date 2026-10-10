@@ -1,16 +1,19 @@
 package com.payments.gateway.provider.spi;
 
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import java.util.Objects;
 
 /**
  * Normalized PSP answer for payment operations. {@code amount} is the PSP-reported amount, when known; {@code card}
- * is the card's network and last 4 digits once the customer has paid by card.
+ * is the card's network and last 4 digits once the customer has paid by card; {@code conversion} is what the PSP
+ * settled in INR for a payment in another currency, when it says (ADR-040).
  */
 public record ProviderPaymentResult(Outcome outcome, String providerReference, NextAction nextAction,
-                                    ProviderFailure failure, Money amount, String rawStatus, CardDetails card) {
+                                    ProviderFailure failure, Money amount, String rawStatus, CardDetails card,
+                                    Conversion conversion) {
 
     public enum Outcome {
         REQUIRES_ACTION,
@@ -30,12 +33,23 @@ public record ProviderPaymentResult(Outcome outcome, String providerReference, N
     }
 
     public ProviderPaymentResult(Outcome outcome, String providerReference, NextAction nextAction,
+                                 ProviderFailure failure, Money amount, String rawStatus, CardDetails card) {
+        this(outcome, providerReference, nextAction, failure, amount, rawStatus, card, null);
+    }
+
+    public ProviderPaymentResult(Outcome outcome, String providerReference, NextAction nextAction,
                                  ProviderFailure failure, Money amount, String rawStatus) {
-        this(outcome, providerReference, nextAction, failure, amount, rawStatus, null);
+        this(outcome, providerReference, nextAction, failure, amount, rawStatus, null, null);
     }
 
     public ProviderPaymentResult withCard(CardDetails details) {
-        return new ProviderPaymentResult(outcome, providerReference, nextAction, failure, amount, rawStatus, details);
+        return new ProviderPaymentResult(outcome, providerReference, nextAction, failure, amount, rawStatus, details,
+                conversion);
+    }
+
+    public ProviderPaymentResult withConversion(Conversion reported) {
+        return new ProviderPaymentResult(outcome, providerReference, nextAction, failure, amount, rawStatus, card,
+                reported);
     }
 
     public static ProviderPaymentResult requiresAction(String reference, NextAction nextAction, String raw) {

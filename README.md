@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 has started: phase 18, recurring payments (UPI AutoPay, card and eNACH mandates), phase 19, partial capture, phase 20, wallets, card and cardless EMI and pay later, phase 21, bank transfers to a virtual account per attempt, and phase 22, dispute responses with evidence through the API, are built and tested. V1 includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–23 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, and international cards with multi-currency accounting and INR settlement. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 77% done (29.5 of 38.5).
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 81% done (31 of 38.5).
 
 ## Documentation
 
@@ -131,7 +131,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/payments` · `GET /v1/payments/{id}` | Create / retrieve |
+| `POST /v1/payments` · `GET /v1/payments/{id}` | Create / retrieve; non-INR currencies require international cards enabled and a capable linked PSP (ADR-040). `conversion` shows the PSP's INR capture value once known |
 | `POST /v1/payments/{id}/confirm` · `/capture` · `/cancel` | Start an attempt (UPI, card, netbanking, wallet, card EMI, cardless EMI, pay later or bank transfer; wallets and lenders are named by `provider`, ADR-037; a bank transfer gets a virtual account for the attempt, ADR-038) / capture an authorization, in full or for less where the PSP supports it (ADR-036) / cancel or void |
 | `POST /v1/payments/{id}/refunds` · `GET /v1/payments/{id}/refunds` · `GET /v1/refunds/{id}` | Refunds. A bank transfer payment is refunded against one credit (`credit_id`); credits sent back by the gateway (excess, late, repeated, or short at expiry) are refunds initiated by `system_credit_return` |
 | `GET /v1/payments/{id}/credits` | Bank transfer credits on the payment's accounts: amount, mode, UTR, and how much was applied or sent back (ADR-038) |
@@ -142,7 +142,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `POST /v1/checkout-sessions` · `GET/POST /checkout/{token}` | Hosted checkout session; the customer-facing page (HTML, no JavaScript; UPI app, UPI ID or scannable QR, card, netbanking, and the wallets, EMI and pay-later providers that can be routed) |
 | `POST /v1/webhooks/providers/{code}/{account_id}` · `POST /v1/webhooks/providers/{code}` | PSP webhooks for a merchant's own PSP account (can only affect that merchant) or with platform-level secrets |
 | `/admin/v1/merchants` · `/routing-rules` · `/providers/health` · `/webhook-deliveries` | Admin |
-| `PATCH /admin/v1/merchants/{id}` · `/suspend` · `/reactivate` · `/webhook-secret` · `/api-keys[/{key_id}/revoke]` | Merchant settings (including `mandate_debit_limit`, and `bank_transfer_credits` and `bank_transfer_short_at_expiry` for bank transfers), suspension, webhook secret rotation (both secrets valid during a grace period), API key rotation and revocation |
+| `PATCH /admin/v1/merchants/{id}` · `/suspend` · `/reactivate` · `/webhook-secret` · `/api-keys[/{key_id}/revoke]` | Merchant settings (`international_cards`, `mandate_debit_limit`, `bank_transfer_credits`, `bank_transfer_short_at_expiry`), suspension, webhook secret rotation (both secrets valid during a grace period), API key rotation and revocation |
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` · `GET …/provider-accounts` · `POST …/{provider}/disable` | Merchant's own PSP accounts: encrypted credentials (shown masked), per-account webhook path |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/ledger/adjustments` · `POST …/{id}/approve` · `/reject` | Manual ledger corrections: one operator requests, a different one approves (maker-checker, ADR-024) |
@@ -155,6 +155,10 @@ Merchant endpoints have per-merchant rate limits, with separate budgets for read
 
 Admin callers are named operators with roles (`admin`, `ops`, `finance`, `read_only`). They sign in through the company identity provider (OIDC access tokens whose `roles` claim carries the gateway role, ADR-023) or use tokens configured by SHA-256 under `pg.security.admin-users`. Each admin endpoint requires one permission, and write endpoints without a declared permission are refused (ADR-019). The audit log records the operator's name.
 
+International cards are off by default. Enable a merchant with `PATCH /admin/v1/merchants/{id}` and `{"international_cards":true}`. Non-INR payments use cards only, with integer ISO 4217 minor units: JPY 1300 means JPY 1300, USD 1300 means USD 13.00, and KWD 1300 means KWD 1.300. Refunds stay in the original currency. Payments, refunds and disputes expose `conversion` once the PSP reports the INR amount; rates are exact decimal strings when supplied. The ledger balances each currency and books FX gains or losses (ADR-040).
+
+`MOCK_ALPHA` supports USD, EUR, GBP, JPY, KWD and BHD; KWD and BHD amounts must be multiples of 10. `GET /simulator/MOCK_ALPHA/fx-rates` lists rates; `POST` with `{"currency":"USD","rate":"85.00"}` changes the rate for new movements without changing earlier conversions. Razorpay's `pg.providers.razorpay.foreign-currencies` maps enabled ISO codes to maximum minor-unit amounts and is empty by default. Its account must also have international payments activated. Cashfree remains INR-only. Razorpay reconciliation requires explicit INR report rows; the real account's format still needs sandbox verification (C1).
+
 Mock PSP test scenarios are selected by the last two digits of the amount:
 
 | Suffix | Payment scenario |
@@ -163,9 +167,11 @@ Mock PSP test scenarios are selected by the last two digits of the amount:
 | `03` | Issuer decline |
 | `04` | Pending, then succeeds without sending a webhook |
 | `05` | Timeout, and the PSP never processed the payment |
+| `06` | For a non-INR payment, conversion appears only in the settlement report |
 
 | Suffix | Refund scenario |
 |---|---|
+| `06` | For a non-INR refund, conversion appears only in the settlement report |
 | `07` | Pending |
 | `08` | Timeout, but processed |
 | `09` | Failed |
@@ -182,7 +188,7 @@ Mock PSP test scenarios are selected by the last two digits of the amount:
 | `02` | Every evidence upload is refused |
 | `03` | The contest is refused |
 
-Manual capture of `MOCK_ALPHA` cards may take any amount up to the authorization and releases the rest; `MOCK_BETA` cards capture only the full amount.
+Manual capture of `MOCK_ALPHA` cards may take an amount up to the authorization, respecting the currency's amount step, and releases the rest; `MOCK_BETA` cards capture only the full amount.
 
 `MOCK_ALPHA` offers the wallets `phonepe`, `amazonpay`, `mobikwik` and `payzapp`, card EMI from ₹3,000 (3 to 24 months), cardless EMI with `zestmoney`, `earlysalary` and `hdfc`, and pay later with `lazypay` and `simpl`; `MOCK_BETA` offers the wallets `phonepe` and `paytm`. On the simulator's page, or with `emi_tenure_months` on `…/complete`, a card EMI customer picks the plan (the shortest otherwise); the attempt then reports it as `emi_plan`.
 
@@ -263,9 +269,9 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 20 | Wallets, card EMI, cardless EMI and pay later (ADR-037): routing by the wallet or lender each PSP offers, the EMI plan the PSP reports, the hosted checkout's provider choice; mock PSPs and the Razorpay adapter (behind `pg.providers.razorpay.extra-methods`), with `payment/domain` unchanged | Done (sandbox run needs keys) |
 | 21 | Bank transfers (ADR-038): a virtual account per attempt; each credit recorded once and applied under the payment lock, added up or exact per merchant; excess, late and repeated credits sent back; a short payment refunded or accepted at expiry; unmatched credits reviewed; ledger and reconciliation by credit; the mock PSP and Razorpay Smart Collect (behind `pg.providers.razorpay.extra-methods`) | Done (sandbox run needs keys) |
 | 22 | Dispute evidence (ADR-039): evidence files uploaded through the API, encrypted per file and never deleted; one contest or acceptance per dispute, delivered to the PSP with retries until its deadline; `dispute.evidence_due` 3 days ahead and an operator alert; the mock PSP and Razorpay's Documents and Disputes APIs | Done (sandbox run needs keys) |
+| 23 | International cards (ADR-040): merchant opt-in, PSP currency ranges and steps, integer minor units, immutable INR conversions, per-currency ledger balance and FX gains/losses, INR reconciliation; mock rates and Razorpay `base_amount` | Done (sandbox run needs keys) |
 
-**Next: V2, phases 23–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- international cards;
+**Next: V2, phases 24–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
 - cost-aware routing;
 - merchant billing;
 - Payment Aggregator mode: onboarding, escrow and settlement, payouts.

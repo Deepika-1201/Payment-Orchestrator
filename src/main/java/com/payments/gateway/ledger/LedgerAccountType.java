@@ -9,7 +9,9 @@ public enum LedgerAccountType {
     CHARGEBACKS(EntryDirection.DEBIT),
     BANK_SETTLEMENTS(EntryDirection.DEBIT),
     /** Bank transfer credits held for customers until they pay a payment or go back (ADR-038). */
-    CUSTOMER_FUNDS(EntryDirection.CREDIT);
+    CUSTOMER_FUNDS(EntryDirection.CREDIT),
+    FX_CONVERSION(EntryDirection.CREDIT),
+    FX_GAIN_LOSS(EntryDirection.CREDIT);
 
     private final EntryDirection normalSide;
 

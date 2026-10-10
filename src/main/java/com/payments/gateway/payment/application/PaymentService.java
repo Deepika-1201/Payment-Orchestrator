@@ -15,6 +15,7 @@ import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.provider.ProviderClient;
 import com.payments.gateway.provider.ProviderRegistry;
 import com.payments.gateway.provider.spi.InitiatePaymentRequest;
+import com.payments.gateway.provider.spi.ProviderCapabilities.CurrencySupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
@@ -42,8 +43,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -65,6 +68,9 @@ public class PaymentService {
 
     private record Started(Payment payment, String attemptId, List<String> candidates, boolean expired) {
     }
+
+    private static final long MIN_INR_AMOUNT = 100;
+    private static final long MAX_INR_AMOUNT = 100_000_000;
 
     private final PaymentRepository payments;
     private final PaymentStore store;
@@ -100,11 +106,8 @@ public class PaymentService {
     }
 
     public Payment create(String merchantId, CreateCommand command) {
-        if (!properties.supportedCurrencies().contains(command.amount().currency())) {
-            throw new GatewayException(ErrorCode.UNSUPPORTED_CURRENCY,
-                    "Supported currencies: " + String.join(", ", properties.supportedCurrencies()));
-        }
         Merchant merchant = merchants.require(merchantId);
+        checkAmount(merchant, command.amount());
         Instant now = clock.instant();
         Duration expiry = command.expiresIn() != null ? command.expiresIn() : merchant.paymentExpiry();
         Payment payment = Payment.create(Ids.newId("pay"), merchantId, command.merchantOrderId(), command.amount(),
@@ -120,6 +123,38 @@ public class PaymentService {
     public Payment get(String merchantId, String paymentId) {
         return payments.findForMerchant(merchantId, paymentId)
                 .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
+    }
+
+    /**
+     * INR keeps the gateway's ₹1 to ₹10,00,000; another currency needs international cards and a PSP of the merchant
+     * that charges cards in it, within its range and step (LLD §23.1).
+     */
+    private void checkAmount(Merchant merchant, Money amount) {
+        if (amount.inSettlementCurrency()) {
+            if (amount.amount() < MIN_INR_AMOUNT || amount.amount() > MAX_INR_AMOUNT) {
+                throw GatewayException.validation("amount", "must be from " + MIN_INR_AMOUNT + " to " + MAX_INR_AMOUNT
+                        + " for INR");
+            }
+            return;
+        }
+        if (!merchant.internationalCards()) {
+            throw new GatewayException(ErrorCode.UNSUPPORTED_CURRENCY,
+                    "International cards are not enabled for this merchant, so payments are in INR");
+        }
+        List<CurrencySupport> supports = merchants.activeProviders(merchant.id()).stream().sorted()
+                .flatMap(code -> providers.find(code).stream())
+                .map(provider -> provider.capabilities().foreignCurrencies().get(amount.currency()))
+                .filter(Objects::nonNull)
+                .toList();
+        if (supports.isEmpty()) {
+            throw new GatewayException(ErrorCode.UNSUPPORTED_CURRENCY,
+                    "None of the merchant's PSPs charges cards in " + amount.currency());
+        }
+        if (supports.stream().noneMatch(support -> support.allows(amount.amount()))) {
+            throw GatewayException.validation("amount", "must be " + supports.stream()
+                    .map(s -> "from " + s.minAmount() + " to " + s.maxAmount() + (s.step() > 1 ? " in steps of " + s.step() : ""))
+                    .distinct().collect(Collectors.joining(" or ")) + " for " + amount.currency());
+        }
     }
 
     public Payment confirm(String merchantId, String paymentId, ConfirmCommand command) {
@@ -172,6 +207,11 @@ public class PaymentService {
             Payment payment = payments.lockForMerchant(merchantId, paymentId)
                     .orElseThrow(() -> GatewayException.notFound("Payment", paymentId));
             PaymentAttempt attempt = payment.requestCapture(amount, this::partialCaptureSupported, now);
+            long step = providers.require(attempt.providerCode()).capabilities().step(payment.amount().currency());
+            if (attempt.capturedAmount().amount() % step != 0) {
+                throw GatewayException.validation("amount", "must be a multiple of " + step + " for "
+                        + payment.amount().currency());
+            }
             store.save(payment);
             return attempt.id();
         });

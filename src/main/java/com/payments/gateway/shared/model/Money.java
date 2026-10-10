@@ -7,6 +7,9 @@ import java.util.Objects;
 /** Monetary amount in integer minor units (e.g. paise) with an ISO 4217 currency. */
 public record Money(long amount, String currency) {
 
+    /** Payouts, the PSP receivable and the gateway's own amount limits are in rupees (FR-FX2). */
+    public static final String SETTLEMENT_CURRENCY = "INR";
+
     public Money {
         Objects.requireNonNull(currency, "currency");
         if (amount < 0) {
@@ -35,6 +38,10 @@ public record Money(long amount, String currency) {
     public boolean isGreaterThan(Money other) {
         requireSameCurrency(other);
         return amount > other.amount;
+    }
+
+    public boolean inSettlementCurrency() {
+        return SETTLEMENT_CURRENCY.equals(currency);
     }
 
     /** Major-unit decimal representation, e.g. 49900 INR becomes "499.00". */

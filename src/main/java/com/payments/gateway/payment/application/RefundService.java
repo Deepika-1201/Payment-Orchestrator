@@ -26,6 +26,8 @@ import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.events.CurrencyConversion.Kind;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
@@ -56,12 +58,14 @@ public class RefundService {
     private final PaymentStore store;
     private final ProviderClient providerClient;
     private final ProviderRegistry providers;
+    private final PaymentConversionService conversions;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public RefundService(PaymentRepository payments, RefundRepository refunds, TransferCreditRepository credits,
                          DisputeRepository disputes, PaymentStore store,
-                         ProviderClient providerClient, ProviderRegistry providers, TransactionTemplate tx, Clock clock) {
+                         ProviderClient providerClient, ProviderRegistry providers, PaymentConversionService conversions,
+                         TransactionTemplate tx, Clock clock) {
         this.payments = payments;
         this.refunds = refunds;
         this.credits = credits;
@@ -69,6 +73,7 @@ public class RefundService {
         this.store = store;
         this.providerClient = providerClient;
         this.providers = providers;
+        this.conversions = conversions;
         this.tx = tx;
         this.clock = clock;
     }
@@ -99,6 +104,11 @@ public class RefundService {
             if (amount < payment.amountCaptured() && !providers.require(attempt.providerCode()).capabilities().partialRefunds()) {
                 throw new GatewayException(ErrorCode.UNSUPPORTED_PAYMENT_METHOD,
                         "Provider " + attempt.providerCode() + " does not support partial refunds");
+            }
+            long step = providers.require(attempt.providerCode()).capabilities().step(payment.amount().currency());
+            if (amount % step != 0) {
+                throw GatewayException.validation("amount", "must be a multiple of " + step + " for "
+                        + payment.amount().currency());
             }
             String creditId = attempt.method().type() == MethodType.BANK_TRANSFER ? creditFor(attempt, amount) : null;
             Refund created = Refund.initiate(Ids.newId("rfnd"), payment.id(), attempt.id(), merchantId,
@@ -170,7 +180,7 @@ public class RefundService {
                             refund.reason()));
             return applyResult(refundId, result, TransitionSource.PROVIDER_RESPONSE);
         } catch (ProviderTimeoutException e) {
-            return applyStatus(refundId, RefundStatus.UNKNOWN, null, null, TransitionSource.PROVIDER_RESPONSE);
+            return applyStatus(refundId, RefundStatus.UNKNOWN, null, null, TransitionSource.PROVIDER_RESPONSE, null, null);
         } catch (ProviderUnavailableException e) {
             return recordCheck(refundId);
         }
@@ -187,7 +197,8 @@ public class RefundService {
             return refunds.findById(refundId).orElseThrow();
         }
         Failure failure = result.failure() == null ? null : ProviderResults.toFailure(result.failure());
-        return applyStatus(refundId, ProviderResults.toRefundStatus(result), result.providerReference(), failure, source);
+        return applyStatus(refundId, ProviderResults.toRefundStatus(result), result.providerReference(), failure, source,
+            result.amount(), result.conversion());
     }
 
     /** See {@link PaymentOutcomeService#applyProviderEvent}: a merchant account's events only touch its own refunds. */
@@ -233,12 +244,18 @@ public class RefundService {
     }
 
     private Refund applyStatus(String refundId, RefundStatus target, String providerReference, Failure failure,
-                               TransitionSource source) {
+                               TransitionSource source, Money reportedAmount, Conversion conversion) {
         Instant now = clock.instant();
         return tx.execute(status -> {
             Refund current = refunds.findById(refundId).orElseThrow();
             Payment payment = payments.lockById(current.paymentId()).orElseThrow();
             Refund refund = refunds.findById(refundId).orElseThrow();
+            if (target == RefundStatus.SUCCEEDED && reportedAmount != null && !reportedAmount.equals(refund.amount())) {
+                refund.flagForReview(Review.AMOUNT_MISMATCH, now);
+                payment.touch(now);
+                store.save(payment, refund, List.of());
+                return refund;
+            }
             TransitionOutcome outcome = refund.apply(target, providerReference, failure, source, now);
             if (source == TransitionSource.STATUS_CHECK) {
                 refund.afterStatusCheck(now);
@@ -258,6 +275,16 @@ public class RefundService {
                 events = List.of(new PaymentEvent(PaymentEvent.Type.REFUND_FAILED, refund.id()));
             } else if (outcome == TransitionOutcome.CONFLICT) {
                 log.warn("Conflicting refund status {} for refund {} in status {}", target, refundId, refund.status());
+            }
+            if (target == RefundStatus.SUCCEEDED && refund.status() == RefundStatus.SUCCEEDED && reportedAmount != null) {
+                PaymentConversionService.Result recorded = conversions.record(payment, refund.attemptId(), Kind.REFUND,
+                        refund.id(), refund.amount(), conversion, source == TransitionSource.RECONCILIATION
+                                ? PaymentConversionService.Source.SETTLEMENT_REPORT : PaymentConversionService.Source.PSP);
+                if (recorded == PaymentConversionService.Result.AMOUNT_MISMATCH) {
+                    refund.flagForReview(Review.AMOUNT_MISMATCH, now);
+                } else if (recorded == PaymentConversionService.Result.RECORDED) {
+                    refund.touch(now);
+                }
             }
             payment.touch(now);
             store.save(payment, refund, events);

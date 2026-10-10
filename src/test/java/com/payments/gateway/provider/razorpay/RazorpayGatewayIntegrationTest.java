@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -42,6 +43,9 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
         registry.add("pg.providers.razorpay.base-url", () -> RAZORPAY.baseUrl().toString());
         registry.add("pg.providers.razorpay.settlement-lag", () -> "2d");
         registry.add("pg.providers.razorpay.mandates", () -> "true");
+        registry.add("pg.providers.razorpay.foreign-currencies[USD]", () -> "1000000");
+        registry.add("pg.providers.razorpay.foreign-currencies[JPY]", () -> "1000000");
+        registry.add("pg.providers.razorpay.foreign-currencies[KWD]", () -> "3000000");
         registry.add("pg.providers.http.read-timeout", () -> "1s");
     }
 
@@ -154,6 +158,58 @@ class RazorpayGatewayIntegrationTest extends IntegrationTest {
         assertThat(RAZORPAY.requests()).filteredOn(r -> r.method().equals("POST") && r.path().equals("/v1/payment_links"))
                 .as("a link that may exist is never created twice").hasSize(1);
         assertThat(RAZORPAY.last("GET /v1/payment_links").query()).isEqualTo("reference_id=" + attemptId);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"JPY,1300,71916,100,5532", "USD,12000,999000,4000,340000", "KWD,40000,1081800,10000,270450"})
+    void internationalCardsCaptureRefundAndReconcileThroughRazorpay(String currency, long amount, long capturedInr,
+                                                                    long refundAmount, long refundInr) {
+        Linked linked = merchantOnRazorpay();
+        TestMerchant merchant = linked.merchant();
+        assertThat(admin("PATCH", "/admin/v1/merchants/" + merchant.id(), Map.of("international_cards", true)).status()).isEqualTo(200);
+        Map<String, Object> request = Map.of("amount", amount, "currency", currency, "merchant_order_id", UUID.randomUUID().toString());
+        Response created = assertContract("POST", "/v1/payments", request,
+                post(merchant, "/v1/payments", UUID.randomUUID().toString(), request));
+        assertThat(created.status()).as(created.raw()).isEqualTo(201);
+        String paymentId = str(created.body(), "id");
+        RAZORPAY.on("POST /v1/payment_links", 200, "{\"id\":\"plink_fx\",\"short_url\":\"https://rzp.io/i/fx\",\"status\":\"created\"}");
+        Response confirmed = confirm(merchant, paymentId, card());
+        assertThat(confirmed.status()).as(confirmed.raw()).isEqualTo(200);
+        String attemptId = str(confirmed.body(), "latest_attempt.id");
+        JsonNode sent = json.read(RAZORPAY.last("POST /v1/payment_links").body(), JsonNode.class);
+        assertThat(sent.path("amount").asLong()).isEqualTo(amount);
+        assertThat(sent.path("currency").asString()).isEqualTo(currency);
+        Map<String, Object> captured = Map.of("id", "pay_fx", "order_id", "order_fx", "status", "captured",
+                "amount", amount, "currency", currency, "base_amount", capturedInr, "base_currency", "INR",
+                "notes", Map.of("pg_attempt_id", attemptId));
+        String paid = json.write(Map.of("event", "payment_link.paid", "payload", Map.of(
+                "payment_link", Map.of("entity", Map.of("id", "plink_fx", "reference_id", attemptId, "status", "paid")),
+                "payment", Map.of("entity", captured))));
+        assertThat(webhook(linked, "evt_fx", paid, WEBHOOK_SECRET).status()).isEqualTo(200);
+        Response payment = assertContract("GET", "/v1/payments/{payment_id}", null, get(merchant, "/v1/payments/" + paymentId));
+        assertThat(num(payment.body(), "conversion.settled_amount")).isEqualTo(capturedInr);
+        assertThat(str(payment.body(), "conversion.rate")).isNull();
+        RAZORPAY.on("GET /v1/payment_links/plink_fx", 200, "{\"id\":\"plink_fx\",\"order_id\":\"order_fx\",\"status\":\"paid\"}")
+                .on("GET /v1/orders/order_fx/payments", 200, json.write(Map.of("items", java.util.List.of(captured))))
+                .on("POST /v1/payments/pay_fx/refund", 200, json.write(Map.of("id", "rfnd_fx", "payment_id", "pay_fx",
+                        "status", "processed", "amount", refundAmount, "currency", currency)));
+        Response refund = post(merchant, "/v1/payments/" + paymentId + "/refunds", UUID.randomUUID().toString(), Map.of("amount", refundAmount));
+        assertThat(refund.body()).containsEntry("status", "succeeded").doesNotContainKey("conversion");
+        assertThat(json.read(RAZORPAY.last("POST /v1/payments/pay_fx/refund").body(), JsonNode.class).path("amount").asLong())
+                .isEqualTo(refundAmount);
+        Instant now = clock.instant();
+        settles(now, "setl_fx", capturedInr - refundInr,
+                reconItem("pay_fx", "payment", capturedInr, capturedInr, 0, "setl_fx", now,
+                        ",\"order_id\":\"order_fx\",\"order_receipt\":\"" + attemptId + "\",\"fee\":2500"),
+                reconItem("rfnd_fx", "refund", refundInr, 0, refundInr, "setl_fx", now, ""));
+        Response run = reconcileAround(merchant, now);
+        assertThat(run.status()).as(run.raw()).isEqualTo(201);
+        assertThat(num(run.body(), "lines_matched")).isEqualTo(2);
+        assertThat(list(run.body(), "exceptions")).isEmpty();
+        Response refundView = assertContract("GET", "/v1/refunds/{refund_id}", null,
+                get(merchant, "/v1/refunds/" + str(refund.body(), "id")));
+        assertThat(num(refundView.body(), "conversion.settled_amount")).isEqualTo(refundInr);
+        assertThat(ledgerBalances(merchant)).containsEntry("psp_receivable", 0L);
     }
 
     // ------------------------------------------------------------------ mandates (ADR-035)

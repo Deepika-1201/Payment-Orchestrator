@@ -150,6 +150,10 @@ public final class Refund {
         updatedAt = now;
     }
 
+    public void touch(Instant now) {
+        updatedAt = now;
+    }
+
     /** A return of a bank transfer credit, which is not a refund of the payment's captured amount (ADR-038). */
     public boolean returnsCredit() {
         return initiatedBy == RefundInitiator.SYSTEM_CREDIT_RETURN;

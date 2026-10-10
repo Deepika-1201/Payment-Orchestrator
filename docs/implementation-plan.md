@@ -16,8 +16,8 @@ V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists it
 | Scope | Planned units | Done | Progress |
 |---|---|---|---|
 | V1 (phases 1–17) | 23 | 22 | 96% |
-| V2 (phases 18–28) | 15.5 | 7.5 | 48% |
-| **Project** | **38.5** | **29.5** | **77%** |
+| V2 (phases 18–28) | 15.5 | 9 | 58% |
+| **Project** | **38.5** | **31** | **81%** |
 
 *As of 2026-10-10.*
 
@@ -72,7 +72,7 @@ These items belong to the phases above but need access the project does not have
 | 20 | Wallets, EMI and pay later | [§8.3](requirements.md#83-wallets-emi-and-pay-later-phase-20) | — | 1.5 | Each method pays end to end on the mock PSP and through a real adapter's stub, and the hosted checkout offers it when routable. The phase changes nothing in `payment/domain` (NFR-11) | Done: [ADR-037](decisions/ADR-037-wallets-emi-pay-later.md), [LLD §20](low-level-design.md#20-wallets-emi-and-pay-later-phase-20-adr-037), [steps](#phase-20-steps). Razorpay offers them behind `extra-methods` once enabled on the account; its sandbox check needs keys, as C1 does |
 | 21 | Bank transfers and virtual accounts | [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) | — | 1.5 | An exact transfer pays the payment. Short, excess, repeated and unmatched credits follow the policy. Credits reconcile against settlement reports | Done: [ADR-038](decisions/ADR-038-bank-transfers.md), [LLD §21](low-level-design.md#21-bank-transfers-and-virtual-accounts-phase-21-adr-038), [steps](#phase-21-steps). Razorpay Smart Collect is behind `extra-methods`; its sandbox check needs keys, as C1 does |
 | 22 | Dispute evidence | [§8.5](requirements.md#85-dispute-evidence-phase-22) | — | 1 | Evidence reaches the PSP (mock and a real adapter's stub) before the deadline. An approaching deadline raises the event and the alert. Accepting a dispute books the loss | Done: [ADR-039](decisions/ADR-039-dispute-evidence.md), [LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039), [steps](#phase-22-steps). Razorpay's Documents and Disputes APIs; its sandbox check needs keys, as C1 does. Cashfree merchants keep answering on its dashboard |
-| 23 | International cards and multi-currency | [§8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) | — | 1.5 | Payments in 0-, 2- and 3-decimal currencies are created, captured and refunded in minor units (NFR-20). The ledger balances in both currencies with the FX difference booked. Reconciliation matches in INR | |
+| 23 | International cards and multi-currency | [§8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) | — | 1.5 | Payments in 0-, 2- and 3-decimal currencies are created, captured and refunded in minor units (NFR-20). The ledger balances in both currencies with the FX difference booked. Reconciliation matches in INR | Done: [ADR-040](decisions/ADR-040-international-cards.md), [LLD §23](low-level-design.md#23-international-cards-and-multi-currency-phase-23-adr-040), [steps](#phase-23-steps). Mock PSP and Razorpay stub; real account settlement format remains C1 |
 | 24 | Cost-aware and adaptive routing | [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24) | — | 1 | In simulated traffic, `COST` picks the cheapest healthy PSP, and `ADAPTIVE` converges on the better success rate without ever routing to an unhealthy PSP. Shadow mode changes no route | |
 | 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | |
 | 26 | Aggregator mode I: onboarding | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA1, FR-PA2 | — | 1 | A merchant reaches aggregator mode only with complete KYC checks and a second operator's approval. Expired KYC stops new payments in that mode | |
@@ -81,7 +81,7 @@ These items belong to the phases above but need access the project does not have
 
 **Not planned:** a merchant dashboard UI, a card vault, direct acquirer integrations, ML-based fraud and multi-region active-active. [ADR-034](decisions/ADR-034-post-v1-scope.md) gives the reasons and when to revisit each. The scale-driven changes in [architecture §11](architecture.md#11-evolution-path) wait for their triggers and are not counted.
 
-**Order of work:** phases 23 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 9 units, 8 in V2 and 1 in the close-out.
+**Order of work:** phases 24 to 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 7.5 units, 6.5 in V2 and 1 in the close-out.
 
 ### Phase 18 steps
 
@@ -154,14 +154,14 @@ No partial credit: the phase's 1.5 units count when all steps are done.
 | Step | Work | Status |
 |---|---|---|
 | 1 | Design: [ADR-040](decisions/ADR-040-international-cards.md), [LLD §23](low-level-design.md#23-international-cards-and-multi-currency-phase-23-adr-040), [requirements §8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) refined | Done |
-| 2 | Schema V19, the merchant setting, foreign currencies in capabilities, creation and routing rules, amount steps for captures and refunds, INR-only amount risk | |
-| 3 | Conversions ([§23.3](low-level-design.md#233-conversions)): SPI fields, recording under the payment lock, carried amounts, `conversion` on payments, refunds and disputes | |
-| 4 | Ledger ([§23.4](low-level-design.md#234-ledger)): foreign movements against `fx_conversion`, conversion postings with `fx_gain_loss`, the per-currency balance check | |
-| 5 | Reconciliation in INR ([§23.5](low-level-design.md#235-reconciliation)): `charged` on lines, recording from the report, `conversion_missing` | |
-| 6 | Mock PSP and simulator ([§23.7](low-level-design.md#237-mock-psp)): currencies, rates, conversions in answers, webhooks and reports | |
-| 7 | Razorpay ([§23.8](low-level-design.md#238-razorpay-mapping)): configured currencies, `base_amount`, recon lines in other currencies; stub tests | |
-| 8 | Tests: payments in 0-, 2- and 3-decimal currencies created, captured and refunded end to end; rate moves with gains and losses; full refunds back to zero; chargebacks and reversals; reconciliation from the report; contract; database rules; mutation checks. Then commit and push on a green build | |
-| 9 | Docs: README, progress and changelog | |
+| 2 | Schema V19, the merchant setting, foreign currencies in capabilities, creation and routing rules, amount steps for captures and refunds, INR-only amount risk | Done |
+| 3 | Conversions ([§23.3](low-level-design.md#233-conversions)): SPI fields, recording under the payment lock, carried amounts, `conversion` on payments, refunds and disputes | Done |
+| 4 | Ledger ([§23.4](low-level-design.md#234-ledger)): foreign movements against `fx_conversion`, conversion postings with `fx_gain_loss`, the per-currency balance check | Done |
+| 5 | Reconciliation in INR ([§23.5](low-level-design.md#235-reconciliation)): `charged` on lines, recording from the report, `conversion_missing` | Done |
+| 6 | Mock PSP and simulator ([§23.7](low-level-design.md#237-mock-psp)): currencies, rates, conversions in answers, webhooks and reports | Done |
+| 7 | Razorpay ([§23.8](low-level-design.md#238-razorpay-mapping)): configured currencies, `base_amount`, explicit INR recon rows and original dispute amounts; stub tests | Done |
+| 8 | Tests: payments in 0-, 2- and 3-decimal currencies created, captured and refunded end to end; rate moves with gains and losses; full refunds back to zero; chargebacks and reversals; reconciliation from the report; contract; database rules; mutation checks. Then commit and push on a green build | Done: 52 mutants, all killed. Three survivors strengthened independent schema checks and original-charge mismatch tests. Mutations ran in an isolated copy with source hashes verified |
+| 9 | Docs: README, progress and changelog | Done; the reconciliation runbook covers `conversion_missing` and ambiguous Razorpay report rows |
 
 ## Changelog
 
@@ -175,3 +175,4 @@ No partial credit: the phase's 1.5 units count when all steps are done.
 | 2026-10-08 | Phase 20 done: wallets, card EMI, cardless EMI and pay later on the mock PSPs and the Razorpay adapter, with no change to `payment/domain`. Routing matches the wallet or lender against what each PSP declares; the card EMI plan comes from the PSP with the card, set once. Decided while building ([LLD §20](low-level-design.md#20-wallets-emi-and-pay-later-phase-20-adr-037)): Razorpay EMI payments missing their plan in a listing are fetched again with `expand[]=card&expand[]=emi`, and an unreadable plan keeps the card. 29 mutants: 28 killed, 1 equivalent | 27 of 38.5 units (70%) |
 | 2026-10-09 | Phase 21 done: bank transfers to a virtual account per attempt, on the mock PSP and Razorpay Smart Collect. Each credit is recorded once and allocated under the payment lock; excess, late and repeated credits go back as refunds against that credit; a payment still short at expiry is refunded or, if the merchant accepts short payments, captured for what arrived. Decided while building ([LLD §21.2](low-level-design.md#212-credits-and-allocation)): a credit in another currency goes back as late; an unplaceable credit on the platform-level webhook endpoint is logged and left to reconciliation, as no merchant can be named. 52 mutants: 51 killed, 1 equivalent | 28.5 of 38.5 units (74%) |
 | 2026-10-10 | Phase 22 done: merchants contest or accept disputes through the API on PSPs that take answers that way (the mock PSPs and Razorpay; Cashfree merchants keep its dashboard). Evidence files are checked by their leading bytes and stored encrypted under a key per file, which data key rotation re-wraps. An answer is recorded first, delivered after commit and retried until the deadline; a refusal or the deadline fails it with a review item and an event. `dispute.evidence_due` goes out once, 3 days before the deadline, and a gauge with an alert covers disputes nobody answers. Decided while building ([LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039)): an answer counts as sent only when the PSP takes it or reports the status it leads to; delivery has no retry cap of its own, as the first attempt after the deadline fails it; refused uploads are not retried; files are listed on their own endpoint. 55 mutants: 54 killed, 1 equivalent | 29.5 of 38.5 units (77%) |
+| 2026-10-10 | Phase 23 done: international-card opt-in, PSP currency ranges and steps, immutable INR conversions, per-currency ledger balance, cumulative FX allocation, and INR reconciliation on the mock PSP and Razorpay stub ([ADR-040](decisions/ADR-040-international-cards.md)). Decided while building: delayed historical chargebacks and reversals may be recorded after later refunds; missing conversion dependencies resolve after replaying the prerequisite window; ambiguous Razorpay report rows fail before posting, with no guessed conversion or postpaid fee. Concurrent refunds, hosted checkout and database least privilege are covered. 52 mutants, all killed | 31 of 38.5 units (81%) |

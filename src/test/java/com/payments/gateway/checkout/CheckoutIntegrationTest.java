@@ -102,6 +102,25 @@ class CheckoutIntegrationTest extends IntegrationTest {
     }
 
     @Test
+    void foreignCheckoutFormatsIsoMinorUnitsAndOffersOnlyCards() {
+        TestMerchant merchant = createMerchant(ALPHA, BETA);
+        admin("PATCH", "/admin/v1/merchants/" + merchant.id(), Map.of("international_cards", true));
+        for (String currency : new String[] {"JPY", "USD", "KWD"}) {
+            Response payment = post(merchant, "/v1/payments", key(), Map.of("amount", 1300, "currency", currency,
+                    "merchant_order_id", key()));
+            assertThat(payment.status()).as(payment.raw()).isEqualTo(201);
+            Page page = open(session(merchant, str(payment.body(), "id")));
+            String formatted = switch (currency) {
+                case "JPY" -> "JPY 1300";
+                case "USD" -> "USD 13.00";
+                default -> "KWD 1.300";
+            };
+            assertThat(page.html()).contains(formatted, "value=\"card\"")
+                    .doesNotContain("value=\"upi_intent\"", "value=\"netbanking\"", "value=\"bank_transfer\"", "value=\"emi\"");
+        }
+    }
+
+    @Test
     void upiQrShowsAServerRenderedCodeOfThePspPayloadAndCompletes() throws Exception {
         TestMerchant merchant = createMerchant(ALPHA);
         String paymentId = str(createPayment(merchant, 49_900, "automatic"), "id");

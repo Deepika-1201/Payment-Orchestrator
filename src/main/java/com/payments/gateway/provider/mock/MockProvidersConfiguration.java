@@ -1,6 +1,7 @@
 package com.payments.gateway.provider.mock;
 
 import com.payments.gateway.provider.spi.ProviderCapabilities;
+import com.payments.gateway.provider.spi.ProviderCapabilities.CurrencySupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MandateSupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.shared.json.JsonCodec;
@@ -50,7 +51,14 @@ public class MockProvidersConfiguration {
                         CARDLESS_EMI_MAX),
                 MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay", "simpl"), 100, UPI_MAX),
                 MethodType.BANK_TRANSFER, new MethodSupport(Set.of(), 100, TRANSFER_MAX, false)),
-                Set.of("INR"), true, true, true).withMandates(MANDATES).withDisputeResponses();
+                Set.of("INR"), true, true, true).withMandates(MANDATES).withDisputeResponses()
+                .withForeignCurrencies(Map.of(
+                    "USD", new CurrencySupport(100, 1_000_000, 1),
+                    "EUR", new CurrencySupport(100, 1_000_000, 1),
+                    "GBP", new CurrencySupport(100, 1_000_000, 1),
+                    "JPY", new CurrencySupport(100, 1_000_000, 1),
+                    "KWD", new CurrencySupport(100, 3_000_000, 10),
+                    "BHD", new CurrencySupport(100, 3_000_000, 10)));
         return new MockPaymentProvider(MOCK_ALPHA, capabilities, properties, json, clock);
     }
 
