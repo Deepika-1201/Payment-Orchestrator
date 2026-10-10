@@ -128,6 +128,7 @@ public class PaymentController {
                 case EMI -> PaymentMethod.emi();
                 case CARDLESS_EMI -> PaymentMethod.cardlessEmi(provider(requested.cardlessEmi(), "cardless_emi"));
                 case PAY_LATER -> PaymentMethod.payLater(provider(requested.payLater(), "pay_later"));
+                case BANK_TRANSFER -> PaymentMethod.bankTransfer();
             };
         } catch (IllegalArgumentException e) {
             throw GatewayException.validation("payment_method", e.getMessage());

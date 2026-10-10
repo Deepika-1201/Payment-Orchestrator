@@ -16,6 +16,10 @@ public record Review(boolean open, String reasons, Instant flaggedAt) {
     public static final String RISK_REVIEW = "risk_review";
     /** A dispute larger than what is left of the captured amount (e.g. the customer was already refunded). */
     public static final String EXCEEDS_NET_CAPTURED = "amount_exceeds_net_captured";
+    /** A bank transfer credit to an account no attempt can be found for (ADR-038). */
+    public static final String UNMATCHED_CREDIT = "unmatched_credit";
+    /** The PSP refused to send a credit back: the customer's money is still at the PSP. */
+    public static final String CREDIT_RETURN_FAILED = "credit_return_failed";
 
     public static final Review NONE = new Review(false, null, null);
 

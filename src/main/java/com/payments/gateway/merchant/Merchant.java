@@ -3,10 +3,25 @@ package com.payments.gateway.merchant;
 import java.time.Duration;
 import java.time.Instant;
 
-/** {@code mandateDebitLimit}: frictionless debit limit raised by an operator (ADR-035); null means the gateway default. */
+/**
+ * {@code mandateDebitLimit}: frictionless debit limit raised by an operator (ADR-035); null means the gateway default.
+ * {@code transferCredits} and {@code transferShortfall}: how bank transfer credits pay a payment (ADR-038).
+ */
 public record Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
                        LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt,
-                       Long mandateDebitLimit) {
+                       Long mandateDebitLimit, TransferCredits transferCredits, TransferShortfall transferShortfall) {
+
+    public Merchant {
+        transferCredits = transferCredits == null ? TransferCredits.ADD_UP : transferCredits;
+        transferShortfall = transferShortfall == null ? TransferShortfall.REFUND : transferShortfall;
+    }
+
+    public Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
+                    LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt,
+                    Long mandateDebitLimit) {
+        this(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt, mandateDebitLimit,
+                null, null);
+    }
 
     public Merchant(String id, String name, Status status, String statusReason, String webhookUrl,
                     LateSuccessPolicy lateSuccessPolicy, Duration paymentExpiry, Instant createdAt) {
@@ -24,22 +39,39 @@ public record Merchant(String id, String name, Status status, String statusReaso
         ACCEPT
     }
 
+    /** Whether several bank transfer credits add up to the amount, or only one credit of exactly the amount pays it. */
+    public enum TransferCredits {
+        ADD_UP,
+        EXACT
+    }
+
+    /** A bank transfer payment still short at expiry: its credits go back, or it succeeds for what arrived. */
+    public enum TransferShortfall {
+        REFUND,
+        ACCEPT
+    }
+
     public boolean acceptsLateSuccess() {
         return lateSuccessPolicy == LateSuccessPolicy.ACCEPT;
     }
 
     public Merchant withSettings(String newName, String newWebhookUrl, LateSuccessPolicy newPolicy, Duration newExpiry) {
         return new Merchant(id, newName, status, statusReason, newWebhookUrl, newPolicy, newExpiry, createdAt,
-                mandateDebitLimit);
+                mandateDebitLimit, transferCredits, transferShortfall);
     }
 
     public Merchant withMandateDebitLimit(Long newLimit) {
         return new Merchant(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
-                newLimit);
+                newLimit, transferCredits, transferShortfall);
+    }
+
+    public Merchant withBankTransfers(TransferCredits credits, TransferShortfall shortfall) {
+        return new Merchant(id, name, status, statusReason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
+                mandateDebitLimit, credits, shortfall);
     }
 
     public Merchant withStatus(Status newStatus, String reason) {
         return new Merchant(id, name, newStatus, reason, webhookUrl, lateSuccessPolicy, paymentExpiry, createdAt,
-                mandateDebitLimit);
+                mandateDebitLimit, transferCredits, transferShortfall);
     }
 }

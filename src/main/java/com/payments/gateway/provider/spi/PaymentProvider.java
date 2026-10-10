@@ -6,6 +6,8 @@ import com.payments.gateway.provider.spi.MandateRequests.DebitNotificationReques
 import com.payments.gateway.provider.spi.MandateRequests.ExecuteDebitRequest;
 import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -90,5 +92,17 @@ public interface PaymentProvider {
     /** Debits an active mandate; the outcome usually arrives later (webhook or {@link #fetchPaymentStatus}). */
     default ProviderPaymentResult executeDebit(MerchantAccount account, ExecuteDebitRequest request) {
         throw new UnsupportedOperationException(code() + " does not support mandates");
+    }
+
+    // Virtual accounts (ADR-038): required of PSPs that declare BANK_TRANSFER.
+
+    /** Every credit the virtual account has received so far. */
+    default List<ProviderCredit> fetchCredits(MerchantAccount account, CreditsQuery query) {
+        throw new UnsupportedOperationException(code() + " does not support bank transfers");
+    }
+
+    /** Stops the account from taking further credits; closing an account already closed succeeds. */
+    default void closeCollection(MerchantAccount account, CloseCollectionRequest request) {
+        throw new UnsupportedOperationException(code() + " does not support bank transfers");
     }
 }

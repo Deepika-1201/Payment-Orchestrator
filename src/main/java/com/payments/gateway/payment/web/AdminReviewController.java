@@ -66,4 +66,11 @@ public class AdminReviewController {
                                      @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
         return reviews.resolveDispute(id, request.note(), actor);
     }
+
+    @PostMapping("/credits/{id}/resolve")
+    @RequiresAdmin(AdminPermission.OPERATIONS_WRITE)
+    public ReviewItem resolveCredit(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                    @PathVariable String id, @Valid @RequestBody ResolveRequest request) {
+        return reviews.resolveCredit(id, request.note(), actor);
+    }
 }

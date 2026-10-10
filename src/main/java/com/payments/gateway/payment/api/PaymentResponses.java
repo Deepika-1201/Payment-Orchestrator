@@ -39,7 +39,19 @@ public final class PaymentResponses {
     public record CustomerResponse(String reference, String email, String phone) {
     }
 
-    public record NextActionResponse(String type, String url, String upiUri, String qrPayload, Instant expiresAt) {
+    /** {@code bankTransfer}: where to send a bank transfer, for type {@code bank_transfer} (ADR-038). */
+    public record NextActionResponse(String type, String url, String upiUri, String qrPayload, Instant expiresAt,
+                                     BankTransferResponse bankTransfer) {
+    }
+
+    public record BankTransferResponse(String accountNumber, String ifsc, String beneficiaryName, String bankName,
+                                       String vpa) {
+    }
+
+    /** A bank transfer that arrived: how much of it paid the payment, and how much went back ({@code returnId}). */
+    public record CreditResponse(String id, String object, String paymentId, long amount, String currency, String mode,
+                                 String utr, Instant receivedAt, long appliedAmount, long returnedAmount,
+                                 String returnId) {
     }
 
     /** {@code methodProvider}: the wallet or lender; {@code emiPlan}: the card EMI plan the PSP reported (ADR-037). */
@@ -57,10 +69,11 @@ public final class PaymentResponses {
     public record ErrorResponse(String code, String category, String message) {
     }
 
+    /** {@code creditId}: the bank transfer credit the refund sends money back from (ADR-038). */
     public record RefundResponse(String id, String object, String paymentId, String attemptId, long amount,
                                  String currency, String status, String reason, String merchantRefundId,
-                                 String initiatedBy, String provider, String providerReference, ErrorResponse failure,
-                                 Instant createdAt, Instant updatedAt, long version) {
+                                 String initiatedBy, String creditId, String provider, String providerReference,
+                                 ErrorResponse failure, Instant createdAt, Instant updatedAt, long version) {
     }
 
     /** {@code respondBy}: the PSP's deadline for evidence, which is submitted on the PSP's dashboard. */

@@ -19,6 +19,7 @@ import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.config.WorkerProperties;
 import com.payments.gateway.shared.model.FailureCategory;
+import com.payments.gateway.shared.model.MethodType;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -43,18 +44,20 @@ public class StatusResolver {
     private final RefundRepository refunds;
     private final PaymentOutcomeService outcomes;
     private final RefundService refundService;
+    private final TransferCreditService transfers;
     private final ProviderClient providerClient;
     private final WorkerProperties workers;
     private final Clock clock;
     private final MeterRegistry meters;
 
     public StatusResolver(PaymentRepository payments, RefundRepository refunds, PaymentOutcomeService outcomes,
-                          RefundService refundService, ProviderClient providerClient, WorkerProperties workers,
-                          Clock clock, MeterRegistry meters) {
+                          RefundService refundService, TransferCreditService transfers, ProviderClient providerClient,
+                          WorkerProperties workers, Clock clock, MeterRegistry meters) {
         this.payments = payments;
         this.refunds = refunds;
         this.outcomes = outcomes;
         this.refundService = refundService;
+        this.transfers = transfers;
         this.providerClient = providerClient;
         this.workers = workers;
         this.clock = clock;
@@ -110,6 +113,10 @@ public class StatusResolver {
             outcomes.recordCheck(paymentId, attemptId);
             return;
         }
+        if (attempt.method().type() == MethodType.BANK_TRANSFER && attempt.status() == AttemptStatus.REQUIRES_ACTION) {
+            transfers.poll(paymentId, attemptId);
+            return;
+        }
         ProviderPaymentResult result;
         try {
             result = providerClient.fetchStatus(payment.merchantId(), attempt.providerCode(),
@@ -153,7 +160,7 @@ public class StatusResolver {
         try {
             String paymentReference = payments.findById(refund.paymentId())
                     .flatMap(payment -> payment.attempt(refund.attemptId()))
-                    .map(PaymentAttempt::providerReference)
+                    .map(attempt -> refundService.paymentReference(refund, attempt))
                     .orElse(null);
             result = providerClient.fetchRefundStatus(refund.merchantId(), refund.providerCode(),
                     new RefundStatusQuery(refund.id(), refund.providerReference(), paymentReference, refund.attemptId()));

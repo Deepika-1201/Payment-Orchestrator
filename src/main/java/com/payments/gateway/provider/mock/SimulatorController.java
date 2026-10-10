@@ -48,6 +48,9 @@ public class SimulatorController {
     public record CompleteRequest(String outcome, Boolean duplicateWebhook, Integer emiTenureMonths) {
     }
 
+    public record CreditRequest(Long amount, String mode, Boolean webhook) {
+    }
+
     public record AvailabilityRequest(boolean available) {
     }
 
@@ -222,6 +225,35 @@ public class SimulatorController {
         return Map.of("provider", provider, "available", request.available());
     }
 
+    /**
+     * A transfer into a bank transfer account (LLD §21.8), in any amount; {@code mode} defaults to NEFT and
+     * {@code webhook: false} leaves the credit to the gateway's status check. Closed accounts still take credits.
+     */
+    @PostMapping("/{provider}/collections/{reference}/credits")
+    public Map<String, Object> credit(@PathVariable String provider, @PathVariable String reference,
+                                      @RequestBody CreditRequest request) {
+        MockPaymentProvider mock = provider(provider);
+        Txn collection = transaction(provider, reference);
+        if (collection.method().type() != MethodType.BANK_TRANSFER || collection.collectionReference() != null) {
+            throw GatewayException.validation("reference", "is not a bank transfer account");
+        }
+        if (request.amount() == null || request.amount() < 1) {
+            throw GatewayException.validation("amount", "must be a positive amount in minor units");
+        }
+        String mode = request.mode() == null ? "NEFT" : request.mode().toUpperCase(java.util.Locale.ROOT);
+        if (!List.of("NEFT", "RTGS", "IMPS", "UPI").contains(mode)) {
+            throw GatewayException.validation("mode", "must be one of neft, rtgs, imps, upi");
+        }
+        Txn credit = mock.psp().credit(collection, Money.of(request.amount(), collection.amount().currency()), mode,
+                clock.instant());
+        if (!Boolean.FALSE.equals(request.webhook())) {
+            String gatewayBaseUrl = ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
+            webhookSender.send(gatewayBaseUrl, mock, credit, mock.webhookFor(credit));
+        }
+        return Map.of("credit_reference", credit.reference(), "collection_reference", reference, "amount",
+                request.amount(), "mode", mode.toLowerCase(java.util.Locale.ROOT), "utr", credit.utr());
+    }
+
     /** Makes the next settlement report disagree with the gateway, to exercise reconciliation. */
     @PostMapping("/{provider}/report-anomalies")
     public Map<String, Object> reportAnomaly(@PathVariable String provider, @RequestBody AnomalyRequest request) {
@@ -284,6 +316,9 @@ public class SimulatorController {
                                   int deliveries) {
         MockPaymentProvider mock = provider(provider);
         Txn txn = transaction(provider, reference);
+        if (txn.method().type() == MethodType.BANK_TRANSFER) {
+            throw GatewayException.validation("reference", "is a bank transfer account: credit it instead");
+        }
         if (emiTenureMonths != null && (txn.method().type() != MethodType.EMI || !emiTenures(mock).contains(emiTenureMonths))) {
             throw GatewayException.validation("emi_tenure_months", "must be one of " + emiTenures(mock)
                     + " months, for a card EMI payment");

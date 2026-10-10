@@ -40,6 +40,22 @@ public class LedgerPostingListener {
                     "dispute won on payment " + movement.paymentId(), movement.occurredAt(),
                     List.of(Leg.debit(LedgerAccountType.PSP_RECEIVABLE, movement.amount()),
                             Leg.credit(LedgerAccountType.CHARGEBACKS, movement.amount())));
+            case CREDIT_RECEIVED -> new Posting(movement.merchantId(), movement.providerCode(),
+                    LedgerTransactionType.CREDIT_RECEIVED, "CREDIT", movement.referenceId(),
+                    movement.paymentId() == null ? "unmatched bank transfer credit"
+                            : "bank transfer credit for payment " + movement.paymentId(), movement.occurredAt(),
+                    List.of(Leg.debit(LedgerAccountType.PSP_RECEIVABLE, movement.amount()),
+                            Leg.credit(LedgerAccountType.CUSTOMER_FUNDS, movement.amount())));
+            case CREDIT_APPLIED -> new Posting(movement.merchantId(), movement.providerCode(),
+                    LedgerTransactionType.CREDIT_APPLIED, "ATTEMPT", movement.referenceId(),
+                    "bank transfer credits paid payment " + movement.paymentId(), movement.occurredAt(),
+                    List.of(Leg.debit(LedgerAccountType.CUSTOMER_FUNDS, movement.amount()),
+                            Leg.credit(LedgerAccountType.SALES_CLEARING, movement.amount())));
+            case CREDIT_RETURNED -> new Posting(movement.merchantId(), movement.providerCode(),
+                    LedgerTransactionType.CREDIT_RETURNED, "REFUND", movement.referenceId(),
+                    "bank transfer credit sent back for payment " + movement.paymentId(), movement.occurredAt(),
+                    List.of(Leg.debit(LedgerAccountType.CUSTOMER_FUNDS, movement.amount()),
+                            Leg.credit(LedgerAccountType.PSP_RECEIVABLE, movement.amount())));
         };
         ledger.post(posting);
     }

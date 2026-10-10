@@ -8,11 +8,14 @@ import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundInitiator;
 import com.payments.gateway.payment.domain.RefundStatus;
+import com.payments.gateway.payment.domain.Review;
+import com.payments.gateway.payment.domain.TransferCredit;
 import com.payments.gateway.payment.domain.TransitionOutcome;
 import com.payments.gateway.payment.domain.TransitionSource;
 import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
+import com.payments.gateway.payment.infrastructure.TransferCreditRepository;
 import com.payments.gateway.provider.ProviderClient;
 import com.payments.gateway.provider.ProviderRegistry;
 import com.payments.gateway.provider.spi.ProviderEvent;
@@ -23,6 +26,7 @@ import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
 import java.time.Instant;
@@ -47,6 +51,7 @@ public class RefundService {
 
     private final PaymentRepository payments;
     private final RefundRepository refunds;
+    private final TransferCreditRepository credits;
     private final DisputeRepository disputes;
     private final PaymentStore store;
     private final ProviderClient providerClient;
@@ -54,11 +59,12 @@ public class RefundService {
     private final TransactionTemplate tx;
     private final Clock clock;
 
-    public RefundService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
-                         PaymentStore store,
+    public RefundService(PaymentRepository payments, RefundRepository refunds, TransferCreditRepository credits,
+                         DisputeRepository disputes, PaymentStore store,
                          ProviderClient providerClient, ProviderRegistry providers, TransactionTemplate tx, Clock clock) {
         this.payments = payments;
         this.refunds = refunds;
+        this.credits = credits;
         this.disputes = disputes;
         this.store = store;
         this.providerClient = providerClient;
@@ -94,14 +100,45 @@ public class RefundService {
                 throw new GatewayException(ErrorCode.UNSUPPORTED_PAYMENT_METHOD,
                         "Provider " + attempt.providerCode() + " does not support partial refunds");
             }
+            String creditId = attempt.method().type() == MethodType.BANK_TRANSFER ? creditFor(attempt, amount) : null;
             Refund created = Refund.initiate(Ids.newId("rfnd"), payment.id(), attempt.id(), merchantId,
                     attempt.providerCode(), Money.of(amount, payment.amount().currency()), command.reason(),
-                    command.merchantRefundId(), RefundInitiator.MERCHANT, now);
+                    command.merchantRefundId(), RefundInitiator.MERCHANT, creditId, now);
             payment.touch(now);
             store.save(payment, created, List.of());
             return created;
         });
         return submit(refund.id());
+    }
+
+    /**
+     * A refund of a bank transfer payment goes back against one credit, as the PSP refunds per credit: the oldest whose
+     * applied part, less the refunds already against it, covers the amount (LLD §21.4).
+     */
+    private String creditFor(PaymentAttempt attempt, long amount) {
+        long largest = 0;
+        for (TransferCredit credit : credits.findByAttempt(attempt.id())) {
+            long left = credit.appliedAmount() - refunds.sumActiveRefundsOfCredit(credit.id());
+            if (left >= amount) {
+                return credit.id();
+            }
+            largest = Math.max(largest, left);
+        }
+        throw new GatewayException(ErrorCode.AMOUNT_EXCEEDS_REFUNDABLE, "A bank transfer payment is refunded against "
+                + "one credit at a time: at most " + largest + " can be refunded in one refund");
+    }
+
+    /**
+     * Sends {@code amount} of a bank transfer credit back (ADR-038), as refund {@code refundId}; must run inside the
+     * caller's transaction, under the payment's lock.
+     */
+    void createCreditReturn(Payment payment, TransferCredit credit, String refundId, long amount, String reason,
+                            Instant now) {
+        Refund refund = Refund.initiate(refundId, payment.id(), credit.attemptId(), payment.merchantId(),
+                credit.providerCode(), Money.of(amount, credit.amount().currency()), reason, null,
+                RefundInitiator.SYSTEM_CREDIT_RETURN, credit.id(), now);
+        store.saveRefund(payment, refund);
+        log.info("Credit {} of payment {}: {} going back ({})", credit.id(), payment.id(), amount, reason);
     }
 
     /** Creates a system refund for a late or duplicate success; must run inside the caller's locked transaction. */
@@ -129,13 +166,20 @@ public class RefundService {
         PaymentAttempt attempt = payment.attempt(refund.attemptId()).orElseThrow();
         try {
             ProviderRefundResult result = providerClient.refund(payment.merchantId(), refund.providerCode(),
-                    new RefundRequest(refund.id(), attempt.id(), attempt.providerReference(), refund.amount(), refund.reason()));
+                    new RefundRequest(refund.id(), attempt.id(), paymentReference(refund, attempt), refund.amount(),
+                            refund.reason()));
             return applyResult(refundId, result, TransitionSource.PROVIDER_RESPONSE);
         } catch (ProviderTimeoutException e) {
             return applyStatus(refundId, RefundStatus.UNKNOWN, null, null, TransitionSource.PROVIDER_RESPONSE);
         } catch (ProviderUnavailableException e) {
             return recordCheck(refundId);
         }
+    }
+
+    /** The PSP's payment a refund goes against: the credit's for bank transfers, else the attempt's. */
+    String paymentReference(Refund refund, PaymentAttempt attempt) {
+        return refund.creditId() == null ? attempt.providerReference()
+                : credits.findById(refund.creditId()).orElseThrow().providerReference();
     }
 
     public Refund applyResult(String refundId, ProviderRefundResult result, TransitionSource source) {
@@ -201,9 +245,16 @@ public class RefundService {
             }
             List<PaymentEvent> events = List.of();
             if (outcome == TransitionOutcome.APPLIED && target == RefundStatus.SUCCEEDED) {
-                payment.recordRefundSucceeded(refund.attemptId(), refund.amount().amount(), now);
+                if (!refund.returnsCredit()) {
+                    payment.recordRefundSucceeded(refund.attemptId(), refund.amount().amount(), now);
+                }
                 events = List.of(new PaymentEvent(PaymentEvent.Type.REFUND_SUCCEEDED, refund.id()));
             } else if (outcome == TransitionOutcome.APPLIED && target == RefundStatus.FAILED) {
+                if (refund.returnsCredit()) {
+                    refund.flagForReview(Review.CREDIT_RETURN_FAILED, now);
+                    log.error("The PSP refused to send credit {} back (refund {}); queued for review", refund.creditId(),
+                            refundId);
+                }
                 events = List.of(new PaymentEvent(PaymentEvent.Type.REFUND_FAILED, refund.id()));
             } else if (outcome == TransitionOutcome.CONFLICT) {
                 log.warn("Conflicting refund status {} for refund {} in status {}", target, refundId, refund.status());

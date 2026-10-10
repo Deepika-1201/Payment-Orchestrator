@@ -10,5 +10,7 @@ public enum MethodType {
     WALLET,
     EMI,
     CARDLESS_EMI,
-    PAY_LATER
+    PAY_LATER,
+    /** A transfer to a virtual account the PSP issues for the attempt (ADR-038). */
+    BANK_TRANSFER
 }

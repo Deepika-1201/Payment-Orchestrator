@@ -7,16 +7,19 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundStatus;
+import com.payments.gateway.payment.domain.TransferCredit;
 import com.payments.gateway.payment.domain.TransitionSource;
 import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository.AttemptLocator;
 import com.payments.gateway.payment.infrastructure.ReconciliationQueries;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
+import com.payments.gateway.payment.infrastructure.TransferCreditRepository;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.shared.model.Money;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
@@ -31,7 +34,9 @@ public class PaymentReconciliationService {
     public enum Kind {
         PAYMENT,
         REFUND,
-        DISPUTE
+        DISPUTE,
+        /** A bank transfer credit: settled as a payment line of its own (LLD §21.6). */
+        CREDIT
     }
 
     public record InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount) {
@@ -44,17 +49,20 @@ public class PaymentReconciliationService {
     private final PaymentRepository payments;
     private final RefundRepository refunds;
     private final DisputeRepository disputes;
+    private final TransferCreditRepository credits;
     private final ReconciliationQueries queries;
     private final PaymentOutcomeService outcomes;
     private final RefundService refundService;
     private final DisputeService disputeService;
 
     public PaymentReconciliationService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
-                                        ReconciliationQueries queries, PaymentOutcomeService outcomes,
-                                        RefundService refundService, DisputeService disputeService) {
+                                        TransferCreditRepository credits, ReconciliationQueries queries,
+                                        PaymentOutcomeService outcomes, RefundService refundService,
+                                        DisputeService disputeService) {
         this.payments = payments;
         this.refunds = refunds;
         this.disputes = disputes;
+        this.credits = credits;
         this.queries = queries;
         this.outcomes = outcomes;
         this.refundService = refundService;
@@ -68,6 +76,12 @@ public class PaymentReconciliationService {
                 : payments.findAttemptByProviderReference(providerCode, providerReference);
         if (locator.isEmpty() && merchantReference != null) {
             locator = payments.findAttemptById(merchantReference).filter(l -> l.providerCode().equals(providerCode));
+        }
+        if (locator.isEmpty()) {
+            return providerReference == null ? Optional.empty()
+                    : credits.findByProviderReference(providerCode, providerReference)
+                            .filter(credit -> credit.merchantId().equals(merchantId))
+                            .map(PaymentReconciliationService::toItem);
         }
         return locator.filter(l -> l.merchantId().equals(merchantId)).flatMap(l -> payments.findById(l.paymentId())
                 .flatMap(payment -> payment.attempt(l.attemptId()).map(attempt -> toItem(payment, attempt))));
@@ -98,10 +112,16 @@ public class PaymentReconciliationService {
     }
 
     public List<InternalItem> succeededBetween(String merchantId, String providerCode, Instant from, Instant to) {
-        return queries.succeededBetween(merchantId, providerCode, from, to).stream()
+        List<InternalItem> items = new ArrayList<>(queries.succeededBetween(merchantId, providerCode, from, to).stream()
                 .map(s -> new InternalItem("REFUND".equals(s.entity()) ? Kind.REFUND : Kind.PAYMENT, s.entityId(),
                         s.paymentId(), "SUCCEEDED", s.amount()))
-                .toList();
+                .toList());
+        credits.findReceivedBetween(merchantId, providerCode, from, to).forEach(credit -> items.add(toItem(credit)));
+        return items;
+    }
+
+    private static InternalItem toItem(TransferCredit credit) {
+        return new InternalItem(Kind.CREDIT, credit.id(), credit.paymentId(), "SUCCEEDED", credit.amount());
     }
 
     private static InternalItem toItem(Payment payment, PaymentAttempt attempt) {

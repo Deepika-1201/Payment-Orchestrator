@@ -437,4 +437,91 @@ class PaymentTest {
         assertThat(payment.amountRefunded()).isEqualTo(40_000);
         assertThatThrownBy(() -> payment.recordRefundSucceeded("att_1", 10_000, T0)).isInstanceOf(IllegalStateException.class);
     }
+
+    /** Credit allocation (ADR-038, LLD §21.2). */
+    @Nested
+    class BankTransfers {
+
+        private static final PaymentPolicy ADD_UP = new PaymentPolicy(3, Duration.ofDays(5), false, true, false);
+        private static final PaymentPolicy EXACT = new PaymentPolicy(3, Duration.ofDays(5), false, false, false);
+        private static final TransitionSource WEBHOOK = TransitionSource.PROVIDER_WEBHOOK;
+
+        private Payment waiting(PaymentMethod method) {
+            Payment payment = newPayment(CaptureMethod.AUTOMATIC);
+            payment.startAttempt("att_1", method, "PSP_A", null, 3, T0);
+            payment.applyAttemptUpdate("att_1", new AttemptUpdate(AttemptStatus.REQUIRES_ACTION, "va_1",
+                    NextAction.redirect("https://psp.example/va_1"), null, null), TransitionSource.PROVIDER_RESPONSE,
+                    ADD_UP, T0);
+            return payment;
+        }
+
+        @Test
+        void creditsAddUpToExactlyTheAmountAndTheRestGoesBack() {
+            Payment payment = waiting(PaymentMethod.bankTransfer());
+
+            CreditAllocation first = payment.allocateCredit("att_1", Money.of(30_000, "INR"), 0, ADD_UP, WEBHOOK, T0);
+            CreditAllocation second = payment.allocateCredit("att_1", Money.of(20_000, "INR"), 30_000, ADD_UP, WEBHOOK, T0);
+
+            assertThat(first.applied()).isEqualTo(30_000);
+            assertThat(first.returned()).isZero();
+            assertThat(first.funded()).isFalse();
+            assertThat(payment.status()).isEqualTo(PaymentStatus.SUCCEEDED);
+            assertThat(second.applied()).isEqualTo(19_900);
+            assertThat(second.returned()).isEqualTo(100);
+            assertThat(second.returnReason()).isEqualTo(CreditAllocation.EXCESS);
+            assertThat(second.funded()).isTrue();
+            assertThat(payment.amountCaptured()).isEqualTo(49_900);
+        }
+
+        @Test
+        void exactOnlyTakesACreditOfTheWholeAmount() {
+            Payment payment = waiting(PaymentMethod.bankTransfer());
+
+            for (long inexact : new long[] {49_899, 49_901}) {
+                CreditAllocation refused = payment.allocateCredit("att_1", Money.of(inexact, "INR"), 0, EXACT, WEBHOOK, T0);
+                assertThat(refused.applied()).isZero();
+                assertThat(refused.returned()).isEqualTo(inexact);
+                assertThat(refused.returnReason()).isEqualTo(CreditAllocation.INEXACT);
+            }
+            assertThat(payment.status()).isEqualTo(PaymentStatus.REQUIRES_ACTION);
+            assertThat(payment.allocateCredit("att_1", AMOUNT, 0, EXACT, WEBHOOK, T0).funded()).isTrue();
+        }
+
+        @Test
+        void creditsAtOrAfterExpiryInAnotherCurrencyOrAfterSuccessGoBackAsLate() {
+            Payment payment = waiting(PaymentMethod.bankTransfer());
+            Instant expiry = T0.plus(Duration.ofMinutes(15));
+
+            CreditAllocation atExpiry = payment.allocateCredit("att_1", AMOUNT, 0, ADD_UP, WEBHOOK, expiry);
+            CreditAllocation dollars = payment.allocateCredit("att_1", Money.of(49_900, "USD"), 0, ADD_UP, WEBHOOK, T0);
+            CreditAllocation beforeExpiry = payment.allocateCredit("att_1", AMOUNT, 0, ADD_UP, WEBHOOK,
+                    expiry.minusSeconds(1));
+            CreditAllocation afterSuccess = payment.allocateCredit("att_1", AMOUNT, 49_900, ADD_UP, WEBHOOK, T0);
+
+            for (CreditAllocation late : List.of(atExpiry, dollars, afterSuccess)) {
+                assertThat(late.applied()).isZero();
+                assertThat(late.returned()).isEqualTo(49_900);
+                assertThat(late.returnReason()).isEqualTo(CreditAllocation.LATE);
+            }
+            assertThat(beforeExpiry.funded()).isTrue();
+        }
+
+        @Test
+        void aShortTransferIsAcceptedOnlyForLessThanTheAmountOnAWaitingTransfer() {
+            Payment upi = waiting(PaymentMethod.upi(UpiFlow.INTENT, null));
+            assertThatThrownBy(() -> upi.acceptShortTransfer("att_1", 40_000, ADD_UP, T0))
+                    .isInstanceOf(IllegalStateException.class);
+            Payment payment = waiting(PaymentMethod.bankTransfer());
+            assertThatThrownBy(() -> payment.acceptShortTransfer("att_1", 0, ADD_UP, T0))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> payment.acceptShortTransfer("att_1", 49_900, ADD_UP, T0))
+                    .isInstanceOf(IllegalStateException.class);
+
+            payment.acceptShortTransfer("att_1", 1, ADD_UP, T0);
+
+            assertThat(payment.status()).isEqualTo(PaymentStatus.SUCCEEDED);
+            assertThat(payment.amountCaptured()).isEqualTo(1);
+            assertThat(payment.attempt("att_1").orElseThrow().capturedAmount()).isEqualTo(Money.of(1, "INR"));
+        }
+    }
 }

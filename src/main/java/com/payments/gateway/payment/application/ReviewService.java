@@ -5,10 +5,12 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.Review;
+import com.payments.gateway.payment.domain.TransferCredit;
 import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
 import com.payments.gateway.payment.infrastructure.ReviewQueueRepository;
+import com.payments.gateway.payment.infrastructure.TransferCreditRepository;
 import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.Money;
@@ -34,7 +36,8 @@ public class ReviewService {
     public enum Kind {
         ATTEMPT,
         REFUND,
-        DISPUTE
+        DISPUTE,
+        CREDIT
     }
 
     public record ReviewItem(String kind, String id, String paymentId, String merchantId, String providerCode,
@@ -46,18 +49,20 @@ public class ReviewService {
     private final PaymentRepository payments;
     private final RefundRepository refunds;
     private final DisputeRepository disputes;
+    private final TransferCreditRepository credits;
     private final PaymentStore store;
     private final AuditLogger audit;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public ReviewService(ReviewQueueRepository queue, PaymentRepository payments, RefundRepository refunds,
-                         DisputeRepository disputes, PaymentStore store, AuditLogger audit, TransactionTemplate tx,
-                         Clock clock, MeterRegistry meters) {
+                         DisputeRepository disputes, TransferCreditRepository credits, PaymentStore store,
+                         AuditLogger audit, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
         this.queue = queue;
         this.payments = payments;
         this.refunds = refunds;
         this.disputes = disputes;
+        this.credits = credits;
         this.store = store;
         this.audit = audit;
         this.tx = tx;
@@ -68,6 +73,8 @@ public class ReviewService {
                 .description("Refunds awaiting manual review").register(meters);
         Gauge.builder("pg.reviews.open", queue, ReviewQueueRepository::countOpenDisputes).tag("kind", "dispute")
                 .description("Disputes awaiting manual review").register(meters);
+        Gauge.builder("pg.reviews.open", queue, ReviewQueueRepository::countOpenCredits).tag("kind", "credit")
+                .description("Bank transfer credits awaiting manual review").register(meters);
     }
 
     /** Oldest first. {@code kind} and {@code merchantId} are optional filters. */
@@ -128,6 +135,23 @@ public class ReviewService {
             audited(actor, "dispute", disputeId, dispute.review(), note);
             return item(Kind.DISPUTE, dispute.id(), paymentId, dispute.merchantId(), dispute.providerCode(),
                     WireEnums.wire(dispute.status()), dispute.amount(), dispute.review(), null);
+        });
+    }
+
+    /** An unmatched credit's money stays at the PSP until an operator returns it there (ADR-038). */
+    public ReviewItem resolveCredit(String creditId, String note, String actor) {
+        Instant now = clock.instant();
+        return tx.execute(status -> {
+            TransferCredit found = credits.findById(creditId).orElseThrow(() -> GatewayException.notFound("Credit", creditId));
+            if (found.paymentId() != null) {
+                payments.lockById(found.paymentId()).orElseThrow();
+            }
+            TransferCredit credit = credits.findById(creditId).orElseThrow();
+            credit.resolveReview(now);
+            store.saveCredit(credit);
+            audited(actor, "credit", creditId, credit.review(), note);
+            return item(Kind.CREDIT, credit.id(), credit.paymentId(), credit.merchantId(), credit.providerCode(),
+                    credit.attemptId() == null ? "unmatched" : "received", credit.amount(), credit.review(), null);
         });
     }
 

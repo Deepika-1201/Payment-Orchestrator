@@ -11,13 +11,16 @@ import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.StatusChange;
+import com.payments.gateway.payment.domain.TransferCredit;
 import com.payments.gateway.payment.infrastructure.DisputeRepository;
 import com.payments.gateway.payment.infrastructure.MandateRepository;
 import com.payments.gateway.payment.infrastructure.PaymentRepository;
 import com.payments.gateway.payment.infrastructure.RefundRepository;
+import com.payments.gateway.payment.infrastructure.TransferCreditRepository;
 import com.payments.gateway.payment.infrastructure.TransitionLog;
 import com.payments.gateway.provider.ProviderHealthTracker;
 import com.payments.gateway.shared.events.FundsMovement;
+import com.payments.gateway.shared.model.MethodType;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +37,7 @@ public class PaymentStore {
 
     private final PaymentRepository payments;
     private final RefundRepository refunds;
+    private final TransferCreditRepository credits;
     private final DisputeRepository disputes;
     private final MandateRepository mandates;
     private final MandateProperties mandateProperties;
@@ -42,12 +46,13 @@ public class PaymentStore {
     private final ProviderHealthTracker health;
     private final MeterRegistry meters;
 
-    public PaymentStore(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
-                        MandateRepository mandates, MandateProperties mandateProperties,
+    public PaymentStore(PaymentRepository payments, RefundRepository refunds, TransferCreditRepository credits,
+                        DisputeRepository disputes, MandateRepository mandates, MandateProperties mandateProperties,
                         TransitionLog transitions, PaymentEventPublisher events, ProviderHealthTracker health,
                         MeterRegistry meters) {
         this.payments = payments;
         this.refunds = refunds;
+        this.credits = credits;
         this.disputes = disputes;
         this.mandates = mandates;
         this.mandateProperties = mandateProperties;
@@ -84,9 +89,21 @@ public class PaymentStore {
         transitions.append(payment.id(), payment.merchantId(), changes);
         for (StatusChange change : changes) {
             if (RefundStatus.SUCCEEDED.name().equals(change.toStatus())) {
-                events.publishFundsMovement(new FundsMovement(FundsMovement.Type.REFUND, refund.merchantId(),
-                        refund.providerCode(), refund.id(), payment.id(), refund.amount(), change.occurredAt()));
+                events.publishFundsMovement(new FundsMovement(
+                        refund.returnsCredit() ? FundsMovement.Type.CREDIT_RETURNED : FundsMovement.Type.REFUND,
+                        refund.merchantId(), refund.providerCode(), refund.id(), payment.id(), refund.amount(),
+                        change.occurredAt()));
             }
+        }
+    }
+
+    /** Saves a bank transfer credit under its payment's lock (if any); a new credit is posted as customer money. */
+    public void saveCredit(TransferCredit credit) {
+        boolean received = credit.isNew();
+        credits.save(credit);
+        if (received) {
+            events.publishFundsMovement(new FundsMovement(FundsMovement.Type.CREDIT_RECEIVED, credit.merchantId(),
+                    credit.providerCode(), credit.id(), credit.paymentId(), credit.amount(), credit.receivedAt()));
         }
     }
 
@@ -149,7 +166,9 @@ public class PaymentStore {
         for (StatusChange change : changes) {
             if (change.entity() == StatusChange.Entity.ATTEMPT && AttemptStatus.SUCCEEDED.name().equals(change.toStatus())) {
                 payment.attempt(change.entityId()).ifPresent(attempt -> events.publishFundsMovement(new FundsMovement(
-                        FundsMovement.Type.CAPTURE, payment.merchantId(), attempt.providerCode(), attempt.id(),
+                        attempt.method().type() == MethodType.BANK_TRANSFER
+                                ? FundsMovement.Type.CREDIT_APPLIED : FundsMovement.Type.CAPTURE,
+                        payment.merchantId(), attempt.providerCode(), attempt.id(),
                         payment.id(), attempt.capturedAmount(), change.occurredAt())));
             }
         }

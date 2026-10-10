@@ -31,7 +31,8 @@ public class MerchantAdminService {
 
     /** Null fields are left unchanged. */
     public record SettingsUpdate(String name, String webhookUrl, Merchant.LateSuccessPolicy lateSuccessPolicy,
-                                 Duration paymentExpiry, Long mandateDebitLimit) {
+                                 Duration paymentExpiry, Long mandateDebitLimit,
+                                 Merchant.TransferCredits transferCredits, Merchant.TransferShortfall transferShortfall) {
     }
 
     public record CreatedMerchant(Merchant merchant, List<String> providers, String webhookSecret) {
@@ -103,7 +104,10 @@ public class MerchantAdminService {
                 Objects.requireNonNullElse(update.lateSuccessPolicy(), merchant.lateSuccessPolicy()),
                 Objects.requireNonNullElse(update.paymentExpiry(), merchant.paymentExpiry()))
                 .withMandateDebitLimit(update.mandateDebitLimit() == null
-                        ? merchant.mandateDebitLimit() : update.mandateDebitLimit()), "merchant.updated", actor);
+                        ? merchant.mandateDebitLimit() : update.mandateDebitLimit())
+                .withBankTransfers(Objects.requireNonNullElse(update.transferCredits(), merchant.transferCredits()),
+                        Objects.requireNonNullElse(update.transferShortfall(), merchant.transferShortfall())),
+                "merchant.updated", actor);
     }
 
     /** New events are no longer delivered; deliveries already queued keep the URL they were created with. */
@@ -231,6 +235,12 @@ public class MerchantAdminService {
         }
         if (!Objects.equals(before.mandateDebitLimit(), after.mandateDebitLimit())) {
             changed.put("mandate_debit_limit", after.mandateDebitLimit());
+        }
+        if (before.transferCredits() != after.transferCredits()) {
+            changed.put("bank_transfer_credits", after.transferCredits().name());
+        }
+        if (before.transferShortfall() != after.transferShortfall()) {
+            changed.put("bank_transfer_short_at_expiry", after.transferShortfall().name());
         }
         if (before.status() != after.status() || !Objects.equals(before.statusReason(), after.statusReason())) {
             List<String> status = new ArrayList<>(List.of(after.status().name()));

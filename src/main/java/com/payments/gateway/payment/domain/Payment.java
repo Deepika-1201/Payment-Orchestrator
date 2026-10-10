@@ -383,6 +383,46 @@ public final class Payment {
         markDirty(now);
     }
 
+    /**
+     * How much of a bank transfer credit pays this payment and how much goes back (LLD §21.2). {@code alreadyApplied}
+     * is what earlier credits applied to the attempt. Reaching the amount succeeds the attempt and the payment.
+     */
+    public CreditAllocation allocateCredit(String attemptId, Money credit, long alreadyApplied, PaymentPolicy policy,
+                                           TransitionSource source, Instant now) {
+        PaymentAttempt attempt = requireAttempt(attemptId);
+        boolean awaiting = attempt.status() == AttemptStatus.REQUIRES_ACTION && status == PaymentStatus.REQUIRES_ACTION
+                && now.isBefore(expiresAt) && credit.currency().equals(amount.currency());
+        if (!awaiting) {
+            return new CreditAllocation(0, credit.amount(), CreditAllocation.LATE, null);
+        }
+        long outstanding = amount.amount() - alreadyApplied;
+        long applied = policy.transferCreditsAddUp() ? Math.min(credit.amount(), outstanding)
+                : credit.amount() == outstanding ? credit.amount() : 0;
+        long returned = credit.amount() - applied;
+        String reason = policy.transferCreditsAddUp() ? CreditAllocation.EXCESS : CreditAllocation.INEXACT;
+        AttemptApplyResult funding = applied == outstanding
+                ? applyAttemptUpdate(attemptId, new AttemptUpdate(AttemptStatus.SUCCEEDED, null, null, null, amount),
+                        source, policy, now)
+                : null;
+        markDirty(now);
+        return new CreditAllocation(applied, returned, reason, funding);
+    }
+
+    /**
+     * A bank transfer payment still short at expiry, for a merchant that accepts it: the attempt succeeds for what
+     * arrived, captured below the amount as in a partial capture (ADR-036, ADR-038).
+     */
+    public AttemptApplyResult acceptShortTransfer(String attemptId, long received, PaymentPolicy policy, Instant now) {
+        PaymentAttempt attempt = requireAttempt(attemptId);
+        if (received < 1 || received >= amount.amount() || status != PaymentStatus.REQUIRES_ACTION) {
+            throw new IllegalStateException("payment " + id + " cannot accept a short transfer of " + received);
+        }
+        Money captured = Money.of(received, amount.currency());
+        attempt.acceptShortTransfer(captured, now);
+        return applyAttemptUpdate(attemptId, new AttemptUpdate(AttemptStatus.SUCCEEDED, null, null, null, captured),
+                TransitionSource.SYSTEM, policy, now);
+    }
+
     // ---------------------------------------------------------------- transition handlers
 
     private AttemptApplyResult onAttemptSucceeded(PaymentAttempt attempt, TransitionSource source, PaymentPolicy policy,

@@ -45,8 +45,8 @@ public final class PaymentRequests {
     }
 
     public record PaymentMethod(
-            @NotBlank @Pattern(regexp = "(?i)upi|card|netbanking|wallet|emi|cardless_emi|pay_later",
-                    message = "must be upi, card, netbanking, wallet, emi, cardless_emi or pay_later") String type,
+            @NotBlank @Pattern(regexp = "(?i)upi|card|netbanking|wallet|emi|cardless_emi|pay_later|bank_transfer",
+                    message = "must be upi, card, netbanking, wallet, emi, cardless_emi, pay_later or bank_transfer") String type,
             @Valid Upi upi,
             @Valid Netbanking netbanking,
             @Valid Provider wallet,

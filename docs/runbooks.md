@@ -111,6 +111,8 @@ Reconciliation exceptions are open past their SLA (ADR-017).
 ### ReviewQueueBacklog
 More than 25 items of one kind have waited for manual review for an hour.
 - `GET $ADMIN/reviews?kind=...` lists them oldest first. A sudden rise usually has one cause: one provider's conflicts, a failing risk rule, or a dispute batch. Fix the cause before working the queue.
+- `kind=credit`, `unmatched_credit` (ADR-038): a bank transfer arrived that no attempt can be found for. Ask the PSP who sent it (UTR, account), have it returned through the PSP, then resolve it with `POST $ADMIN/reviews/credits/{id}/resolve`.
+- `kind=refund`, `credit_return_failed`: the PSP refused to send a bank transfer credit back, so the customer's money is still at the PSP. Ask the PSP why, have it returned another way, then resolve the refund.
 
 ## Security
 

@@ -52,6 +52,12 @@ public final class MockPsp {
         private Money captured;
         private Integer emiTenureMonths;
         private long refunded;
+        // Bank transfers (LLD §21.8): an account (collection) and the credits it received.
+        private Instant expiresAt;
+        private boolean closed;
+        private String collectionReference;
+        private String transferMode;
+        private String utr;
 
         Txn(String reference, String merchantId, String accountId, String webhookSecret, String merchantReference,
             Money amount, PaymentMethod method, boolean manualCapture, String returnUrl, TxnState state, Instant now) {
@@ -165,6 +171,32 @@ public final class MockPsp {
         /** The EMI tenure picked on the page, or null when none was (the PSP then uses its shortest). */
         public synchronized Integer emiTenureMonths() {
             return emiTenureMonths;
+        }
+
+        /** For a credit, the account it arrived in; null otherwise. */
+        public String collectionReference() {
+            return collectionReference;
+        }
+
+        public String transferMode() {
+            return transferMode;
+        }
+
+        public String utr() {
+            return utr;
+        }
+
+        public Instant expiresAt() {
+            return expiresAt;
+        }
+
+        public synchronized boolean closed() {
+            return closed;
+        }
+
+        /** The account number of a collection, derived from its reference. */
+        public String accountNumber() {
+            return "2223" + String.format("%010d", Math.floorMod(reference.hashCode(), 10_000_000_000L));
         }
 
         synchronized boolean reserveRefund(long refundAmount) {
@@ -431,6 +463,38 @@ public final class MockPsp {
             }
         }
         return Optional.empty();
+    }
+
+    /** Marks a new transaction as a bank transfer account (collection) that closes at {@code expiresAt}. */
+    void openCollection(Txn collection, Instant expiresAt) {
+        synchronized (collection) {
+            collection.expiresAt = expiresAt;
+        }
+    }
+
+    /** A transfer into a collection: a captured payment of its own, without a merchant reference (LLD §21.8). */
+    public Txn credit(Txn collection, Money amount, String mode, Instant now) {
+        Txn credit = new Txn(Ids.newId(code.toLowerCase(Locale.ROOT) + "_cr"), collection.merchantId(),
+                collection.accountId(), collection.webhookSecret(), null, amount, PaymentMethod.bankTransfer(), false, null,
+                TxnState.CAPTURED, now);
+        credit.collectionReference = collection.reference();
+        credit.transferMode = mode;
+        credit.utr = String.format("UTR%012d", Math.floorMod(credit.reference().hashCode(), 1_000_000_000_000L));
+        transactions.put(credit.reference(), credit);
+        return credit;
+    }
+
+    public List<Txn> creditsOf(String collectionReference) {
+        return transactions.values().stream()
+                .filter(txn -> collectionReference.equals(txn.collectionReference()))
+                .sorted(java.util.Comparator.comparing(Txn::capturedAt).thenComparing(Txn::reference))
+                .toList();
+    }
+
+    void close(Txn collection) {
+        synchronized (collection) {
+            collection.closed = true;
+        }
     }
 
     RefundTxn saveRefund(RefundTxn refund) {

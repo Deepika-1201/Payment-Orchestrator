@@ -45,7 +45,7 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
                 upiFlow = null;
                 vpa = null;
             }
-            case CARD, WALLET, EMI, CARDLESS_EMI, PAY_LATER -> {
+            case CARD, WALLET, EMI, CARDLESS_EMI, PAY_LATER, BANK_TRANSFER -> {
                 upiFlow = null;
                 vpa = null;
                 bankCode = null;
@@ -99,5 +99,9 @@ public record PaymentMethod(MethodType type, UpiFlow upiFlow, String vpa, String
 
     public static PaymentMethod payLater(String provider) {
         return new PaymentMethod(MethodType.PAY_LATER, null, null, null, null, provider);
+    }
+
+    public static PaymentMethod bankTransfer() {
+        return new PaymentMethod(MethodType.BANK_TRANSFER, null, null, null);
     }
 }

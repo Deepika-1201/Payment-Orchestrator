@@ -18,6 +18,7 @@ public final class Refund {
     private final String reason;
     private final String merchantRefundId;
     private final RefundInitiator initiatedBy;
+    private final String creditId;
     private final Instant createdAt;
     private RefundStatus status;
     private String providerReference;
@@ -40,6 +41,7 @@ public final class Refund {
         this.reason = s.reason();
         this.merchantRefundId = s.merchantRefundId();
         this.initiatedBy = s.initiatedBy();
+        this.creditId = s.creditId();
         this.createdAt = s.createdAt();
         this.status = s.status();
         this.providerReference = s.providerReference();
@@ -55,9 +57,19 @@ public final class Refund {
     public static Refund initiate(String id, String paymentId, String attemptId, String merchantId, String providerCode,
                                   Money amount, String reason, String merchantRefundId, RefundInitiator initiatedBy,
                                   Instant now) {
+        return initiate(id, paymentId, attemptId, merchantId, providerCode, amount, reason, merchantRefundId, initiatedBy,
+                null, now);
+    }
+
+    public static Refund initiate(String id, String paymentId, String attemptId, String merchantId, String providerCode,
+                                  Money amount, String reason, String merchantRefundId, RefundInitiator initiatedBy,
+                                  String creditId, Instant now) {
+        if (initiatedBy == RefundInitiator.SYSTEM_CREDIT_RETURN && creditId == null) {
+            throw new IllegalArgumentException("a credit return needs its credit");
+        }
         Refund refund = new Refund(new RefundSnapshot(id, paymentId, attemptId, merchantId, providerCode, amount,
                 RefundStatus.INITIATED, reason, merchantRefundId, initiatedBy, null, null,
-                now.plus(Duration.ofSeconds(30)), 0, Review.NONE, 0, now, now), true);
+                now.plus(Duration.ofSeconds(30)), 0, Review.NONE, 0, now, now, creditId), true);
         refund.changes.add(new StatusChange(StatusChange.Entity.REFUND, id, null, RefundStatus.INITIATED.name(),
                 initiatedBy == RefundInitiator.MERCHANT ? TransitionSource.API : TransitionSource.SYSTEM,
                 initiatedBy.name().toLowerCase(java.util.Locale.ROOT), now));
@@ -71,7 +83,7 @@ public final class Refund {
     public RefundSnapshot snapshot() {
         return new RefundSnapshot(id, paymentId, attemptId, merchantId, providerCode, amount, status, reason,
                 merchantRefundId, initiatedBy, providerReference, failure, nextStatusCheckAt, statusCheckCount,
-                review, version, createdAt, updatedAt);
+                review, version, createdAt, updatedAt, creditId);
     }
 
     public TransitionOutcome apply(RefundStatus target, String reference, Failure newFailure, TransitionSource source,
@@ -131,6 +143,20 @@ public final class Refund {
         }
         review = review.resolve();
         updatedAt = now;
+    }
+
+    public void flagForReview(String reason, Instant now) {
+        review = review.flag(reason, now);
+        updatedAt = now;
+    }
+
+    /** A return of a bank transfer credit, which is not a refund of the payment's captured amount (ADR-038). */
+    public boolean returnsCredit() {
+        return initiatedBy == RefundInitiator.SYSTEM_CREDIT_RETURN;
+    }
+
+    public String creditId() {
+        return creditId;
     }
 
     public void markPersisted() {

@@ -2,6 +2,7 @@ package com.payments.gateway.webhook.inbound;
 
 import com.payments.gateway.payment.application.DisputeService;
 import com.payments.gateway.payment.application.MandateService;
+import com.payments.gateway.payment.application.TransferCreditService;
 import com.payments.gateway.payment.application.PaymentOutcomeService;
 import com.payments.gateway.payment.application.RefundService;
 import com.payments.gateway.provider.MerchantAccountResolver;
@@ -47,6 +48,7 @@ public class ProviderWebhookService {
     private final RefundService refunds;
     private final DisputeService disputes;
     private final MandateService mandates;
+    private final TransferCreditService credits;
     private final JsonCodec json;
     private final WorkerProperties workers;
     private final Clock clock;
@@ -56,7 +58,7 @@ public class ProviderWebhookService {
     public ProviderWebhookService(ProviderRegistry providers, MerchantAccountResolver accounts,
                                   ProviderWebhookRepository inbox,
                                   PaymentOutcomeService payments, RefundService refunds, DisputeService disputes,
-                                  MandateService mandates, JsonCodec json,
+                                  MandateService mandates, TransferCreditService credits, JsonCodec json,
                                   WorkerProperties workers, Clock clock, MeterRegistry meters,
                                   @Value("${pg.webhooks.inbound.max-attempts:10}") int maxAttempts) {
         this.providers = providers;
@@ -66,6 +68,7 @@ public class ProviderWebhookService {
         this.refunds = refunds;
         this.disputes = disputes;
         this.mandates = mandates;
+        this.credits = credits;
         this.json = json;
         this.workers = workers;
         this.clock = clock;
@@ -140,6 +143,7 @@ public class ProviderWebhookService {
                 case DISPUTE -> disputes.applyProviderEvent(providerCode, merchantScope, event);
                 case MANDATE -> mandates.applyProviderEvent(providerCode, merchantScope, event);
                 case NOTIFICATION -> mandates.applyNotificationEvent(providerCode, merchantScope, event);
+                case CREDIT -> credits.applyProviderEvent(providerCode, merchantScope, event);
             };
             inbox.markDone(inboxId, applied ? "PROCESSED" : "IGNORED", clock.instant());
             meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", applied ? "processed" : "ignored").increment();

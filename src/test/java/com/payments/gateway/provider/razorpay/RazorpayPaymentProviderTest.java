@@ -381,6 +381,93 @@ class RazorpayPaymentProviderTest {
                 .isInstanceOf(ProviderUnavailableException.class);
     }
 
+    // ------------------------------------------------------------------ bank transfers (ADR-038)
+
+    private static InitiatePaymentRequest transfer(java.time.Instant expiresAt) {
+        return new InitiatePaymentRequest(ATTEMPT, "mer_1", Money.of(500_000, "INR"), PaymentMethod.bankTransfer(),
+                CaptureMethod.AUTOMATIC, "Invoice 7", null, null, null, null, expiresAt);
+    }
+
+    @Test
+    void bankTransfersOpenASmartCollectAccountThatClosesWithThePayment() {
+        stub.on("POST /v1/virtual_accounts", 200, "{\"id\":\"va_1\",\"entity\":\"virtual_account\",\"status\":\"active\","
+                + "\"receivers\":[{\"id\":\"ba_1\",\"entity\":\"bank_account\",\"ifsc\":\"RATN0VAAPIS\",\"bank_name\":\"RBL Bank\","
+                + "\"name\":\"Acme Corp\",\"account_number\":\"2223330099089860\"}]}");
+
+        var result = provider(true).initiatePayment(ACCOUNT, transfer(NOW.plus(Duration.ofHours(6))));
+
+        assertThat(result.outcome()).isEqualTo(Outcome.REQUIRES_ACTION);
+        assertThat(result.providerReference()).isEqualTo("va_1");
+        assertThat(result.nextAction()).isEqualTo(NextAction.bankTransfer(new com.payments.gateway.shared.model.BankTransferDetails(
+                "2223330099089860", "RATN0VAAPIS", "Acme Corp", "RBL Bank", null), NOW.plus(Duration.ofHours(6))));
+        JsonNode body = body(stub.last("POST /v1/virtual_accounts"));
+        assertThat(body.path("receivers").path("types").get(0).asString()).isEqualTo("bank_account");
+        assertThat(body.path("close_by").asLong()).isEqualTo(NOW.plus(Duration.ofHours(6)).getEpochSecond());
+        assertThat(body.path("notes").path("pg_attempt_id").asString()).isEqualTo(ATTEMPT);
+
+        provider(true).initiatePayment(ACCOUNT, transfer(NOW.plus(Duration.ofMinutes(5))));
+        assertThat(body(stub.last("POST /v1/virtual_accounts")).path("close_by").asLong())
+                .as("Razorpay closes an account no sooner than 15 minutes ahead")
+                .isEqualTo(NOW.plus(Duration.ofMinutes(16)).getEpochSecond());
+        assertThat(provider(true).capabilities().supports(PaymentMethod.bankTransfer(), Money.of(500_000, "INR"),
+                CaptureMethod.MANUAL)).as("automatic capture only").isFalse();
+    }
+
+    @Test
+    void creditsArriveByWebhookOrFromTheAccountsPaymentList() {
+        String neft = "{\"event\":\"virtual_account.credited\",\"payload\":{"
+                + "\"payment\":{\"entity\":{\"id\":\"pay_1\",\"amount\":61900,\"currency\":\"INR\",\"status\":\"captured\","
+                + "\"method\":\"bank_transfer\",\"created_at\":" + NOW.getEpochSecond() + "}},"
+                + "\"virtual_account\":{\"entity\":{\"id\":\"va_1\",\"notes\":{\"pg_attempt_id\":\"" + ATTEMPT + "\"}}},"
+                + "\"bank_transfer\":{\"entity\":{\"mode\":\"NEFT\",\"bank_reference\":\"156767598340\"}}}}";
+        String upi = neft.replace("\"bank_transfer\":{\"entity\":{\"mode\":\"NEFT\",\"bank_reference\":\"156767598340\"}}",
+                "\"upi_transfer\":{\"entity\":{\"rrn\":\"006516367819\"}}");
+
+        var credit = provider(true).parseWebhook(ACCOUNT, signed(neft, "whsec_rzp")).getFirst();
+        var viaUpi = provider(true).parseWebhook(ACCOUNT, signed(upi, "whsec_rzp")).getFirst();
+
+        assertThat(credit.kind()).isEqualTo(ProviderEvent.Kind.CREDIT);
+        assertThat(credit.credit()).isEqualTo(new com.payments.gateway.provider.spi.ProviderCredit("pay_1", "va_1", ATTEMPT,
+                Money.of(61_900, "INR"), "NEFT", "156767598340", NOW));
+        assertThat(viaUpi.credit().mode()).isEqualTo("UPI");
+        assertThat(viaUpi.credit().utr()).isEqualTo("006516367819");
+        assertThat(provider(true).parseWebhook(ACCOUNT, signed(neft.replace("virtual_account.credited",
+                "virtual_account.closed"), "whsec_rzp"))).isEmpty();
+
+        stub.on("GET /v1/virtual_accounts/va_1/payments", 200, "{\"items\":["
+                + "{\"id\":\"pay_1\",\"amount\":61900,\"currency\":\"INR\",\"status\":\"captured\",\"method\":\"bank_transfer\","
+                + "\"created_at\":" + NOW.getEpochSecond() + "},"
+                + "{\"id\":\"pay_2\",\"amount\":500,\"currency\":\"INR\",\"status\":\"failed\",\"method\":\"bank_transfer\"},"
+                + "{\"id\":\"pay_3\",\"amount\":500,\"currency\":\"INR\",\"status\":\"captured\",\"method\":\"upi\","
+                + "\"created_at\":" + NOW.getEpochSecond() + "}]}");
+        var polled = provider(true).fetchCredits(ACCOUNT, new com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery(
+                ATTEMPT, "va_1"));
+        assertThat(polled).extracting(c -> c.providerReference(), c -> c.mode())
+                .containsExactly(tuple("pay_1", null), tuple("pay_3", "UPI"));
+        assertThat(stub.last("GET /v1/virtual_accounts/va_1/payments").query()).isEqualTo("count=100");
+    }
+
+    @Test
+    void creditsGoBackOnTheirOwnPaymentAndAccountsAreClosed() {
+        stub.on("GET /v1/payments/pay_9", 200, "{\"id\":\"pay_9\",\"status\":\"captured\",\"amount\":61900,\"currency\":\"INR\"}")
+                .on("POST /v1/payments/pay_9/refund", 200, "{\"id\":\"rfnd_9\",\"status\":\"processed\",\"amount\":1900,"
+                        + "\"currency\":\"INR\"}")
+                .on("POST /v1/virtual_accounts/va_1/close", 200, "{\"id\":\"va_1\",\"status\":\"closed\"}")
+                .on("GET /v1/virtual_accounts/va_1", 200, "{\"id\":\"va_1\",\"status\":\"closed\"}");
+
+        ProviderRefundResult back = provider(true).refund(ACCOUNT, new RefundRequest("rfnd_ours", ATTEMPT, "pay_9",
+                Money.of(1_900, "INR"), "excess"));
+        provider(true).closeCollection(ACCOUNT, new com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest(
+                ATTEMPT, "va_1"));
+
+        assertThat(back.outcome()).isEqualTo(ProviderRefundResult.Outcome.SUCCEEDED);
+        assertThat(body(stub.last("POST /v1/payments/pay_9/refund")).path("receipt").asString()).isEqualTo("rfnd_ours");
+        assertThat(stub.requests()).anyMatch(r -> r.path().equals("/v1/virtual_accounts/va_1/close"));
+        var closed = provider(true).fetchPaymentStatus(ACCOUNT, new PaymentStatusQuery(ATTEMPT, "va_1"));
+        assertThat(closed.outcome()).isEqualTo(Outcome.FAILED);
+        assertThat(closed.failure().code()).isEqualTo("virtual_account_closed");
+    }
+
     // ------------------------------------------------------------------ webhooks
 
     private InboundWebhook signed(String body, String secret) {

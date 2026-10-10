@@ -53,14 +53,15 @@ public class RefundRepository {
             params.put("reason", s.reason());
             params.put("merchantRefundId", s.merchantRefundId());
             params.put("initiatedBy", s.initiatedBy().name());
+            params.put("creditId", s.creditId());
             params.put("createdAt", Sql.ts(s.createdAt()));
             jdbc.sql("""
                     INSERT INTO refunds (id, payment_id, attempt_id, merchant_id, provider_code, amount, currency, status,
-                                         reason, merchant_refund_id, initiated_by, provider_reference, failure_code,
-                                         failure_message, next_status_check_at, status_check_count, needs_review,
-                                         review_reason, flagged_at, version, created_at, updated_at)
+                                         reason, merchant_refund_id, initiated_by, credit_id, provider_reference,
+                                         failure_code, failure_message, next_status_check_at, status_check_count,
+                                         needs_review, review_reason, flagged_at, version, created_at, updated_at)
                     VALUES (:id, :paymentId, :attemptId, :merchantId, :providerCode, :amount, :currency, :status, :reason,
-                            :merchantRefundId, :initiatedBy, :providerReference, :failureCode, :failureMessage,
+                            :merchantRefundId, :initiatedBy, :creditId, :providerReference, :failureCode, :failureMessage,
                             :nextStatusCheckAt, :statusCheckCount, :needsReview, :reviewReason, :flaggedAt, 0,
                             :createdAt, :updatedAt)
                     """)
@@ -105,10 +106,24 @@ public class RefundRepository {
                 .list();
     }
 
-    /** Sum of refunds that may still move money (everything except FAILED). */
+    /** Refunds of the attempt's captured amount that may still move money; credit returns are not among them. */
     public long sumActiveForAttempt(String attemptId) {
-        return jdbc.sql("SELECT COALESCE(SUM(amount), 0) FROM refunds WHERE attempt_id = :attemptId AND status <> 'FAILED'")
+        return jdbc.sql("""
+                SELECT COALESCE(SUM(amount), 0) FROM refunds
+                 WHERE attempt_id = :attemptId AND status <> 'FAILED' AND initiated_by <> 'SYSTEM_CREDIT_RETURN'
+                """)
                 .param("attemptId", attemptId)
+                .query(Long.class)
+                .single();
+    }
+
+    /** Refunds of a credit's applied part that may still move money (ADR-038). */
+    public long sumActiveRefundsOfCredit(String creditId) {
+        return jdbc.sql("""
+                SELECT COALESCE(SUM(amount), 0) FROM refunds
+                 WHERE credit_id = :creditId AND status <> 'FAILED' AND initiated_by <> 'SYSTEM_CREDIT_RETURN'
+                """)
+                .param("creditId", creditId)
                 .query(Long.class)
                 .single();
     }
@@ -167,6 +182,7 @@ public class RefundRepository {
                 new Review(rs.getBoolean("needs_review"), rs.getString("review_reason"), Sql.instant(rs, "flagged_at")),
                 rs.getLong("version"),
                 Sql.instant(rs, "created_at"),
-                Sql.instant(rs, "updated_at")));
+                Sql.instant(rs, "updated_at"),
+                rs.getString("credit_id")));
     }
 }

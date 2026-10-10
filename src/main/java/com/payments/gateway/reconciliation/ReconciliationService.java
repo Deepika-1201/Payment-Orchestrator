@@ -539,8 +539,11 @@ public class ReconciliationService {
         for (InternalItem item : internal) {
             if (!seenByProvider.contains(item.entityId())) {
                 run.open("MISSING_AT_PROVIDER", item.entityId(), item.entityId(), item.amount().amount(), null,
-                        (item.kind() == PaymentReconciliationService.Kind.PAYMENT ? "Captured attempt" : "Succeeded refund")
-                                + " is missing from the PSP settlement report");
+                        switch (item.kind()) {
+                            case PAYMENT -> "Captured attempt";
+                            case CREDIT -> "Received bank transfer credit";
+                            default -> "Succeeded refund";
+                        } + " is missing from the PSP settlement report");
             }
         }
     }

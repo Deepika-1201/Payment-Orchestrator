@@ -13,6 +13,7 @@ import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCapabilities;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MandateSupport;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
+import com.payments.gateway.provider.spi.ProviderCredit;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
@@ -21,6 +22,8 @@ import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -32,6 +35,7 @@ import com.payments.gateway.provider.spi.SettlementReport.LineType;
 import com.payments.gateway.provider.spi.WebhookVerificationException;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
+import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.FailureCategory;
@@ -89,6 +93,7 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             new CredentialField(WEBHOOK_SECRET, true, true));
     private static final long UPI_MAX = 10_000_000L;
     private static final long CARD_MAX = 100_000_000L;
+    private static final long TRANSFER_MAX = 10_000_000_000L;
     /** LLD §20.2, offered once Razorpay has enabled them (amount ranges assumed; lenders enforce their own minimums). */
     private static final Map<MethodType, MethodSupport> EXTRA_METHODS = Map.of(
             MethodType.WALLET, MethodSupport.ofProviders(Set.of("phonepe", "amazonpay", "mobikwik", "payzapp", "olamoney",
@@ -96,7 +101,8 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             MethodType.EMI, MethodSupport.emi(Set.of(3, 6, 9, 12, 18, 24), 300_000, CARD_MAX),
             MethodType.CARDLESS_EMI, MethodSupport.ofProviders(Set.of("hdfc", "icic", "idfb", "kkbk", "walnut369",
                     "earlysalary", "zestmoney"), 300_000, 50_000_000),
-            MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay"), 100, UPI_MAX));
+            MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay"), 100, UPI_MAX),
+            MethodType.BANK_TRANSFER, new MethodSupport(Set.of(), 100, TRANSFER_MAX, false));
     private static final String EXPAND_CARD_AND_EMI = "?expand%5B%5D=card&expand%5B%5D=emi";
     /** ₹1 authorization for UPI and card; eNACH registers without a charge and debits up to ₹1 crore. */
     private static final Map<MandateInstrument, MandateSupport> MANDATES = Map.of(
@@ -105,6 +111,8 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             MandateInstrument.ENACH, new MandateSupport(0, 1_000_000_000L));
     // Razorpay rejects Payment Links that expire less than 15 minutes after creation.
     private static final Duration MIN_LINK_TTL = Duration.ofMinutes(16);
+    /** Smart Collect closes an account no sooner than 15 minutes ahead (ADR-038). */
+    private static final Duration MIN_ACCOUNT_TTL = Duration.ofMinutes(16);
     // Razorpay dates settlements in India time; recon pages hold at most 1000 items.
     private static final ZoneId SETTLEMENT_ZONE = ZoneId.of("Asia/Kolkata");
     private static final int RECON_PAGE = 1000;
@@ -148,9 +156,69 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
 
     @Override
     public ProviderPaymentResult initiatePayment(MerchantAccount account, InitiatePaymentRequest request) {
+        if (request.method().type() == MethodType.BANK_TRANSFER) {
+            return openVirtualAccount(account, request);
+        }
         boolean s2s = request.method().type() == MethodType.UPI && properties.upiS2s()
                 && request.customerPhone() != null && request.customerEmail() != null;
         return s2s ? initiateUpiS2s(account, request) : initiateHostedPage(account, request);
+    }
+
+    /**
+     * A Smart Collect account for the attempt, closing at the payment's expiry (LLD §21.9). It takes no reference
+     * Razorpay can be searched by: our attempt id travels in its notes, which credit webhooks repeat.
+     */
+    private ProviderPaymentResult openVirtualAccount(MerchantAccount account, InitiatePaymentRequest request) {
+        Instant earliest = clock.instant().plus(MIN_ACCOUNT_TTL);
+        Instant closeBy = request.expiresAt() == null || request.expiresAt().isBefore(earliest) ? earliest : request.expiresAt();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("receivers", Map.of("types", List.of("bank_account")));
+        putIfPresent(body, "description", request.description());
+        body.put("close_by", closeBy.getEpochSecond());
+        body.put("notes", notes(request));
+        JsonNode created;
+        try {
+            created = api.post(account, "/virtual_accounts", body);
+        } catch (RazorpayApi.BadRequest e) {
+            return ProviderPaymentResult.failed(null, failure(e), "virtual_account_rejected");
+        }
+        return virtualAccountResult(created, request.expiresAt());
+    }
+
+    private static ProviderPaymentResult virtualAccountResult(JsonNode virtualAccount, Instant expiresAt) {
+        String id = text(virtualAccount, "id");
+        if ("closed".equals(status(virtualAccount))) {
+            return ProviderPaymentResult.failed(id, new ProviderFailure("virtual_account_closed",
+                    "The account closed before a transfer paid the payment", FailureCategory.CUSTOMER), "closed");
+        }
+        for (JsonNode receiver : virtualAccount.path("receivers")) {
+            if ("bank_account".equals(text(receiver, "entity"))) {
+                return ProviderPaymentResult.requiresAction(id, NextAction.bankTransfer(new BankTransferDetails(
+                        text(receiver, "account_number"), text(receiver, "ifsc"), text(receiver, "name"),
+                        text(receiver, "bank_name"), null), expiresAt), text(virtualAccount, "status"));
+            }
+        }
+        throw new IllegalStateException("Razorpay virtual account " + id + " has no bank account receiver");
+    }
+
+    @Override
+    public List<ProviderCredit> fetchCredits(MerchantAccount account, CreditsQuery query) {
+        List<ProviderCredit> credits = new ArrayList<>();
+        for (JsonNode payment : api.get(account, "/virtual_accounts/" + RazorpayApi.segment(query.collectionReference())
+                + "/payments", Map.of("count", "100")).path("items")) {
+            String status = status(payment);
+            if ("captured".equals(status) || "refunded".equals(status)) {
+                credits.add(new ProviderCredit(text(payment, "id"), query.collectionReference(), query.attemptId(),
+                        amount(payment), "upi".equals(text(payment, "method")) ? "UPI" : null, null,
+                        Instant.ofEpochSecond(payment.path("created_at").asLong(clock.instant().getEpochSecond()))));
+            }
+        }
+        return credits;
+    }
+
+    @Override
+    public void closeCollection(MerchantAccount account, CloseCollectionRequest request) {
+        api.post(account, "/virtual_accounts/" + RazorpayApi.segment(request.collectionReference()) + "/close", Map.of());
     }
 
     private ProviderPaymentResult initiateUpiS2s(MerchantAccount account, InitiatePaymentRequest request) {
@@ -268,6 +336,10 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
                     .orElseGet(ProviderPaymentResult::notFound);
         }
         try {
+            if (reference.startsWith("va_")) {
+                return virtualAccountResult(api.get(account, "/virtual_accounts/" + RazorpayApi.segment(reference), Map.of()),
+                        null);
+            }
             if (reference.startsWith("plink_")) {
                 return linkResult(account, api.get(account, "/payment_links/" + reference, Map.of()));
             }
@@ -430,10 +502,15 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         };
     }
 
-    /** The Razorpay payment behind an order or Payment Link that is authorized or already captured. */
+    /** The Razorpay payment behind an order, a Payment Link or a bank transfer credit that is authorized or captured. */
     private Optional<JsonNode> settledOrAuthorizedPayment(MerchantAccount account, String reference) {
         if (reference == null) {
             return Optional.empty();
+        }
+        if (reference.startsWith("pay_")) {
+            JsonNode payment = api.get(account, "/payments/" + RazorpayApi.segment(reference), Map.of());
+            String status = text(payment, "status");
+            return "captured".equals(status) || "refunded".equals(status) ? Optional.of(payment) : Optional.empty();
         }
         String orderId = reference;
         if (reference.startsWith("plink_")) {
@@ -657,6 +734,9 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
         if (type.startsWith("order.notification.")) {
             return notificationEvents(eventId, type, payload.path("order").path("entity"), event);
         }
+        if (type.startsWith("virtual_account.")) {
+            return "virtual_account.credited".equals(type) ? List.of(creditEvent(eventId, type, payload, payment)) : List.of();
+        }
         String reference = text(payment, "order_id");
         String attemptId = text(payment.path("notes"), ATTEMPT_NOTE);
         ProviderPaymentResult result = switch (type) {
@@ -667,6 +747,18 @@ public final class RazorpayPaymentProvider implements PaymentProvider {
             default -> null;
         };
         return result == null ? List.of() : List.of(ProviderEvent.payment(eventId, type, reference, attemptId, result));
+    }
+
+    /** A transfer into a Smart Collect account: the payment, the account with our notes, and the transfer's details. */
+    private ProviderEvent creditEvent(String eventId, String type, JsonNode payload, JsonNode payment) {
+        JsonNode virtualAccount = payload.path("virtual_account").path("entity");
+        JsonNode bankTransfer = payload.path("bank_transfer").path("entity");
+        JsonNode upiTransfer = payload.path("upi_transfer").path("entity");
+        String mode = upiTransfer.isObject() ? "UPI" : text(bankTransfer, "mode");
+        String utr = upiTransfer.isObject() ? text(upiTransfer, "rrn") : text(bankTransfer, "bank_reference");
+        return ProviderEvent.credit(eventId, type, new ProviderCredit(text(payment, "id"), text(virtualAccount, "id"),
+                text(virtualAccount.path("notes"), ATTEMPT_NOTE), amount(payment), mode, utr,
+                Instant.ofEpochSecond(payment.path("created_at").asLong(clock.instant().getEpochSecond()))));
     }
 
     private static ProviderEvent disputeEvent(String eventId, String type, JsonNode dispute, JsonNode payment) {

@@ -28,6 +28,8 @@ public class MockProvidersConfiguration {
     /** LLD §20.2 (assumed ranges): wallets and pay later up to ₹1,00,000; EMI from ₹3,000; cardless EMI up to ₹5,00,000. */
     private static final long EMI_MIN = 300_000L;
     private static final long CARDLESS_EMI_MAX = 50_000_000L;
+    /** LLD §21.8: transfers of up to ₹1 crore. */
+    private static final long TRANSFER_MAX = 1_000_000_000L;
     private static final Set<Integer> EMI_TENURES = Set.of(3, 6, 9, 12, 18, 24);
     /** LLD §18.8: ₹1 authorization charge for UPI and card, none for eNACH; eNACH debits up to ₹1 crore. */
     private static final Map<MandateInstrument, MandateSupport> MANDATES = Map.of(
@@ -46,7 +48,8 @@ public class MockProvidersConfiguration {
                 MethodType.EMI, MethodSupport.emi(EMI_TENURES, EMI_MIN, CARD_MAX),
                 MethodType.CARDLESS_EMI, MethodSupport.ofProviders(Set.of("zestmoney", "earlysalary", "hdfc"), EMI_MIN,
                         CARDLESS_EMI_MAX),
-                MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay", "simpl"), 100, UPI_MAX)),
+                MethodType.PAY_LATER, MethodSupport.ofProviders(Set.of("lazypay", "simpl"), 100, UPI_MAX),
+                MethodType.BANK_TRANSFER, new MethodSupport(Set.of(), 100, TRANSFER_MAX, false)),
                 Set.of("INR"), true, true, true).withMandates(MANDATES);
         return new MockPaymentProvider(MOCK_ALPHA, capabilities, properties, json, clock);
     }

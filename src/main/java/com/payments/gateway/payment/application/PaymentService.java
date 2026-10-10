@@ -206,7 +206,8 @@ public class PaymentService {
             String provider = candidates.get(index);
             InitiatePaymentRequest request = new InitiatePaymentRequest(currentAttemptId, payment.merchantId(),
                     payment.amount(), command.method(), payment.captureMethod(), payment.description(),
-                    payment.customer().email(), payment.customer().phone(), command.returnUrl(), command.clientIp());
+                    payment.customer().email(), payment.customer().phone(), command.returnUrl(), command.clientIp(),
+                    payment.expiresAt());
             try {
                 ProviderPaymentResult result = providerClient.initiate(payment.merchantId(), provider, request);
                 if (result.outcome() == ProviderPaymentResult.Outcome.NOT_FOUND) {

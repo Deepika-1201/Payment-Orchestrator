@@ -14,6 +14,7 @@ import com.payments.gateway.provider.spi.ProviderCapabilities;
 import com.payments.gateway.provider.spi.ProviderCapabilities.MethodSupport;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
 import com.payments.gateway.provider.spi.ProviderDisputeResult;
+import com.payments.gateway.provider.spi.ProviderCredit;
 import com.payments.gateway.provider.spi.ProviderEvent;
 import com.payments.gateway.provider.spi.ProviderFailure;
 import com.payments.gateway.provider.spi.ProviderMandateResult;
@@ -21,6 +22,8 @@ import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -41,6 +44,7 @@ import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.json.JsonCodec;
 import com.payments.gateway.shared.model.CaptureMethod;
+import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.FailureCategory;
@@ -123,10 +127,11 @@ public class MockPaymentProvider implements PaymentProvider {
             return toResult(existing.get());
         }
         boolean manual = request.captureMethod() == CaptureMethod.MANUAL;
-        TxnState completed = manual ? TxnState.AUTHORIZED : TxnState.CAPTURED;
+        boolean transfer = request.method().type() == MethodType.BANK_TRANSFER;
+        TxnState completed = transfer ? TxnState.REQUIRES_ACTION : manual ? TxnState.AUTHORIZED : TxnState.CAPTURED;
         String reference = Ids.newId(code.toLowerCase(Locale.ROOT));
         int scenario = (int) (request.amount().amount() % 100);
-        switch (scenario) {
+        switch (transfer && scenario == 4 ? 0 : scenario) {
             case 1 -> {
                 create(account, reference, request, completed);
                 throw new ProviderTimeoutException(code, "simulated read timeout (request was processed)");
@@ -383,6 +388,15 @@ public class MockPaymentProvider implements PaymentProvider {
         if (MockWebhookPayload.NOTIFICATION_UPDATED.equals(payload.type())) {
             return List.of(parseNotification(payload));
         }
+        if (MockWebhookPayload.COLLECTION_CREDITED.equals(payload.type())) {
+            if (amount == null || payload.providerReference() == null) {
+                throw new WebhookVerificationException("malformed payload");
+            }
+            return List.of(ProviderEvent.credit(payload.eventId(), payload.type(), new ProviderCredit(
+                    payload.providerReference(), payload.paymentReference(), payload.merchantReference(), amount,
+                    payload.transferMode(), payload.utr(),
+                    payload.receivedAt() == null ? clock.instant() : payload.receivedAt())));
+        }
         ProviderPaymentResult result = switch (payload.status()) {
             case "captured" -> ProviderPaymentResult.succeeded(payload.providerReference(), amount, "captured");
             case "authorized" -> ProviderPaymentResult.authorized(payload.providerReference(), amount, "authorized");
@@ -484,6 +498,13 @@ public class MockPaymentProvider implements PaymentProvider {
 
     /** Builds the webhook body the simulated PSP would send for the current transaction state. */
     public MockWebhookPayload webhookFor(Txn txn) {
+        if (txn.collectionReference() != null) {
+            String attemptId = psp.find(txn.collectionReference(), null).map(Txn::merchantReference).orElse(null);
+            return new MockWebhookPayload(Ids.newId("mock_evt"), MockWebhookPayload.COLLECTION_CREDITED, txn.reference(),
+                    attemptId, "captured", txn.amount().amount(), txn.amount().currency(), null, null, null, null,
+                    txn.collectionReference(), null, null, null, null, null, null, txn.transferMode(), txn.utr(),
+                    txn.capturedAt());
+        }
         String status = switch (txn.state()) {
             case CAPTURED -> "captured";
             case AUTHORIZED -> "authorized";
@@ -626,9 +647,31 @@ public class MockPaymentProvider implements PaymentProvider {
     }
 
     private Txn create(MerchantAccount account, String reference, InitiatePaymentRequest request, TxnState state) {
-        return psp.create(reference, request.merchantId(), account.id(), account.credential(WEBHOOK_SECRET).orElse(null),
+        Txn txn = psp.create(reference, request.merchantId(), account.id(), account.credential(WEBHOOK_SECRET).orElse(null),
                 request.attemptId(), request.amount(), request.method(), request.captureMethod() == CaptureMethod.MANUAL,
                 request.returnUrl(), state, clock.instant());
+        if (request.method().type() == MethodType.BANK_TRANSFER) {
+            psp.openCollection(txn, request.expiresAt());
+        }
+        return txn;
+    }
+
+    @Override
+    public List<ProviderCredit> fetchCredits(MerchantAccount account, CreditsQuery query) {
+        simulateNetwork(account);
+        return psp.find(query.collectionReference(), query.attemptId())
+                .map(collection -> psp.creditsOf(collection.reference()).stream()
+                        .map(credit -> new ProviderCredit(credit.reference(), collection.reference(),
+                                collection.merchantReference(), credit.amount(), credit.transferMode(), credit.utr(),
+                                credit.capturedAt()))
+                        .toList())
+                .orElse(List.of());
+    }
+
+    @Override
+    public void closeCollection(MerchantAccount account, CloseCollectionRequest request) {
+        simulateNetwork(account);
+        psp.find(request.collectionReference(), request.attemptId()).ifPresent(psp::close);
     }
 
     private Txn createDebit(MandateTxn mandate, String reference, ExecuteDebitRequest request, TxnState state) {
@@ -645,6 +688,8 @@ public class MockPaymentProvider implements PaymentProvider {
             case CARD, NETBANKING, MANDATE, WALLET, EMI, CARDLESS_EMI, PAY_LATER -> NextAction.redirect(
                     properties.publicBaseUrl() + "/simulator/" + code
                     + "/checkout/" + txn.reference());
+            case BANK_TRANSFER -> NextAction.bankTransfer(new BankTransferDetails(txn.accountNumber(), "MOCK0000001",
+                    "Mock Collections", "Mock Bank", "pay." + txn.accountNumber() + "@mockbank"), txn.expiresAt());
             case UPI -> {
                 UpiFlow flow = txn.method().upiFlow();
                 if (flow == UpiFlow.COLLECT) {
@@ -663,7 +708,8 @@ public class MockPaymentProvider implements PaymentProvider {
 
     private ProviderPaymentResult toResult(Txn txn) {
         ProviderPaymentResult result = switch (txn.state()) {
-            case REQUIRES_ACTION -> ProviderPaymentResult.requiresAction(txn.reference(), null, "requires_action");
+            case REQUIRES_ACTION -> ProviderPaymentResult.requiresAction(txn.reference(),
+                    txn.method().type() == MethodType.BANK_TRANSFER ? nextAction(txn) : null, "requires_action");
             case PENDING -> ProviderPaymentResult.pending(txn.reference(), "pending");
             case AUTHORIZED -> ProviderPaymentResult.authorized(txn.reference(), txn.amount(), "authorized");
             case CAPTURED -> ProviderPaymentResult.succeeded(txn.reference(), txn.capturedAmount(), "captured");

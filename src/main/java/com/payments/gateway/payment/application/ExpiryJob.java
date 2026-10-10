@@ -20,16 +20,19 @@ public class ExpiryJob {
     private final PaymentRepository payments;
     private final PaymentStore store;
     private final PaymentOutcomeService outcomes;
+    private final TransferCreditService transfers;
     private final PaymentProperties properties;
     private final WorkerProperties workers;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public ExpiryJob(PaymentRepository payments, PaymentStore store, PaymentOutcomeService outcomes,
-                     PaymentProperties properties, WorkerProperties workers, TransactionTemplate tx, Clock clock) {
+                     TransferCreditService transfers, PaymentProperties properties, WorkerProperties workers,
+                     TransactionTemplate tx, Clock clock) {
         this.payments = payments;
         this.store = store;
         this.outcomes = outcomes;
+        this.transfers = transfers;
         this.properties = properties;
         this.workers = workers;
         this.tx = tx;
@@ -42,6 +45,10 @@ public class ExpiryJob {
         int expired = 0;
         for (String paymentId : candidates) {
             try {
+                if (payments.findById(paymentId).filter(TransferCreditService::awaitingTransfer).isPresent()) {
+                    expired += transfers.expire(paymentId) ? 1 : 0;
+                    continue;
+                }
                 Payment.ExpireResult result = tx.execute(status -> {
                     Payment payment = payments.lockById(paymentId).orElse(null);
                     if (payment == null) {

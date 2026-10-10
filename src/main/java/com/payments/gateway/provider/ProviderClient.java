@@ -9,11 +9,14 @@ import com.payments.gateway.provider.spi.MandateRequests.MandateQuery;
 import com.payments.gateway.provider.spi.MerchantAccount;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.provider.spi.ProviderCredentialsException;
+import com.payments.gateway.provider.spi.ProviderCredit;
 import com.payments.gateway.provider.spi.ProviderMandateResult;
 import com.payments.gateway.provider.spi.ProviderNotificationResult;
 import com.payments.gateway.provider.spi.ProviderPaymentResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.provider.spi.ProviderRequests.CaptureRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CloseCollectionRequest;
+import com.payments.gateway.provider.spi.ProviderRequests.CreditsQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.PaymentStatusQuery;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundRequest;
 import com.payments.gateway.provider.spi.ProviderRequests.RefundStatusQuery;
@@ -29,6 +32,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
@@ -122,6 +126,17 @@ public class ProviderClient {
 
     public ProviderPaymentResult executeDebit(String merchantId, String providerCode, ExecuteDebitRequest request) {
         return call(merchantId, providerCode, "debit_execute", (provider, account) -> provider.executeDebit(account, request));
+    }
+
+    public List<ProviderCredit> fetchCredits(String merchantId, String providerCode, CreditsQuery query) {
+        return call(merchantId, providerCode, "credits", (provider, account) -> provider.fetchCredits(account, query));
+    }
+
+    public void closeCollection(String merchantId, String providerCode, CloseCollectionRequest request) {
+        call(merchantId, providerCode, "collection_close", (provider, account) -> {
+            provider.closeCollection(account, request);
+            return null;
+        });
     }
 
     /**

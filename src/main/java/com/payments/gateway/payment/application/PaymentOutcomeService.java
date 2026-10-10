@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.merchant.Merchant;
 import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.AttemptApplyResult;
 import com.payments.gateway.payment.domain.AttemptStatus;
@@ -252,9 +253,11 @@ public class PaymentOutcomeService {
         }
     }
 
-    private PaymentPolicy policyFor(Payment payment) {
+    PaymentPolicy policyFor(Payment payment) {
         int maxAttempts = payment.attemptLimit() != null ? payment.attemptLimit() : properties.maxAttempts();
-        return new PaymentPolicy(maxAttempts, properties.authorizationTtl(),
-                merchants.require(payment.merchantId()).acceptsLateSuccess());
+        Merchant merchant = merchants.require(payment.merchantId());
+        return new PaymentPolicy(maxAttempts, properties.authorizationTtl(), merchant.acceptsLateSuccess(),
+                merchant.transferCredits() == Merchant.TransferCredits.ADD_UP,
+                merchant.transferShortfall() == Merchant.TransferShortfall.ACCEPT);
     }
 }

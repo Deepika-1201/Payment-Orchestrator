@@ -7,7 +7,9 @@ public enum LedgerAccountType {
     PSP_FEES(EntryDirection.DEBIT),
     REFUNDS(EntryDirection.DEBIT),
     CHARGEBACKS(EntryDirection.DEBIT),
-    BANK_SETTLEMENTS(EntryDirection.DEBIT);
+    BANK_SETTLEMENTS(EntryDirection.DEBIT),
+    /** Bank transfer credits held for customers until they pay a payment or go back (ADR-038). */
+    CUSTOMER_FUNDS(EntryDirection.CREDIT);
 
     private final EntryDirection normalSide;
 

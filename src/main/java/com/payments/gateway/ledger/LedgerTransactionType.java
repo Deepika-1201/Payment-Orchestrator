@@ -7,5 +7,8 @@ public enum LedgerTransactionType {
     SETTLEMENT,
     CHARGEBACK,
     REVERSAL,
-    ADJUSTMENT
+    ADJUSTMENT,
+    CREDIT_RECEIVED,
+    CREDIT_APPLIED,
+    CREDIT_RETURNED
 }

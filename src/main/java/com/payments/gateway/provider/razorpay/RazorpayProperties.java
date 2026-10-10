@@ -25,13 +25,13 @@ public record RazorpayProperties(boolean enabled,
                                  @DefaultValue Set<MethodType> extraMethods) {
 
     static final Set<MethodType> OPTIONAL_METHODS = EnumSet.of(MethodType.WALLET, MethodType.EMI, MethodType.CARDLESS_EMI,
-            MethodType.PAY_LATER);
+            MethodType.PAY_LATER, MethodType.BANK_TRANSFER);
 
     public RazorpayProperties {
         extraMethods = Set.copyOf(extraMethods);
         if (!OPTIONAL_METHODS.containsAll(extraMethods)) {
-            throw new IllegalArgumentException(
-                    "pg.providers.razorpay.extra-methods accepts wallet, emi, cardless_emi and pay_later, not " + extraMethods);
+            throw new IllegalArgumentException("pg.providers.razorpay.extra-methods accepts wallet, emi, cardless_emi, "
+                    + "pay_later and bank_transfer, not " + extraMethods);
         }
     }
 }

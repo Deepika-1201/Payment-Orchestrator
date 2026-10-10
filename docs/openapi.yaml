@@ -302,6 +302,31 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         default: {$ref: '#/components/responses/UnexpectedError'}
 
+  /v1/payments/{payment_id}/credits:
+    get:
+      tags: [Payments]
+      operationId: listCredits
+      summary: List the bank transfers that arrived for a payment
+      description: >-
+        Each transfer to the payment's virtual account is a credit. Credits add up to the amount (or must match it
+        exactly, per the merchant's settings); what does not pay for the payment goes back to the customer as a refund
+        with `initiated_by: system_credit_return`.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Credits, oldest first.
+          headers:
+            X-Request-Id: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreditList'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        default: {$ref: '#/components/responses/UnexpectedError'}
+
   /v1/disputes/{dispute_id}:
     get:
       tags: [Disputes]
@@ -821,11 +846,26 @@ components:
       description: Present only while the payment is `requires_action`.
       required: [type]
       properties:
-        type: {type: string, enum: [redirect, upi_intent, display_qr, await_approval]}
+        type: {type: string, enum: [redirect, upi_intent, display_qr, await_approval, bank_transfer]}
         url: {type: string, description: '`redirect`: send the customer to this URL (a PSP-hosted page).'}
         upi_uri: {type: string, description: '`upi_intent`: open this `upi://` URI on the customer''s phone.'}
         qr_payload: {type: string, description: '`display_qr`: render this as a QR code.'}
         expires_at: {$ref: '#/components/schemas/Timestamp'}
+        bank_transfer:
+          type: object
+          description: >-
+            `bank_transfer`: the virtual account issued for this payment. The customer sends the amount by NEFT,
+            RTGS or IMPS, or by UPI to `vpa` where present, before `expires_at`.
+          required: [account_number, ifsc]
+          properties:
+            account_number: {type: string}
+            ifsc: {type: string, pattern: '^[A-Z]{4}0[A-Z0-9]{6}$'}
+            beneficiary_name: {type: string}
+            bank_name: {type: string}
+            vpa: {type: string}
+      allOf:
+        - if: {properties: {type: {const: bank_transfer}}}
+          then: {required: [bank_transfer]}
     Attempt:
       type: object
       required: [id, attempt_number, status, method, provider, created_at]
@@ -833,7 +873,7 @@ components:
         id: {type: string, pattern: '^att_'}
         attempt_number: {type: integer, minimum: 1}
         status: {$ref: '#/components/schemas/AttemptStatus'}
-        method: {type: string, enum: [upi, card, netbanking, mandate, wallet, emi, cardless_emi, pay_later]}
+        method: {type: string, enum: [upi, card, netbanking, mandate, wallet, emi, cardless_emi, pay_later, bank_transfer]}
         upi_flow: {type: string, enum: [intent, qr, collect]}
         bank_code: {type: string}
         method_provider: {type: string, description: 'The wallet or lender, for `wallet`, `cardless_emi` and `pay_later`.'}
@@ -880,8 +920,12 @@ components:
         merchant_refund_id: {type: string}
         initiated_by:
           type: string
-          enum: [merchant, system_late_success, system_duplicate_success]
-          description: System refunds return money from late or duplicate successes.
+          enum: [merchant, system_late_success, system_duplicate_success, system_credit_return]
+          description: >-
+            System refunds return money from late or duplicate successes, and bank transfer credits that did not pay
+            for the payment (`system_credit_return`, with `reason` `excess`, `inexact`, `late` or `short_at_expiry`).
+            Credit returns are not part of the payment's `amount_refunded`.
+        credit_id: {type: string, pattern: '^trc_', description: The bank transfer credit the refund sends money back from.}
         provider: {type: string}
         provider_reference: {type: string}
         failure: {$ref: '#/components/schemas/PaymentError'}
@@ -895,6 +939,30 @@ components:
         data:
           type: array
           items: {$ref: '#/components/schemas/Refund'}
+
+    Credit:
+      type: object
+      description: A bank transfer that arrived in the payment's virtual account.
+      required: [id, object, payment_id, amount, currency, received_at, applied_amount, returned_amount]
+      properties:
+        id: {type: string, pattern: '^trc_'}
+        object: {const: credit}
+        payment_id: {type: string, pattern: '^pay_'}
+        amount: {$ref: '#/components/schemas/Amount'}
+        currency: {$ref: '#/components/schemas/Currency'}
+        mode: {type: string, enum: [neft, rtgs, imps, upi], description: Absent when the PSP did not report it.}
+        utr: {type: string, description: The bank's reference for the transfer.}
+        received_at: {$ref: '#/components/schemas/Timestamp'}
+        applied_amount: {type: integer, format: int64, minimum: 0, description: The part that pays the payment.}
+        returned_amount: {type: integer, format: int64, minimum: 0, description: The part sent back to the customer.}
+        return_id: {type: string, pattern: '^rfnd_', description: The refund sending `returned_amount` back.}
+    CreditList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Credit'}
 
     Dispute:
       type: object
@@ -1108,8 +1176,9 @@ components:
       description: >-
         Card details are never sent here; card and card EMI payments redirect to the PSP's page, where the customer
         also picks the EMI plan. Wallets, cardless EMI and pay later name their provider by the code the PSPs use.
+        A bank transfer gets a virtual account to pay into (`next_action.bank_transfer`).
       properties:
-        type: {type: string, enum: [upi, card, netbanking, wallet, emi, cardless_emi, pay_later]}
+        type: {type: string, enum: [upi, card, netbanking, wallet, emi, cardless_emi, pay_later, bank_transfer]}
         upi:
           type: object
           required: [flow]

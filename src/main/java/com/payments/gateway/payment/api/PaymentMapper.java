@@ -1,6 +1,8 @@
 package com.payments.gateway.payment.api;
 
 import com.payments.gateway.payment.api.PaymentResponses.AttemptResponse;
+import com.payments.gateway.payment.api.PaymentResponses.BankTransferResponse;
+import com.payments.gateway.payment.api.PaymentResponses.CreditResponse;
 import com.payments.gateway.payment.api.PaymentResponses.CustomerResponse;
 import com.payments.gateway.payment.api.PaymentResponses.DisputeResponse;
 import com.payments.gateway.payment.api.PaymentResponses.EmiPlanResponse;
@@ -21,6 +23,8 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
 import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
+import com.payments.gateway.payment.domain.TransferCredit;
+import com.payments.gateway.shared.model.BankTransferDetails;
 import com.payments.gateway.shared.model.CardDetails;
 import com.payments.gateway.shared.model.EmiPlan;
 import com.payments.gateway.shared.model.NextAction;
@@ -124,12 +128,19 @@ public class PaymentMapper {
                 refund.reason(),
                 refund.merchantRefundId(),
                 wire(refund.initiatedBy()),
+                refund.creditId(),
                 refund.providerCode(),
                 refund.providerReference(),
                 toResponse(refund.failure()),
                 refund.createdAt(),
                 refund.updatedAt(),
                 refund.version());
+    }
+
+    public CreditResponse toResponse(TransferCredit credit) {
+        return new CreditResponse(credit.id(), "credit", credit.paymentId(), credit.amount().amount(),
+                credit.amount().currency(), credit.mode() == null ? null : credit.mode().toLowerCase(java.util.Locale.ROOT),
+                credit.utr(), credit.receivedAt(), credit.appliedAmount(), credit.returnedAmount(), credit.returnRefundId());
     }
 
     public DisputeResponse toResponse(Dispute dispute) {
@@ -173,7 +184,10 @@ public class PaymentMapper {
         if (action == null) {
             return null;
         }
-        return new NextActionResponse(wire(action.type()), action.url(), action.upiUri(), action.qrPayload(), action.expiresAt());
+        BankTransferDetails bank = action.bankTransfer();
+        return new NextActionResponse(wire(action.type()), action.url(), action.upiUri(), action.qrPayload(), action.expiresAt(),
+                bank == null ? null : new BankTransferResponse(bank.accountNumber(), bank.ifsc(), bank.beneficiaryName(),
+                        bank.bankName(), bank.vpa()));
     }
 
     private static ErrorResponse toResponse(Failure failure) {

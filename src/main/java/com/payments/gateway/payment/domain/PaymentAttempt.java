@@ -1,6 +1,7 @@
 package com.payments.gateway.payment.domain;
 
 import com.payments.gateway.shared.model.CardDetails;
+import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.shared.model.NextAction;
 import com.payments.gateway.shared.model.PaymentMethod;
@@ -172,6 +173,15 @@ public final class PaymentAttempt {
     void requestVoid(Instant now) {
         voidRequested = true;
         nextStatusCheckAt = now;
+        touch(now);
+    }
+
+    /** Sets what a short bank transfer captured, before the attempt succeeds for it (ADR-038). */
+    void acceptShortTransfer(Money received, Instant now) {
+        if (status != AttemptStatus.REQUIRES_ACTION || method.type() != MethodType.BANK_TRANSFER) {
+            throw new IllegalStateException("a short transfer needs a waiting bank transfer attempt, was " + status);
+        }
+        captureAmount = received;
         touch(now);
     }
 

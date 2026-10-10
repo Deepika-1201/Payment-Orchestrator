@@ -33,4 +33,11 @@ public final class ProviderRequests {
     /** {@code merchantId} selects the merchant's PSP account (orchestrator mode); window is [from, to). */
     public record SettlementReportQuery(String merchantId, java.time.Instant from, java.time.Instant to) {
     }
+
+    /** A virtual account (ADR-038): {@code collectionReference} is the PSP's id, the attempt's provider reference. */
+    public record CreditsQuery(String attemptId, String collectionReference) {
+    }
+
+    public record CloseCollectionRequest(String attemptId, String collectionReference) {
+    }
 }

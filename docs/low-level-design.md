@@ -1272,7 +1272,9 @@ Requirements: [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-pha
 
 ### 21.2 Credits and allocation
 
-A credit is recorded once per PSP id (`transfer_credits`, unique per provider), whether a webhook or a status check reports it first; later reports change nothing. It is placed on an attempt by the account's reference (the attempt's provider reference), else by the attempt id the PSP echoes back. Placement and allocation run under the payment's lock; a credit's ledger posting (§21.5) commits with it.
+A credit is recorded once per PSP id (`transfer_credits`, unique per provider), whether a webhook or a status check reports it first; later reports change nothing. It is placed on an attempt by the account's reference (the attempt's provider reference), else by the attempt id the PSP echoes back. Placement and allocation run under the payment's lock. The credit is stored once, together with its allocation and the refund sending any part of it back, and its ledger posting (§21.5) commits with it.
+
+Like any webhook on a merchant's own PSP account, a credit reported there for another merchant's attempt is ignored. A credit that names no attempt is queued for review under the merchant whose account reported it; on the platform-level webhook endpoint there is no merchant to record it under, so it is logged and ignored, and reconciliation reports it as missing internally.
 
 The attempt **awaits the transfer** while it is the latest attempt, both it and the payment are `requires_action`, and the payment has not reached `expires_at`.
 
@@ -1281,7 +1283,7 @@ The attempt **awaits the transfer** while it is the latest attempt, both it and 
 | Awaiting, `add_up` | up to the outstanding amount | the rest (`excess`) |
 | Awaiting, `exact`, the credit equals the amount | all | — |
 | Awaiting, `exact`, any other credit | nothing | all (`inexact`) |
-| Not awaiting: succeeded, expired, failed, cancelled, or not the latest attempt | nothing | all (`late`) |
+| Not awaiting: succeeded, expired, failed, cancelled, or not the latest attempt; or the credit is in another currency | nothing | all (`late`) |
 | No attempt can be found | nothing | nothing; queued for review (`unmatched_credit`) |
 
 When the applied credits reach the amount, the attempt succeeds with the amount as its reported amount, and the payment succeeds. After commit the gateway closes the account at the PSP (best effort; the PSP closes it at expiry anyway).
@@ -1325,7 +1327,7 @@ When the applied credits reach the amount, the attempt succeeds with the amount 
 ### 21.8 Mock PSP
 
 - **Accounts.** `MOCK_ALPHA` declares `BANK_TRANSFER` for ₹1 to ₹1 crore. An account has a 14-digit number, IFSC `MOCK0000001`, beneficiary `Mock Collections`, bank `Mock Bank` and the UPI ID `pay.<number>@mockbank`. Amount suffixes 01 and 05 select the confirm timeouts as for other methods (§5).
-- **Credits.** `POST /simulator/{provider}/collections/{reference}/credits {amount, mode, webhook}` credits an account (`mode` defaults to `neft`; `webhook: false` leaves it to the status check); an unknown reference is 404. `POST /simulator/{provider}/collections {merchant_id}` opens an account outside the gateway, for unmatched credits.
+- **Credits.** `POST /simulator/{provider}/collections/{reference}/credits {amount, mode, webhook}` credits an account (`mode` defaults to `neft`; `webhook: false` leaves it to the status check); an unknown reference is 404. A credit to an account the gateway cannot place is tested by posting a signed `collection.credited` webhook for an unknown account.
 - **Behaviour.** Each credit is a captured mock payment without a merchant reference, so refunds and settlement report lines work as for any payment. Webhook type `collection.credited`. Closed accounts still accept credits.
 
 ### 21.9 Razorpay mapping
