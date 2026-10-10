@@ -187,8 +187,8 @@ The V2 scope accepted in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased i
 - **FR-D3** A `dispute.evidence_due` event and an operator alert fire 3 days before the deadline **(assumed)** while no response is pending or sent. Evidence files are stored encrypted and kept as long as the dispute record (NFR-16): the application never deletes them.
 
 ### 8.6 International cards and multi-currency (phase 23)
-- **FR-FX1** A merchant can enable international cards and charge in the currencies its PSPs support; it is off by default. Amounts are integers in each currency's ISO 4217 minor unit (0, 2 or 3 decimals).
-- **FR-FX2** Settlement stays in INR. The PSP's conversion rate and the settled INR amount are stored for every capture, refund and chargeback. The shadow ledger keeps both currencies and books the difference to an FX account. Reconciliation matches in the settlement currency.
+- **FR-FX1** An operator can enable international cards for a merchant; it is off by default. The merchant then charges cards in the currencies its PSPs support, and such payments are paid by card only. Amounts are integers in each currency's ISO 4217 minor unit (0, 2 or 3 decimals), within the PSP's range and amount step ([ADR-040](decisions/ADR-040-international-cards.md)).
+- **FR-FX2** Settlement stays in INR. For every capture, refund and chargeback of a payment in another currency, the settled INR amount is stored, with the PSP's conversion rate when it reports one, from the PSP's answer or else its settlement report. The shadow ledger keeps both currencies and books the difference to an FX account. Reconciliation matches in the settlement currency.
 - **FR-FX3** Refunds are made in the original currency and are limited by the amount captured in that currency.
 
 ### 8.7 Cost-aware and adaptive routing (phase 24)

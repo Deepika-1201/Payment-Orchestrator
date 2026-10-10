@@ -147,6 +147,22 @@ No partial credit: the phase's unit counts when all steps are done.
 | 9 | Tests: contest and accept end to end on the mock PSP and the Razorpay stub; retries, refusals and the deadline; the notice; file checks; encryption at rest; contract; database rules; mutation checks. Then commit and push on a green build | Done: 55 mutants, 54 killed and 1 equivalent: the service's content-type check, which the request's own pattern makes unreachable, now removed. Listing the mutants first removed six redundant pieces of code and added seven test cases; the two surviving query mutants added one test case and extended another |
 | 10 | Docs: README, runbooks, progress and changelog | Done (new alert `DisputeEvidenceDue` with its runbook; the review-queue runbook covers `response_failed`) |
 
+### Phase 23 steps
+
+No partial credit: the phase's 1.5 units count when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-040](decisions/ADR-040-international-cards.md), [LLD §23](low-level-design.md#23-international-cards-and-multi-currency-phase-23-adr-040), [requirements §8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) refined | Done |
+| 2 | Schema V19, the merchant setting, foreign currencies in capabilities, creation and routing rules, amount steps for captures and refunds, INR-only amount risk | |
+| 3 | Conversions ([§23.3](low-level-design.md#233-conversions)): SPI fields, recording under the payment lock, carried amounts, `conversion` on payments, refunds and disputes | |
+| 4 | Ledger ([§23.4](low-level-design.md#234-ledger)): foreign movements against `fx_conversion`, conversion postings with `fx_gain_loss`, the per-currency balance check | |
+| 5 | Reconciliation in INR ([§23.5](low-level-design.md#235-reconciliation)): `charged` on lines, recording from the report, `conversion_missing` | |
+| 6 | Mock PSP and simulator ([§23.7](low-level-design.md#237-mock-psp)): currencies, rates, conversions in answers, webhooks and reports | |
+| 7 | Razorpay ([§23.8](low-level-design.md#238-razorpay-mapping)): configured currencies, `base_amount`, recon lines in other currencies; stub tests | |
+| 8 | Tests: payments in 0-, 2- and 3-decimal currencies created, captured and refunded end to end; rate moves with gains and losses; full refunds back to zero; chargebacks and reversals; reconciliation from the report; contract; database rules; mutation checks. Then commit and push on a green build | |
+| 9 | Docs: README, progress and changelog | |
+
 ## Changelog
 
 | Date | Change | Progress |

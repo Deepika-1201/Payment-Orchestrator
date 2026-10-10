@@ -379,7 +379,7 @@ Deterministic scenarios by **amount paise suffix** (like PSP test cards):
 | `…05` | Timeout on initiate, never processed → status check `NOT_FOUND` → attempt `FAILED (NOT_SUBMITTED)` |
 | other | Card, netbanking, UPI intent/QR → `REQUIRES_ACTION` (redirect / intent URI / QR); UPI collect → `PENDING`. Completed through the simulator, which sends a signed webhook |
 
-Refund amount suffix: `…07` pending (resolved by status check), `…08` timeout but processed, `…09` failed, otherwise immediate success.
+Refund amount suffix: `…07` pending (resolved by status check), `…08` timeout but processed, `…09` failed, otherwise immediate success. In another currency, `…06` leaves the INR amount out of a payment's or refund's answers ([§23.7](#237-mock-psp)).
 
 Mock credentials are optional:
 - An `api_key` starting with `bad_` is rejected with `ProviderCredentialsException`.
@@ -468,7 +468,7 @@ Rules are cached per instance, refreshed every 30 s, and invalidated immediately
 
 | Rule | Logic (config under `pg.risk`) |
 |---|---|
-| `AmountLimitRule` | `> review-threshold` (₹2,00,000) → `REVIEW`; `> block-threshold` (₹10,00,000) → `BLOCK` |
+| `AmountLimitRule` | INR payments: `> review-threshold` (₹2,00,000) → `REVIEW`; `> block-threshold` (₹10,00,000) → `BLOCK` (§23.2) |
 | `BlocklistRule` | VPA, IP, email, customer reference in the configured blocklists → `BLOCK` |
 | `VelocityRule` | More than `max-attempts-per-customer` (10) attempts by the same customer reference in `velocity-window` (10 min) → `BLOCK` |
 
@@ -814,6 +814,7 @@ Idempotency-Key: 5f1c2a2e-order-1001-confirm
 | `pg.providers.razorpay.base-url` | `https://api.razorpay.com/v1` | Razorpay API; `prod` refuses any other host |
 | `pg.providers.razorpay.upi-s2s` | `false` | S2S UPI intent/QR once Razorpay enables it for the platform; otherwise UPI uses the hosted Payment Link |
 | `pg.providers.razorpay.hosted-page-ttl` | `15m` | Payment window: link expiry (at least 16 min) and when a `failed` payment becomes final |
+| `pg.providers.razorpay.foreign-currencies` | none | International cards: currency → largest amount per payment in minor units (§23.8, ADR-040) |
 | `pg.providers.cashfree.enabled` | `false` | Registers the Cashfree adapter (ADR-031) |
 | `pg.providers.cashfree.base-url` | by mode: sandbox on TEST, `https://api.cashfree.com/pg` on LIVE | `prod` refuses any other host, including the sandbox |
 | `pg.providers.cashfree.api-version` / `.upi-s2s` / `.hosted-page-ttl` | `2025-01-01` / `false` / `15m` | `x-api-version` sent; Order Pay UPI once Cashfree enables seamless payments; link and order expiry |
@@ -1471,4 +1472,117 @@ deliver(d):                                            -- after commit, and by D
 - `dispute_evidence_files`: `id`, `dispute_id` (references `disputes`), `merchant_id`, `category`, `file_name`, `content_type`, `size_bytes`, `sha256`, `content_enc`, `content_key_enc`, `provider_document_id`, `created_at`. Checks: the category and type lists; `size_bytes > 0`; the ciphertext is exactly 28 bytes longer than the file (IV and tag). Index `(dispute_id, created_at)`.
 - Partial indexes: `disputes (response_next_attempt_at) WHERE response_status = 'PENDING'` and `disputes (respond_by) WHERE status = 'OPEN'`.
 - Grants (`afterMigrate.sql`): no `DELETE` on `dispute_evidence_files`, and `UPDATE` only of `provider_document_id` and `content_key_enc`.
+
+## 23. International cards and multi-currency (phase 23, ADR-040)
+
+Requirements: [§8.6](requirements.md#86-international-cards-and-multi-currency-phase-23). A merchant with international cards enabled charges cards in other currencies. The PSP converts to INR and settles in INR; the gateway records what the PSP converted, books both currencies and reconciles in INR.
+
+### 23.1 Merchant API and settings
+
+- **Setting** (admin, `PATCH /admin/v1/merchants/{id}`): `international_cards`, `true` or `false` (default), audited like the other settings.
+- **Create** `POST /v1/payments` with a `currency` other than INR:
+  - international cards off → 422 `unsupported_currency`;
+  - no PSP the merchant has an active account with charges cards in that currency → 422 `unsupported_currency`;
+  - an amount outside every such PSP's range, or not a multiple of its step → 400 `validation_error` on `amount`, naming the ranges.
+- INR keeps ₹1 to ₹10,00,000 (`amount` 100 to 100,000,000), now checked by the service with the same 400. The request schema allows 1 to 10<sup>12</sup>.
+- **Confirm:** only `card` is routable for such a payment (§23.2); any other method gets 422 `unsupported_payment_method`.
+- **Capture and refunds** are in the payment's currency. A partial capture and a refund must be multiples of the attempt's PSP's step for the currency, else 400 `validation_error`. Refunds stay limited to what was captured less refunds and disputes (FR-FX3).
+- **Responses:** payments, refunds and disputes gain `conversion`. It is null for INR, and for other currencies until the PSP reports it; then `{settled_amount, settled_currency: "INR", rate}`, with `rate` a decimal string, or null when the PSP gives none. A payment shows its capture's, a dispute its chargeback's. Webhook payloads carry the same objects.
+- The hosted checkout shows the amount in its currency and offers only card.
+
+### 23.2 Currencies, routing and risk
+
+- `ProviderCapabilities.foreignCurrencies`: currency → `CurrencySupport(minAmount, maxAmount, step)`, the currencies the PSP charges international cards in; empty by default. `currencies` stays the set every method takes (INR).
+- A PSP supports a payment in another currency when it lists the currency, the method is `card`, the amount is within `minAmount` and `maxAmount` and a multiple of `step`, and manual capture is allowed as for its cards. UPI, netbanking, wallets, EMI, bank transfers and mandates stay INR.
+- Routing rules on `amount` compare minor units of the payment's currency; a rule meant for rupees should also name `currency = INR`.
+- Risk: `AmountLimitRule` thresholds are in paise and apply to INR payments only. A payment in another currency is bounded by its PSPs' `maxAmount`. The other rules are unchanged.
+
+### 23.3 Conversions
+
+A **conversion** is what the PSP converted for one money movement of a payment in another currency: the foreign amount, the INR it settled, and its rate when given. Each is a row of `fx_conversions`, unique per kind and reference, recorded once and never changed.
+
+| Kind | Reference | Where the INR amount comes from |
+|---|---|---|
+| `CAPTURE` | attempt | the PSP's answer reporting the capture; else the settlement report's payment line |
+| `REFUND` | refund | the PSP's answer reporting the refund's success; else the report's refund line |
+| `CHARGEBACK` | dispute | the report's chargeback line |
+| `CHARGEBACK_REVERSAL` | dispute | the report's reversal line |
+
+- **Recording** runs under the payment's lock: in the transaction that applies the PSP's answer, or in one reconciliation opens. A capture is recorded for a succeeded attempt, from an answer whose amount matched; a later answer can supply a conversion still missing. A refund is recorded once it has succeeded.
+- **Carried amount:** the INR a refund or chargeback takes off its capture's conversion. With C the captured foreign amount, S its INR, and N the net foreign amount already recorded against the attempt (refunds and chargebacks, less reversals):
+
+  ```text
+  alloc(x)  = S × x / C, rounded half-even to the paisa
+  refund or chargeback of a:  carried = alloc(N + a) − alloc(N)
+  reversal of a:              carried = alloc(N) − alloc(N − a)
+  capture:                    carried = S
+  ```
+
+  The allocations telescope, so a payment refunded or charged back in full carries back exactly S.
+- A refund or chargeback can be recorded only after its capture's conversion, and a reversal only after its chargeback's. Otherwise a PSP answer's amount is not recorded, and reconciliation flags the line (§23.5).
+- The rate is stored as the PSP's decimal (`numeric`), and amounts use integers and `BigDecimal` only; nothing is computed in floating point (NFR-20).
+
+### 23.4 Ledger
+
+Movements of a foreign payment post in its currency, against `fx_conversion` instead of `psp_receivable`, which holds INR only:
+
+| Movement | Debit | Credit |
+|---|---|---|
+| Capture (`payment_captured`) | `fx_conversion` | `sales_clearing` |
+| Refund (`refund_succeeded`) | `refunds` | `fx_conversion` |
+| Chargeback (`chargeback`) | `chargebacks` | `fx_conversion` |
+| Reversal (`reversal`) | `fx_conversion` | `chargebacks` |
+
+Each conversion then posts its INR side as a transaction of type `fx_conversion`, reference `CONVERSION` and the conversion's id. S is the INR settled for that movement; the gain or loss is the difference between S and the carried amount, and a zero leg is left out.
+
+| Conversion | Debit (INR) | Credit (INR) |
+|---|---|---|
+| Capture | `psp_receivable` S | `fx_conversion` S |
+| Refund, chargeback | `fx_conversion` carried; `fx_gain_loss` the loss | `psp_receivable` S; `fx_gain_loss` the gain |
+| Reversal | `psp_receivable` S; `fx_gain_loss` the loss | `fx_conversion` carried; `fx_gain_loss` the gain |
+
+Example: a capture of USD 100.00 settled at ₹8,345.67; a refund of USD 40.00 for ₹3,400.00 carries ₹3,338.27 (loss ₹61.73); a refund of the remaining USD 60.00 for ₹4,990.00 carries ₹5,007.40 (gain ₹17.40). `fx_conversion` is back to zero in both currencies, and `psp_receivable` is ₹44.33 short, the net loss.
+
+- `fx_conversion` (normal side credit): in INR, the value booked for foreign sales still outstanding; in each foreign currency, minus the amount still outstanding.
+- `fx_gain_loss` (normal side credit): gains add, losses subtract.
+- Until a refund's INR is known, the ledger holds it in its currency only, and `psp_receivable` does not include it yet.
+- The database checks at commit that every ledger transaction balances in each currency it uses.
+
+### 23.5 Reconciliation
+
+Report lines are in INR, the payout currency. A line for an item charged in another currency also carries `charged`, the amount in that currency.
+
+- A line for a foreign item first compares `charged`, when given, with the item's amount. Then its INR amount is compared with the recorded conversion; a different amount is an `amount_mismatch`. If none is recorded, the line's amount is recorded (source `SETTLEMENT_REPORT`) and the line matches.
+- A line that cannot be valued because the conversion it depends on is unknown (§23.3) is flagged `conversion_missing`. Finance books it with a ledger adjustment (ADR-024).
+- Healing a foreign capture or refund uses the item's own amount; a chargeback known only from the report is recorded in the payment's currency.
+- The payout check adds the INR amounts.
+
+### 23.6 Provider SPI
+
+- `ProviderCapabilities.foreignCurrencies` with `CurrencySupport` (§23.2).
+- `Conversion(settled, rate)` in the shared model: the INR amount and the PSP's rate, or null. `ProviderPaymentResult.conversion` and `ProviderRefundResult.conversion`, null when not reported.
+- `SettlementReport.Line.charged`, null for INR items.
+
+### 23.7 Mock PSP
+
+- `MOCK_ALPHA` charges cards in USD, EUR and GBP (2 decimals), JPY (0) and KWD and BHD (3, step 10), from 100 to 1,000,000 minor units (KWD and BHD: 3,000,000). `MOCK_BETA` takes INR only.
+- Rates in rupees per unit: USD 83.25, EUR 90.10, GBP 105.40, JPY 0.5532, KWD 270.45, BHD 220.80. `POST /simulator/{provider}/fx-rates {currency, rate}` sets one, with the rate as a decimal string; `GET` lists them.
+- The mock converts at the current rate, rounding half-even to the paisa, when it captures, refunds, withholds a chargeback and returns it. Its answers and webhooks report the capture's and the refund's INR.
+- An amount ending in `06`, for a payment or a refund, leaves the INR out of the answers and webhooks, so only the settlement report gives it, as Razorpay does for refunds.
+- Report lines for foreign items have the INR amount, `charged` and the 2% fee on the INR amount. The amount anomaly changes a foreign line's INR amount.
+
+### 23.8 Razorpay mapping
+
+- `pg.providers.razorpay.foreign-currencies`: currency → the largest amount per payment in minor units; empty by default. Each is declared with a minimum of 100 and, for 3-decimal currencies, a step of 10. International payments must also be activated on the merchant's Razorpay account.
+- Payment Links, orders, captures and refunds pass the currency and amount as they are.
+- A payment entity in another currency gives `base_amount` (paise) with `base_currency: INR`: the capture's conversion, without a rate.
+- Refunds and disputes carry no INR amount; it comes from the settlement report.
+- A settlement recon item in another currency (an assumption, confirmed with sandbox keys, C1): `amount` and `currency` are what was charged; the INR amount is `credit + fee` for credits and `debit − fee` for debits, and the fee is `fee`.
+
+### 23.9 Schema (`V19__international_cards.sql`)
+
+- `merchants.international_cards` (boolean, default false).
+- `fx_conversions`: `id` (`fxc_…`), `merchant_id`, `provider_code`, `payment_id`, `attempt_id`, `kind`, `reference_id`, `amount`, `currency` (not INR), `settled_amount` (INR, > 0), `carried_amount` (≥ 0; equal to `settled_amount` for a capture, whose reference is its attempt), `rate` (numeric, > 0, nullable), `source` (`PSP` or `SETTLEMENT_REPORT`), `recorded_at`. Unique (`kind`, `reference_id`); index on `attempt_id`. Append-only: a trigger refuses `UPDATE` and `DELETE`, and the application role has neither.
+- Ledger: account types `FX_CONVERSION` and `FX_GAIN_LOSS`, transaction type `FX_CONVERSION`; `ledger_assert_balanced` checks each currency.
+- `reconciliation_lines.charged_amount` and `charged_currency`, both or neither; exception type `CONVERSION_MISSING`.
 
