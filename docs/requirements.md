@@ -183,8 +183,8 @@ The V2 scope accepted in [ADR-034](decisions/ADR-034-post-v1-scope.md), phased i
 - **FR-VA3** A credit to an expired virtual account is refunded to its source, or queued for review if that fails. A credit to an account the gateway cannot place is queued for review. Reconciliation matches credits against settlement reports (FR-RC2).
 
 ### 8.5 Dispute evidence (phase 22)
-- **FR-D2** A merchant submits evidence (documents and a statement) for an open dispute through the API, or accepts the dispute. The gateway forwards it to the PSP where the PSP supports it, and tracks the submission and the PSP's deadline.
-- **FR-D3** A `dispute.evidence_due` event and an operator alert fire 3 days before the deadline **(assumed)**. Evidence files are stored encrypted and kept as long as the dispute record (NFR-16).
+- **FR-D2** A merchant submits evidence (documents and a statement) for an open dispute through the API, or accepts the dispute. Evidence files are PDF, JPEG or PNG, each in an evidence category, up to 5 MB each and 10 per dispute **(assumed)**; the statement has up to 1,000 characters. There is one response per dispute, made while it is open and before the PSP's deadline; a response the PSP refuses can be replaced. The gateway forwards it to the PSP where the PSP supports it, retries until the deadline, and tracks the response's delivery and the PSP's deadline ([ADR-039](decisions/ADR-039-dispute-evidence.md)).
+- **FR-D3** A `dispute.evidence_due` event and an operator alert fire 3 days before the deadline **(assumed)** while no response is pending or sent. Evidence files are stored encrypted and kept as long as the dispute record (NFR-16): the application never deletes them.
 
 ### 8.6 International cards and multi-currency (phase 23)
 - **FR-FX1** A merchant can enable international cards and charge in the currencies its PSPs support; it is off by default. Amounts are integers in each currency's ISO 4217 minor unit (0, 2 or 3 decimals).

@@ -269,7 +269,7 @@ stateDiagram-v2
     UNDER_REVIEW --> LOST
 ```
 
-Ranks: `OPEN` 1, `UNDER_REVIEW` 2, `WON`/`LOST` 3. A lower-ranked report is stale and ignored. A contradicting final report is not applied and flags the dispute (`provider_conflict`). Opening posts the chargeback; winning posts its reversal. Refundable amount = captured − active refunds − disputes not won.
+Ranks: `OPEN` 1, `UNDER_REVIEW` 2, `WON`/`LOST` 3. A lower-ranked report is stale and ignored. A contradicting final report is not applied and flags the dispute (`provider_conflict`). Opening posts the chargeback; winning posts its reversal. Refundable amount = captured − active refunds − disputes not won. Merchants can contest or accept an open dispute through the API on PSPs that support it (§22).
 
 ## 4. Transaction boundaries and algorithms
 
@@ -1345,4 +1345,124 @@ When the applied credits reach the amount, the attempt succeeds with the amount 
 - `refunds.credit_id` references `transfer_credits`; `initiated_by` accepts `SYSTEM_CREDIT_RETURN`, which requires a `credit_id`.
 - `merchants.bank_transfer_credits` (`ADD_UP` or `EXACT`) and `merchants.bank_transfer_short_at_expiry` (`REFUND` or `ACCEPT`).
 - Ledger: account type `CUSTOMER_FUNDS`; transaction types `CREDIT_RECEIVED`, `CREDIT_APPLIED` and `CREDIT_RETURNED`; reference type `CREDIT`.
+
+## 22. Dispute evidence (phase 22, ADR-039)
+
+Requirements: [§8.5](requirements.md#85-dispute-evidence-phase-22). A merchant answers an open dispute through the API: it uploads evidence files, then contests the dispute with a statement and those files, or accepts it. The gateway delivers the answer to the PSP before the PSP's deadline (`respond_by`) and keeps the evidence with the dispute.
+
+### 22.1 Merchant API
+
+The POSTs take an `Idempotency-Key`. The dispute must be the merchant's (404 otherwise), and its PSP must declare dispute responses (422 `dispute_response_unsupported` otherwise).
+
+- **Upload** `POST /v1/disputes/{id}/evidence_files {category, file_name, content_type, content_base64}` → 201 with the evidence file `{id (dsf_…), object, dispute_id, category, file_name, content_type, size, sha256, created_at}`.
+  - `category`: `shipping_proof`, `billing_proof`, `cancellation_proof`, `customer_communication`, `proof_of_service`, `explanation_letter`, `refund_confirmation`, `access_activity_log`, `refund_cancellation_policy`, `terms_and_conditions` or `other`.
+  - `content_type`: `application/pdf`, `image/jpeg` or `image/png`. The decoded content must start with that format's signature (`%PDF-`; `FF D8 FF`; `89 50 4E 47 0D 0A 1A 0A`) and be 1 byte to 5 MB (`pg.disputes.evidence-max-file-bytes`). `file_name`: 1 to 255 characters, no path separators or control characters. Otherwise 400 `validation_error`.
+  - At most 10 files per dispute (`pg.disputes.evidence-max-files`), counted under the payment lock.
+  - Uploads are taken while a response could still be made (below); otherwise 409 `dispute_invalid_state`.
+  - This path accepts bodies up to 7 MB (`pg.api.max-evidence-request-body`); larger ones get 413 `payload_too_large`. Every other path keeps 256 KB.
+- **Contest** `POST /v1/disputes/{id}/contest {statement, evidence_file_ids}`: `statement` of 1 to 1,000 characters, and 1 to 10 distinct ids of this dispute's files.
+- **Accept** `POST /v1/disputes/{id}/accept`, without a body.
+- A response can be made while the dispute is `open`, `respond_by` (if known) has not passed, and no earlier response is `pending` or `sent`; otherwise 409 `dispute_invalid_state`. Contest and accept answer 200 with the dispute when the PSP took the response at once, else 202 with the response `pending`.
+- **Disputes** gain `evidence_files` (as above, oldest first) and `response`, null until the merchant responds: `{type: contest | accept, status: pending | sent | failed, statement, evidence_file_ids, requested_at, sent_at, failure_reason}`.
+- **Events:** `dispute.evidence_due` (§22.4) and `dispute.response_failed`, with the dispute as payload. A response that is sent shows in the usual events: `dispute.updated` (under review) or `dispute.lost`.
+
+### 22.2 Evidence storage
+
+- Each file is a `dispute_evidence_files` row. Its content is encrypted with AES-256-GCM under a random 256-bit key of its own (12-byte IV, the file id as associated data). That file key is stored encrypted by the data key ring (`SecretCipher`, context `dispute_evidence:<file id>`, ADR-025). The SHA-256 of the content is kept and shown to the merchant.
+- Content is decrypted only to send it to the PSP. No endpoint returns it.
+- Key rotation: `POST /admin/v1/security/data-keys/re-encrypt` re-wraps file keys still under an older data key, and `GET /admin/v1/security/data-keys` counts them per key. Files themselves are never re-encrypted.
+- The application never deletes evidence (ADR-015). Its database role has no `DELETE` on the table and may update only `provider_document_id` and `content_key_enc`.
+
+### 22.3 Responding and delivery
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING : contest or accept
+    PENDING --> SENT : the PSP took it
+    PENDING --> FAILED : refused, or deadline passed
+    FAILED --> PENDING : the merchant responds again
+```
+
+```text
+respond(merchant, disputeId, response):                -- contest or accept
+  tx1:
+    p = lockPayment(dispute.paymentId); d = dispute
+    require d.status == OPEN, respond_by not passed, d.response not PENDING or SENT
+    contest: 1..10 distinct files of d
+    d.requestResponse(type, statement, fileIds, now)     -- PENDING; next attempt = now + lease
+    save
+  deliver(d)
+
+deliver(d):                                            -- after commit, and by DisputeResponseJob
+  contest:
+    for each listed file without provider_document_id:
+      docId = provider.uploadDisputeEvidence(decrypted file)
+      tx: set provider_document_id = docId where it is still null
+    answer = provider.contestDispute(ref, statement, document ids by category)
+  accept:
+    answer = provider.acceptDispute(ref)
+  tx: lock p; d = dispute
+    ACCEPTED: d.responseSent(now); d.apply(answer.status, PROVIDER_RESPONSE)
+    REFUSED:  d.responseFailed(reason, now); review response_failed; event dispute.response_failed
+  timeout or PSP unavailable:
+    tx: lock p; respond_by passed ? responseFailed(deadline_passed) + review + event : retry later (backoff)
+```
+
+- **Retries:** `DisputeResponseJob` claims due `PENDING` responses with a lease (§10) every 10 s. The backoff (`pg.disputes.response-retry`) is 1 min, doubling to 30 min, until `respond_by`.
+- **A dispute that moved on:** when the PSP refuses because the dispute is no longer open, the adapter reports its current status. A contest counts as sent if that status is `under_review`, `won` or `lost`, and an acceptance if it is `lost`. Anything else fails the response with `dispute_already_<status>`. Either way the status is applied.
+- **Applying the PSP's answer:** statuses are applied as in §3.5 (ranks, conflicts), with source `PROVIDER_RESPONSE`. An acceptance leads to `lost` and `dispute.lost`, and posts nothing: the chargeback posted at opening stands (ADR-018).
+- **Metric:** `pg.disputes.responses{provider, type, outcome}` with outcome `sent` or `failed`, registered at zero.
+
+### 22.4 Deadline notice and alert
+
+- `DisputeDeadlineJob` runs every minute. It picks open disputes that:
+  - have `respond_by` within `pg.disputes.evidence-due-notice` (3 days) or already passed;
+  - have not been notified;
+  - have no response `pending` or `sent`.
+- It takes them in order of deadline, in batches of 100, until none is left. For each, under the payment lock and after checking again, it sets `evidence_due_notified_at` and sends `dispute.evidence_due` in the same transaction.
+- Gauge `pg.disputes.evidence_due`: the open disputes whose `respond_by` is within the window or passed, with no response `pending` or `sent`, notified or not. It is counted by its own query, not from the job's batches.
+- Alert `DisputeEvidenceDue`: `max(pg_disputes_evidence_due) > 0` for 30 minutes, ticket severity, runbook section of the same name.
+- `GET /admin/v1/disputes?evidence_due=true[&merchant_id=]` (permission `read`) lists those disputes, earliest deadline first, with their merchant.
+
+### 22.5 Provider SPI
+
+- `ProviderCapabilities.disputeResponses`, false by default.
+- `uploadDisputeEvidence(account, DisputeEvidenceUpload(disputeReference, fileId, fileName, contentType, content))` returns the PSP's document id.
+- `contestDispute(account, ContestDisputeRequest(disputeReference, statement, documents))`, with documents as (category, document id) pairs, and `acceptDispute(account, AcceptDisputeRequest(disputeReference))` return `ProviderDisputeResponse(outcome, dispute, failureCode, failureMessage)`. The outcome is `ACCEPTED` or `REFUSED`, and `dispute` is a `ProviderDisputeResult` with the PSP's status.
+- `ProviderClient` wraps the three calls like the others (circuit breaker, timeouts). Timeouts and unavailability are retried (§22.3).
+
+### 22.6 Mock PSP
+
+- `MOCK_ALPHA` declares dispute responses; `MOCK_BETA` does not.
+- The mock keeps each upload per dispute (name, type, size, SHA-256). A contest records the statement and the documents per category and moves the dispute to `under_review`; an acceptance moves it to `lost`. Both are refused after `respond_by` and once the dispute is not open, and a contest naming an unknown document is refused.
+- Scenarios by the dispute amount's last two digits (as in §5):
+  - `01`: the first contest or acceptance times out after the mock processed it.
+  - `05`: the first one times out and is not processed.
+  - `03`: the mock refuses the contest (`evidence_rejected`).
+- `GET /simulator/{provider}/disputes/{reference}` shows what the mock received: documents, contest and acceptance.
+
+### 22.7 Razorpay mapping
+
+- Razorpay declares dispute responses without a flag: the Disputes API is part of every account.
+- **Upload:** `POST /v1/documents` as multipart, with `file` and `purpose=dispute_evidence`, returns the document `id`. "Document upload already in progress" counts as unavailability and is retried.
+- **Contest:** `PATCH /v1/disputes/{id}/contest` with `summary` (the statement), the category lists and `action: submit`. `terms_and_conditions` is sent as `term_and_conditions`, and `other` as `others: [{type: "other", document_ids}]`.
+- **Accept:** `POST /v1/disputes/{id}/accept`.
+- **Refusals:** a 400 for a dispute no longer open is followed by `GET /v1/disputes/{id}` for its status (§22.3). "Deadline to respond has elapsed" is refused with `deadline_passed`. Other 400s are refused with Razorpay's description.
+
+### 22.8 Schema (`V18__dispute_evidence.sql`)
+
+- `disputes` gains:
+  - `response` (`CONTEST` or `ACCEPT`), `response_status` (`PENDING`, `SENT` or `FAILED`);
+  - `response_statement` (at most 1,000 characters) and `response_file_ids` (`text[]`);
+  - `response_requested_at`, `response_sent_at`, `response_failure`;
+  - `response_attempts`, `response_next_attempt_at`;
+  - `evidence_due_notified_at`.
+- Checks on `disputes`, written per status with `CASE` so that a NULL cannot pass:
+  - a response has a status, and a status a response;
+  - a contest has a statement and 1 to 10 files, and an acceptance has neither;
+  - `response_sent_at` is set exactly when `SENT`, and `response_failure` exactly when `FAILED`;
+  - `response_next_attempt_at` is set only while `PENDING`.
+- `dispute_evidence_files`: `id`, `dispute_id` (references `disputes`), `merchant_id`, `category`, `file_name`, `content_type`, `size_bytes`, `sha256`, `content_enc`, `content_key_enc`, `provider_document_id`, `created_at`. Checks: the category and type lists; `size_bytes > 0`; the ciphertext is exactly 28 bytes longer than the file (IV and tag). Index `(dispute_id, created_at)`.
+- Partial indexes: `disputes (response_next_attempt_at) WHERE response_status = 'PENDING'` and `disputes (respond_by) WHERE status = 'OPEN'`.
+- Grants (`afterMigrate.sql`): no `DELETE` on `dispute_evidence_files`, and `UPDATE` only of `provider_document_id` and `content_key_enc`.
 

@@ -130,6 +130,23 @@ No partial credit: the phase's 1.5 units count when all steps are done.
 | 8 | Tests: exact, short (refund and accept), excess, exact-only, late, repeated and unmatched credits end to end; polling; returns that fail; merchant refunds; ledger; reconciliation; database rules; mutation checks. Then commit and push on a green build | Done: 52 mutants, 51 killed and 1 equivalent: posting a credit's receipt again when it is saved later, which the ledger ignores (one transaction per reference and type). Listing the mutants first removed six redundant checks and added twelve test cases |
 | 9 | Docs: README, runbooks if an alert changes, progress and changelog | Done (no new alerts; the review-queue runbook covers the two new review reasons) |
 
+### Phase 22 steps
+
+No partial credit: the phase's unit counts when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-039](decisions/ADR-039-dispute-evidence.md), [LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039), [requirements §8.5](requirements.md#85-dispute-evidence-phase-22) refined | Done |
+| 2 | Schema V18 and domain: dispute responses, evidence files with per-file encryption, error codes | |
+| 3 | Merchant API and `openapi.yaml`: evidence upload, contest, accept, the dispute's `response` and `evidence_files`, two events; the upload path's body limit | |
+| 4 | Delivery ([§22.3](low-level-design.md#223-responding-and-delivery)): recorded first, sent after commit, retried until the deadline, review and event on failure | |
+| 5 | Deadline notice ([§22.4](low-level-design.md#224-deadline-notice-and-alert)): job, event, gauge, alert with runbook and promtool test, admin listing | |
+| 6 | Provider SPI, mock PSP and simulator ([§22.5](low-level-design.md#225-provider-spi), [§22.6](low-level-design.md#226-mock-psp)) | |
+| 7 | Razorpay documents, contest and accept ([§22.7](low-level-design.md#227-razorpay-mapping)) with stub tests | |
+| 8 | Data key rotation covers file keys ([§22.2](low-level-design.md#222-evidence-storage)) | |
+| 9 | Tests: contest and accept end to end on the mock PSP and the Razorpay stub; retries, refusals and the deadline; the notice; file checks; encryption at rest; contract; database rules; mutation checks. Then commit and push on a green build | |
+| 10 | Docs: README, runbooks, progress and changelog | |
+
 ## Changelog
 
 | Date | Change | Progress |
