@@ -9,7 +9,8 @@ RUN ./gradlew --no-daemon bootJar -x test && \
     java -Djarmode=tools -jar build/libs/payment-gateway-*.jar extract --layers --launcher --destination build/extracted
 
 FROM eclipse-temurin:25-jre
-RUN groupadd --system app && useradd --system --gid app --home /app app
+# The base image's Pebble service manager is never run here; dropping it keeps its Go runtime out of the image (ADR-033).
+RUN rm -f /usr/bin/pebble && groupadd --system app && useradd --system --gid app --home /app app
 WORKDIR /app
 # CA bundle for sslmode=verify-full against Aurora/RDS (ADR-026).
 ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /app/certs/rds-global-bundle.pem

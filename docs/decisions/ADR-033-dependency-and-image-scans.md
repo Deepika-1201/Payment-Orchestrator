@@ -31,4 +31,5 @@ The gateway parses untrusted JSON on every public endpoint, so the Jackson issue
 - The shipped jar has no known vulnerabilities at any severity (Trivy, 100 libraries), and the runtime base image has no fixable HIGH or CRITICAL ones.
 - The full test suite passes on Tomcat 11.0.26 and Jackson 3.1.7.
 - A newly published fix for a HIGH or CRITICAL vulnerability turns CI red until the dependency or the base image is bumped. That is intended.
+- When the newest base image still carries a flagged binary that the gateway never runs, the Dockerfile removes it instead. The first case was Ubuntu's Pebble service manager (`/usr/bin/pebble`, built with Go 1.26.7) on 2026-10-10; the container runs only `java`.
 - To check locally: `./gradlew bootJar` and `trivy rootfs --scanners vuln build/libs`.
