@@ -73,7 +73,7 @@ These items belong to the phases above but need access the project does not have
 | 21 | Bank transfers and virtual accounts | [§8.4](requirements.md#84-bank-transfers-and-virtual-accounts-phase-21) | — | 1.5 | An exact transfer pays the payment. Short, excess, repeated and unmatched credits follow the policy. Credits reconcile against settlement reports | Done: [ADR-038](decisions/ADR-038-bank-transfers.md), [LLD §21](low-level-design.md#21-bank-transfers-and-virtual-accounts-phase-21-adr-038), [steps](#phase-21-steps). Razorpay Smart Collect is behind `extra-methods`; its sandbox check needs keys, as C1 does |
 | 22 | Dispute evidence | [§8.5](requirements.md#85-dispute-evidence-phase-22) | — | 1 | Evidence reaches the PSP (mock and a real adapter's stub) before the deadline. An approaching deadline raises the event and the alert. Accepting a dispute books the loss | Done: [ADR-039](decisions/ADR-039-dispute-evidence.md), [LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039), [steps](#phase-22-steps). Razorpay's Documents and Disputes APIs; its sandbox check needs keys, as C1 does. Cashfree merchants keep answering on its dashboard |
 | 23 | International cards and multi-currency | [§8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) | — | 1.5 | Payments in 0-, 2- and 3-decimal currencies are created, captured and refunded in minor units (NFR-20). The ledger balances in both currencies with the FX difference booked. Reconciliation matches in INR | Done: [ADR-040](decisions/ADR-040-international-cards.md), [LLD §23](low-level-design.md#23-international-cards-and-multi-currency-phase-23-adr-040), [steps](#phase-23-steps). Mock PSP and Razorpay stub; real account settlement format remains C1 |
-| 24 | Cost-aware and adaptive routing | [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24) | — | 1 | In simulated traffic, `COST` picks the cheapest healthy PSP, and `ADAPTIVE` converges on the better success rate without ever routing to an unhealthy PSP. Shadow mode changes no route | |
+| 24 | Cost-aware and adaptive routing | [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24) | — | 1 | In simulated traffic, `COST` picks the cheapest healthy PSP, and `ADAPTIVE` converges on the better success rate without ever routing to an unhealthy PSP. Shadow mode changes no route | In progress: [ADR-041](decisions/ADR-041-cost-aware-adaptive-routing.md), [LLD §24](low-level-design.md#24-cost-aware-and-adaptive-routing-phase-24-adr-041), [steps](#phase-24-steps) |
 | 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | |
 | 26 | Aggregator mode I: onboarding | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA1, FR-PA2 | — | 1 | A merchant reaches aggregator mode only with complete KYC checks and a second operator's approval. Expired KYC stops new payments in that mode | |
 | 27 | Aggregator mode II: escrow and settlement | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA3, FR-PA4, FR-PA7 | 25, 26 | 2 | Each settlement batch equals captures minus refunds, chargebacks, fees with GST and reserve changes. Property tests over random event sequences keep the ledger balanced and the escrow invariant (NFR-17) | |
@@ -162,6 +162,20 @@ No partial credit: the phase's 1.5 units count when all steps are done.
 | 7 | Razorpay ([§23.8](low-level-design.md#238-razorpay-mapping)): configured currencies, `base_amount`, explicit INR recon rows and original dispute amounts; stub tests | Done |
 | 8 | Tests: payments in 0-, 2- and 3-decimal currencies created, captured and refunded end to end; rate moves with gains and losses; full refunds back to zero; chargebacks and reversals; reconciliation from the report; contract; database rules; mutation checks. Then commit and push on a green build | Done: 52 mutants, all killed. Three survivors strengthened independent schema checks and original-charge mismatch tests. Mutations ran in an isolated copy with source hashes verified |
 | 9 | Docs: README, progress and changelog | Done; the reconciliation runbook covers `conversion_missing` and ambiguous Razorpay report rows |
+
+### Phase 24 steps
+
+No partial credit: the phase's unit counts when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-041](decisions/ADR-041-cost-aware-adaptive-routing.md), [LLD §24](low-level-design.md#24-cost-aware-and-adaptive-routing-phase-24-adr-041) | Done |
+| 2 | Effective-dated PSP fee schedules, exact fee/tax arithmetic, admin API, schema V20 and database grants | |
+| 3 | Prediction windows by method/bank; COST ordering; ADAPTIVE posterior sampling with bounded exploration | |
+| 4 | Shadow strategy, deterministic preview, hosted-checkout preview separation, persisted decision history and retention | |
+| 5 | Settlement fee comparisons, mismatch exceptions and runbook | |
+| 6 | Unit/integration tests, simulated convergence, concurrency and shadow isolation, mutation checks; full build and CI | |
+| 7 | README, progress and changelog | |
 
 ## Changelog
 

@@ -1591,3 +1591,49 @@ Report lines are in INR, the payout currency. A line for an item charged in anot
 - Ledger: account types `FX_CONVERSION` and `FX_GAIN_LOSS`, transaction type `FX_CONVERSION`; `ledger_assert_balanced` checks each currency. A composite foreign key keeps every entry's currency equal to its account's currency.
 - `reconciliation_lines.charged_amount` and `charged_currency`, both or neither; exception type `CONVERSION_MISSING`.
 
+## 24. Cost-aware and adaptive routing (phase 24, ADR-041)
+
+Requirements: [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24). The capability and circuit filters still decide eligibility; new strategies only order the eligible targets of the first matching rule.
+
+### 24.1 Fee schedules
+
+- `POST /admin/v1/merchants/{id}/provider-accounts/{provider}/fee-schedules` (`finance_write`) publishes `{method, currency, fixed_amount, rate_bps, tax_bps, collection, effective_at}`. Amounts are minor units; basis points are integers from 0 to 10,000. Tax defaults to 1,800 basis points; collection is `withheld` (default) or `postpaid`.
+- `effective_at` defaults to now and cannot be backdated. The latest schedule effective at the requested time applies. Schedules are append-only, unique per merchant/provider/method/currency/effective timestamp, and audited. No edit or delete endpoint exists.
+- `GET` on the same collection lists that account's schedule history. The account must belong to the named merchant; disabled accounts retain their history.
+- Cost estimate: round `amount * rate_bps / 10000 + fixed_amount` half-up to a minor unit, then round tax on that fee separately. The estimate includes tax for both collection modes.
+
+### 24.2 Prediction and adaptive selection
+
+- `ProviderHealthTracker` gains prediction windows separate from technical health. Each retains 100 qualifying final outcomes by provider/method, plus provider/method/bank when a bank is known. Prediction includes issuer failures; existing technical health still excludes them. Customer, risk and validation failures are excluded from prediction.
+- A bank-specific window applies once it has 20 observations; otherwise use the method window. With successes S and failures F, the posterior is `Beta(19 + S, 1 + F)` and its mean is `(19 + S) / (20 + S + F)`.
+- `ADAPTIVE` normally orders by posterior mean. Every tenth live evaluation of that rule on an instance uses Beta samples instead; at most `floor(evaluations / 10)` exploration slots are consumed. An atomic counter protects concurrent calls. Apache Commons Statistics provides the Beta sampler.
+- Live and shadow samplers and counters are independent. Previews use posterior means and consume no counters or random draws. A restart resets prediction and exploration state to the declared prior.
+- Circuit-unavailable providers are excluded before both exploitation and exploration. Fallback providers still follow the existing `allow_fallback` policy.
+
+### 24.3 Cost selection and shadow rules
+
+- `RoutingStrategy` adds `COST` and `ADAPTIVE`. `COST` ranks the estimated fee divided by the posterior mean, using decimal arithmetic; estimates in one comparison share the payment's currency.
+- Missing schedules sort after priced candidates. When every target lacks a schedule, use existing health ordering with reason `missing_fee_schedule`.
+- A rule gains optional `shadow_strategy`, restricted to `COST` or `ADAPTIVE`. Its normal `strategy` remains the live choice. Both see the same eligible targets and fallback setting, but their evaluations share no random or exploration state.
+- `RoutingDecision` carries live and optional shadow evaluations: ordered providers, selection reason, exploration-slot flag and per-provider estimates. Existing rule and decision constructors remain available where practical.
+
+### 24.4 Preview and decision history
+
+- `RoutingEngine.preview` is read-only. Hosted checkout switches to it; opening a checkout must not train a model, consume an exploration slot or create history.
+- `POST /admin/v1/routing/preview` (`read`) accepts merchant, method, amount, currency, optional bank/UPI flow/method provider, capture method and whether a customer phone is known. It returns the live and shadow evaluation without an attempt or PSP call.
+- A real confirmation records its decision after persisting the new attempt, in the same transaction. History includes attempt and merchant ids, method/bank, rule, timestamp, live and shadow strategies, candidates, reasons and estimates. It contains no card or customer data.
+- `GET /admin/v1/routing-decisions?merchant_id=&limit=` lists recent decisions (default 100, maximum 500). The retention job removes history after 90 days in bounded batches; fee schedules are retained.
+
+### 24.5 Settlement fee checks
+
+- After a capture or bank-transfer credit matches, reconciliation finds the fee schedule effective at the report line's occurrence time and compares expected withholding with the actual PSP fee.
+- For another charge currency, compute the percentage on the reported settlement gross and allocate the fixed component by `fixed_amount * settled_gross / original_gross`. Round the base fee and tax in settlement minor units. This uses reported amounts, not an invented exchange rate.
+- Postpaid schedules expect zero withholding. No schedule means no comparison. A difference greater than one settlement minor unit opens `FEE_SCHEDULE_MISMATCH`, identifying the schedule and expected/actual fee.
+- This is a pricing exception, not an amount mismatch: the capture stays matched, the real fee is posted once, and payout matching still uses the real withheld fee. Replaying a window does not duplicate the open exception.
+
+### 24.6 Schema and checks
+
+`V20__cost_adaptive_routing.sql` adds `COST` and `ADAPTIVE` to routing rules, plus nullable `shadow_strategy`; creates append-only `provider_fee_schedules` referencing the merchant/provider account; creates `routing_decisions` with an attempt foreign key and retention index; and extends reconciliation exception types. The application role cannot update/delete fee schedules or update decision history.
+
+Tests cover exact fee/tax arithmetic and effective dates, per-bank prediction fallback, deterministic exploration bounds under concurrency, convergence in simulated traffic, circuit exclusion, missing-price behavior, preview purity, shadow isolation, atomic decision history, fee reconciliation including postpaid/foreign charges, retention and database grants. Mutation checks target these boundaries before the full build and CI gate.
+
