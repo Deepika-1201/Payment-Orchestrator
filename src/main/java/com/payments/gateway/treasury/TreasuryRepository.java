@@ -44,6 +44,66 @@ public class TreasuryRepository {
         }
     }
 
+    public boolean openException(String id, String merchantId, String type, String reference, String details, Instant now) {
+        return jdbc.sql("""
+                INSERT INTO treasury_exceptions (id, merchant_id, type, reference, details, status, created_at)
+                VALUES (:id, :merchant, :type, :reference, :details, 'OPEN', :now)
+                ON CONFLICT (type, reference) WHERE status = 'OPEN' DO NOTHING
+                """).param("id", id).param("merchant", merchantId).param("type", type).param("reference", reference)
+                .param("details", details).param("now", Sql.ts(now)).update() == 1;
+    }
+
+    public boolean hasOpenException(String merchantId) {
+        return jdbc.sql("""
+                SELECT EXISTS (SELECT 1 FROM treasury_exceptions WHERE status = 'OPEN' AND (merchant_id = :merchant OR merchant_id IS NULL))
+                """).param("merchant", merchantId).query(Boolean.class).single();
+    }
+
+    public void bankResult(Instant cutoff, boolean matched, Map<String, Long> holds) {
+        int changed = jdbc.sql("""
+                UPDATE treasury_control SET bank_cutoff = :cutoff, bank_mismatch = :mismatch
+                 WHERE id = 1 AND (bank_cutoff IS NULL OR bank_cutoff <= :cutoff)
+                """).param("cutoff", Sql.ts(cutoff)).param("mismatch", !matched).update();
+        if (changed > 0) {
+            jdbc.sql("DELETE FROM escrow_cash_holds").update();
+            holds.forEach((merchant, amount) -> jdbc.sql("INSERT INTO escrow_cash_holds (merchant_id, amount) VALUES (:merchant, :amount)")
+                    .param("merchant", merchant).param("amount", amount).update());
+        }
+    }
+
+    public boolean bankMismatch() {
+        return jdbc.sql("SELECT bank_mismatch FROM treasury_control WHERE id = 1").query(Boolean.class).single();
+    }
+
+    public List<TreasuryModel.ExceptionView> exceptions(String merchantId, String status) {
+        return jdbc.sql("""
+                SELECT * FROM treasury_exceptions WHERE (CAST(:merchant AS text) IS NULL OR merchant_id = :merchant)
+                    AND (CAST(:status AS text) IS NULL OR status = :status) ORDER BY created_at DESC, id DESC LIMIT 500
+                """).param("merchant", merchantId).param("status", status).query(TreasuryRepository::exception).list();
+    }
+
+    public Optional<TreasuryModel.ExceptionView> exception(String id) {
+        return jdbc.sql("SELECT * FROM treasury_exceptions WHERE id = :id").param("id", id).query(TreasuryRepository::exception).optional();
+    }
+
+    public boolean resolveException(String id, String actor, String reason, Instant now) {
+        return jdbc.sql("""
+                UPDATE treasury_exceptions SET status = 'RESOLVED', resolved_at = :now, resolved_by = :actor, resolution = :reason
+                 WHERE id = :id AND status = 'OPEN'
+                """).param("now", Sql.ts(now)).param("actor", actor).param("reason", reason).param("id", id).update() == 1;
+    }
+
+    public long countExceptions(String type) {
+        return jdbc.sql("SELECT count(*) FROM treasury_exceptions WHERE status = 'OPEN' AND type = :type")
+                .param("type", type).query(Long.class).single();
+    }
+
+    private static TreasuryModel.ExceptionView exception(ResultSet row, int index) throws SQLException {
+        return new TreasuryModel.ExceptionView(row.getString("id"), row.getString("merchant_id"), row.getString("type"), row.getString("reference"),
+                row.getString("details"), row.getString("status"), Sql.instant(row, "created_at"), Sql.instant(row, "resolved_at"),
+                row.getString("resolved_by"), row.getString("resolution"));
+    }
+
     public boolean movement(FundsMovement movement, Instant eligibleAt) {
         return jdbc.sql("""
                 INSERT INTO treasury_movements (kind, reference_id, merchant_id, provider_code, payment_id, amount,
@@ -127,7 +187,8 @@ public class TreasuryRepository {
         return new Balance(amounts.getOrDefault(LedgerAccountType.ESCROW, 0L), amounts.getOrDefault(LedgerAccountType.PSP_RECEIVABLE, 0L),
             amounts.getOrDefault(LedgerAccountType.MERCHANT_PAYABLE, 0L), amounts.getOrDefault(LedgerAccountType.RESERVE, 0L),
             amounts.getOrDefault(LedgerAccountType.SETTLEMENT_PAYABLE, 0L), amounts.getOrDefault(LedgerAccountType.CUSTOMER_FUNDS, 0L),
-            amounts.getOrDefault(LedgerAccountType.PLATFORM_FEE_INCOME, 0L), amounts.getOrDefault(LedgerAccountType.GST_PAYABLE, 0L));
+                amounts.getOrDefault(LedgerAccountType.PLATFORM_FEE_INCOME, 0L), amounts.getOrDefault(LedgerAccountType.GST_PAYABLE, 0L),
+                amounts.getOrDefault(LedgerAccountType.PLATFORM_FUNDING, 0L));
     }
 
             public Optional<PspFee> fee(String reference) {
@@ -192,17 +253,28 @@ public class TreasuryRepository {
 
             public long protectedCash(String merchantId) {
                 long protectedAmount = 0;
+                Map<String, Long> platform = new HashMap<>();
                 for (var row : ledger.bookBalances(TreasuryService.BOOK, merchantId)) {
                     if (!"INR".equals(row.currency())) {
                         continue;
                     }
+                    if (row.account() == LedgerAccountType.PLATFORM_FUNDING || row.account() == LedgerAccountType.PLATFORM_FEE_INCOME) {
+                        platform.merge(row.merchantId(), row.balance(), Math::addExact);
+                        continue;
+                    }
                     long amount = switch (row.account()) {
-                        case CUSTOMER_FUNDS, RESERVE, SETTLEMENT_PAYABLE, PLATFORM_FEE_INCOME, GST_PAYABLE -> Math.max(0, row.balance());
+                        case CUSTOMER_FUNDS, RESERVE, SETTLEMENT_PAYABLE, GST_PAYABLE -> Math.max(0, row.balance());
                         case PSP_RECEIVABLE -> Math.max(0, Math.negateExact(row.balance()));
                         default -> 0;
                     };
                     protectedAmount = Math.addExact(protectedAmount, amount);
                 }
+                for (long amount : platform.values()) {
+                    protectedAmount = Math.addExact(protectedAmount, Math.max(0, amount));
+                }
+                protectedAmount = Math.addExact(protectedAmount, jdbc.sql("""
+                    SELECT coalesce(sum(amount), 0) FROM escrow_cash_holds WHERE CAST(:merchant AS text) IS NULL OR merchant_id = :merchant
+                    """).param("merchant", merchantId).query(Long.class).single());
                 return protectedAmount;
             }
 

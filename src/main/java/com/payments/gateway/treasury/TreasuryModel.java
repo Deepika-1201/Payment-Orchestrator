@@ -41,7 +41,7 @@ public final class TreasuryModel {
     }
 
     public record Balance(long escrow, long pspReceivable, long merchantPayable, long reserve, long settlementPayable,
-                          long customerFunds, long platformFeeIncome, long gstPayable) {
+                          long customerFunds, long platformFeeIncome, long gstPayable, long platformFunding) {
         @com.fasterxml.jackson.annotation.JsonProperty("difference")
         public long difference() {
             long assets = Math.addExact(escrow, pspReceivable);
@@ -50,7 +50,12 @@ public final class TreasuryModel {
             claims = Math.addExact(claims, customerFunds);
             claims = Math.addExact(claims, platformFeeIncome);
             claims = Math.addExact(claims, gstPayable);
+            claims = Math.addExact(claims, platformFunding);
             return Math.subtractExact(assets, claims);
         }
+    }
+
+    public record ExceptionView(String id, String merchantId, String type, String reference, String details, String status,
+                                Instant createdAt, Instant resolvedAt, String resolvedBy, String resolution) {
     }
 }

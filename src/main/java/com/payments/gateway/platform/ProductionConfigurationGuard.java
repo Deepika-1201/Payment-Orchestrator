@@ -44,6 +44,18 @@ public class ProductionConfigurationGuard {
             && environment.getProperty("pg.aggregation.authorization-reference", "").isBlank()) {
             problems.add("pg.aggregation.authorization-reference must declare the production RBI authorization");
         }
+        if (environment.getProperty("pg.payouts.enabled", Boolean.class, false)) {
+            if (!environment.getProperty("pg.escrow.require-current-statement", Boolean.class, true)) {
+                problems.add("production payouts require current matched escrow bank statements");
+            }
+            if (!environment.getProperty("pg.aggregation.enabled", Boolean.class, false)) {
+                problems.add("production payouts require aggregator mode to be enabled");
+            }
+            if (!"RAZORPAYX".equals(environment.getProperty("pg.payouts.provider", "MOCK_PAYOUT"))
+                    || !environment.getProperty("pg.payouts.razorpay.enabled", Boolean.class, false)) {
+                problems.add("production payouts require the real RazorpayX adapter, never mock payouts");
+            }
+        }
         if (!problems.isEmpty()) {
             throw new IllegalStateException("Unsafe production configuration: " + String.join("; ", problems));
         }

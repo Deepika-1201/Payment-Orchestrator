@@ -74,6 +74,10 @@ public class MerchantDirectory {
         return onboarding.approvedDestination(merchantId);
     }
 
+    public KycDetails.BankAccount bankDestination(String merchantId, String kycId) {
+        return onboarding.bankDestination(merchantId, kycId);
+    }
+
     public boolean acceptsProviderScope(String merchantId, String providerCode, String scope) {
         return scope == null || scope.equals(merchantId) || repository.ownsProviderAccount(merchantId, providerCode, scope);
     }

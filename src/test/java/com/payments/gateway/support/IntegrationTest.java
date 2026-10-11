@@ -109,9 +109,11 @@ public abstract class IntegrationTest {
                          payment_transitions, idempotency_records, provider_webhook_events, merchant_events,
                          webhook_deliveries, routing_rules, audit_log, ledger_entries, ledger_transactions,
                          ledger_accounts, reconciliation_lines, reconciliation_exceptions, reconciliation_runs,
-                         checkout_sessions, mandates, mandate_debits, mandate_transitions, billing_series
+                         checkout_sessions, mandates, mandate_debits, mandate_transitions, billing_series,
+                         simulated_payouts, payout_webhook_inbox, treasury_exceptions, escrow_bank_statements
                          RESTART IDENTITY CASCADE
                 """).update();
+            jdbc.sql("UPDATE treasury_control SET bank_cutoff = NULL, bank_mismatch = false WHERE id = 1").update();
         clock.set(Instant.now());
         providerClient.resetCircuits();
         health.reset();

@@ -23,6 +23,16 @@ class ArchitectureTest {
             .should().onlyDependOnClassesThat().resideInAnyPackage("..provider.spi..", "..shared.model..", "java..");
 
     @ArchTest
+    static final ArchRule payoutSpiIsSelfContained = classes()
+            .that().resideInAPackage("..payout.spi..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage("..payout.spi..", "..shared.model..", "java..");
+
+    @ArchTest
+    static final ArchRule payoutAdaptersDoNotAccessBusinessPersistence = noClasses()
+            .that().resideInAPackage("..payout.razorpay..")
+            .should().dependOnClassesThat().resideInAnyPackage("..merchant..", "..payment..", "..billing..", "..treasury..", "..ledger..");
+
+    @ArchTest
     static final ArchRule providersReachMerchantAccountsOnlyThroughTheirOwnPort = noClasses()
             .that().resideInAPackage("..provider..")
             .should().dependOnClassesThat().resideInAnyPackage("..merchant..", "..payment..", "..routing..", "..webhook..",
@@ -33,7 +43,7 @@ class ArchitectureTest {
             .that().resideInAPackage("..shared..")
             .should().dependOnClassesThat().resideInAnyPackage("..payment..", "..merchant..", "..provider..", "..routing..",
                     "..risk..", "..webhook..", "..idempotency..", "..platform..", "..ledger..", "..reconciliation..",
-                    "..checkout..", "..billing..", "..treasury..");
+                    "..checkout..", "..billing..", "..treasury..", "..payout..");
 
     @ArchTest
     static final ArchRule treasuryUsesPublicPaymentApis = noClasses()

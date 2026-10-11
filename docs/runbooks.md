@@ -149,7 +149,7 @@ Open disputes are due within 3 days, or already overdue, and have no response pe
 
 ## Escrow and settlement
 
-- `GET $ADMIN/treasury/escrow` returns INR escrow cash, PSP receivables, merchant payable, reserve, settlement payable, customer funds, platform fee income and GST payable. `difference` must be zero: escrow plus receivables equals all claims. Receivables are in transit, not cash available for payout. `GET $ADMIN/merchants/{id}/treasury` shows the same book for one merchant.
+- `GET $ADMIN/treasury/escrow` returns INR escrow cash, PSP receivables, merchant payable, reserve, settlement payable, customer funds, platform fee income, GST payable and platform funding. `difference` must be zero: escrow plus receivables equals all claims, including platform funding. Receivables are in transit, not cash available for payout. `GET $ADMIN/merchants/{id}/treasury` shows the same book for one merchant.
 - Use dedicated platform PSP collection accounts with no previous business payments or mandates. After the owner is used for aggregation it cannot accept direct business payments. Credential links keep their original physical account id for recovery and signed webhooks.
 - Run PSP reconciliation for the collection owner, not each alias. A completed payout must have a fully matched set of source rows and an exact net total before any escrow receipt is booked. Equal-and-opposite unknown rows are still incomplete. Mismatched groups remain exceptions and hold settlement. Correct reports replay without duplicate cash or fee entries.
 - Matched virtual-account credits incur the PSP fee on their received amount, including excess or short credits later returned. That immutable commercial allocation does not change on replay. Fees on late/duplicate non-credit customer captures are borne by the platform; they do not consume protected customer funds or GST. Confirm this reference pricing policy contractually.
@@ -160,6 +160,86 @@ Open disputes are due within 3 days, or already overdue, and have no response pe
 - Reserves belong to one merchant. Negative payable uses that merchant's reserve, then remains negative until recovered from later receipts. Lowering a reserve target allows a reserve-only release; a zero-net fully reserved batch has no payout. Never cover another merchant's unsettled receivable with this merchant's cash.
 - The five-minute worker prepares, never approves, drafts. It pages past held merchants (`pg.treasury.batch-size`, default 100, maximum 1000), uses a per-day reference and does not reopen rejected documents. Manual same-day rebuilding requires a new reference. Resolve payment and reconciliation reviews before clearing policy holds.
 - The application role cannot rewrite account identities, source records, receipts, batch facts or approved decisions. Deferred checks require exact batch totals, maturity, claims and matching ledger postings for cash receipts and batch reservations/releases. Investigate a failed invariant as a money-safety incident; never disable the trigger to force a batch through.
+
+## Payouts and bank evidence
+
+Keep `pg.payouts.enabled=false` until escrow onboarding, beneficiary registration, statement delivery and the payout product have been reviewed. `pg.escrow.require-current-statement=true` is the default, including local deployments. Production refuses mock payouts or disabling this gate. An ordinary RazorpayX current account is not automatically a permitted PA escrow account.
+
+| Setting | Default / operational meaning |
+|---|---|
+| `pg.payouts.provider` | `MOCK_PAYOUT` in local/test; choose `RAZORPAYX` explicitly for the real adapter |
+| `pg.payouts.batch-size` | 100, maximum 1000 instructions or inbox entries per worker pass |
+| `pg.payouts.check-interval` | 1 minute; unresolved lookups back off up to 64 times this interval |
+| `pg.payouts.review-after` | 30 minutes from dispatch, or creation for an undispatched held queue |
+| `pg.escrow.account-reference` | `primary-escrow`, the alias of the single configured bank account |
+| `pg.escrow.statement-age-limit` | 36 hours, configurable from 1 to 48 hours |
+| `pg.payouts.razorpay.enabled` | false; separate opt-in for the real adapter |
+| `pg.payouts.razorpay.key-id`, `key-secret`, `webhook-secret`, `account-id`, `source-account` | Supply through secure deployment configuration; never tickets, logs or source control |
+
+RazorpayX requires `rzp_test_` credentials outside production and `rzp_live_` in production. Production pins `https://api.razorpay.com/v1`; connect/read timeouts default to 3/10 seconds, redirects are disabled. The source is the debit account, not a beneficiary. Register `/v1/webhooks/payouts/RAZORPAYX` with the configured signing secret/account. Sandbox/product activation, source-account permissions and IP allowlisting must be confirmed with the provider and bank.
+
+1. Complete collection reconciliation, publish the registered settlement policy, and independently approve the source-backed batch as described above. Import and reconcile current bank evidence before dispatch; approval alone is not permission to ignore a later cash or review hold.
+2. `POST $ADMIN/merchants/{merchant}/settlement-batches/{batch}/payout` creates or replays the instruction. The worker runs every 10 seconds. A queued instruction remains cancellable; `POST .../payouts/{payout}/cancel` releases its reservation once. Zero-value batches need no payout.
+3. Inspect `GET .../payouts/{payout}` and its `dispatched_at`, masked destination, provider reference and reason. Once dispatched, `POST .../{payout}/check` only queries status. Never reset the marker, alter the bank snapshot or create a replacement instruction for the same batch after an unknown/not-found result. Recovery continues when new payouts are disabled.
+4. A confirmed return restores principal and opens `PAYOUT_RETURNED`; investigate before preparing a new batch. `failed` without confirmed cash return remains reserved. Successful payouts are polled daily for 30 days from dispatch; signed webhooks and manual checks can report later reversals too.
+
+The local/test simulator uses the payout amount's final two digits: `01` is processed with an unknown response, `03` is a definite rejection, `04` stays pending, `05` is unknown before remote processing, and other suffixes succeed. `POST /simulator/payouts/{id}/outcome {"outcome":"returned","webhook":true}` delivers a signed reversal. Remote mock state is durable; neither mock component is available when `prod` is active.
+
+Import verified bank evidence with `POST $ADMIN/treasury/statements`. This is a normalized JSON interface, not a bank/SFTP connector. Use real bank entry ids and map them to retained internal receipt/payout ids; a PSP receipt id is the aggregate `erc_...`, without the per-merchant ledger suffix. The following shows the shape only, not evidence to upload:
+
+```json
+{
+   "reference": "bank-export-2026-10-10",
+   "account_reference": "primary-escrow",
+   "from": "2026-10-09T18:30:00Z",
+   "to": "2026-10-10T18:30:00Z",
+   "opening_balance": 0,
+   "closing_balance": 0,
+   "entries": [
+      {"bank_entry_id":"bank-credit-id","kind":"psp_receipt","reference_id":"erc_actual_receipt","amount":9800,"booked_at":"2026-10-10T06:00:00Z"},
+      {"bank_entry_id":"bank-debit-id","kind":"payout_debit","reference_id":"pout_actual_instruction","amount":-9800,"booked_at":"2026-10-10T08:00:00Z"}
+   ]
+}
+```
+
+- All amounts are signed INR paise; balances are nonnegative. The window is `[from,to)`, at most 31 days, ending no later than now, with at most 10000 entries. Opening plus entries must equal closing. Use `payout_return` for returned principal; bank-only items start as `unmatched`, not guessed fees.
+- Retrieve the immutable document with `GET .../statements/{id}`. Reusing a reference with changed facts is refused; a corrected export needs a new reference. A bank entry id still cannot change facts across exports. An already approved correction is reused for identical copied evidence, never posted again.
+- `POST .../statements/{id}/reconcile {"in_transit":[{"kind":"psp_receipt","reference_id":"erc_actual_receipt"}]}` declares only a known movement not yet on the statement. Its amount is derived from the book. Already cleared or duplicate references are refused; incoming cash in transit remains held per merchant and cannot fund payouts.
+- Later statements can clear earlier transit; delayed provider evidence can explain a bank debit before its ledger posting. Reconciliation retains every result, verifies opening continuity and individual entries, and does not accept equal-and-opposite errors merely because the net is zero. The newest statement cutoff controls the mismatch latch; rerunning older evidence cannot replace it.
+- A verified bank-only fee, fee reversal or permitted prefunding requires `POST $ADMIN/treasury/adjustments` with `reference`, `kind: bank_fee|fee_reversal|prefunding`, positive `amount`, `statement_id`, `bank_entry_id` and `reason`. It must exactly match a specific unmatched bank entry. Another finance operator posts `.../adjustments/{id}/approve`; `/reject` retains the refused document. Decisions and original evidence cannot be edited, and a bank entry can back only one correction record.
+- Bank fees debit platform fee income, fee reversals restore it, and prefunding credits protected `platform_funding`, not merchant payable. Rerun reconciliation after approval. Never use the generic shadow-ledger adjustment API to manufacture escrow evidence or merchant proceeds.
+- The monitor checks debt, unresolved age and evidence freshness every minute and rechecks the latest statement hourly with its retained transit list. `POST $ADMIN/treasury/exceptions/{id}/resolve {"reason":"documented investigation"}` acknowledges an exception only; it changes neither cash nor the bank-mismatch latch. Persistent conditions can reopen.
+
+### EscrowDiscrepancy
+The authoritative book invariant or latest bank evidence is inconsistent. Dispatch is held independently of exception acknowledgement.
+- Inspect `GET $ADMIN/treasury/escrow` and `GET $ADMIN/treasury/exceptions`; retrieve the referenced statement and its reconciliation issues. Check individual references, not only the net balance.
+- Reconcile with only known `in_transit` references. Positive cash in transit stays reserved per merchant and cannot fund a payout. A cleared reference cannot be reused as an offset.
+- Verify bank-only fees, fee reversals or permitted prefunding against the original statement. Request a typed escrow adjustment and obtain independent approval, then reconcile again. Never edit statement rows, payout amounts, source claims or ledger history.
+- Acknowledge the exception only after investigation. The cash-safety latch remains until valid bank evidence reconciles; a repeated unresolved condition reopens an exception.
+
+### EscrowStatementMissing
+The configured bank evidence is absent or older than `pg.escrow.statement-age-limit` (36 hours by default, maximum 48).
+- Restore the bank export/SFTP ingestion and import a normalized immutable statement for `pg.escrow.account-reference`. The application does not fabricate bank data or establish the bank feed.
+- New production payout dispatch requires a recent matched statement. Do not disable `require-current-statement` in production; the production guard rejects that configuration.
+- Confirm the closing balance and carry-forward opening balance. Resolve missing delivery operationally; an exception acknowledgement is not a bank statement.
+
+### NegativeMerchantBalance
+Refunds, chargebacks or fees exceed a merchant's receipts and remaining reserve.
+- Inspect the merchant treasury and frozen source/batch history. The merchant's own reserve is applied first; the remaining debt is recovered from later receipts.
+- Hold release until the debt and its cause are reviewed. Do not borrow another merchant's funds or rewrite an already approved batch.
+- Verify any top-up as permitted bank evidence and its correct platform/merchant treatment. Regulatory and contractual recovery obligations remain operational responsibilities.
+
+### PayoutUnresolved
+A held or dispatched payout is older than its review deadline (30 minutes by default).
+- Inspect `GET $ADMIN/merchants/{id}/payouts/{payout}`. `POST .../{payout}/check` performs status lookup, never a second create. Unknown/not-found results keep the reservation.
+- Compare the gateway reference, provider payout id and bank evidence. A crash after the durable dispatch marker but before HTTP can leave a not-found instruction; escalate to the provider rather than resetting the marker or issuing the same batch under another id.
+- A provider `failed` state may precede return of money. Release requires definite pre-processing rejection or confirmed return. Cancel only a queued instruction whose dispatch has not started.
+
+### PayoutReturned
+Confirmed payout principal returned and was credited back to merchant payable exactly once.
+- Inspect the provider and bank reason and revalidate the registered destination. The return opens a finance exception and does not automatically send another transfer.
+- Resolve the operational issue, acknowledge the exception and prepare a new source-backed batch. The original approved batch and payout instruction remain unchanged.
+- Late pending or success events cannot reverse the returned state. Separate current-account fee debits/reversals require their own bank evidence; they are not added blindly to the payout principal.
 
 ## Security
 

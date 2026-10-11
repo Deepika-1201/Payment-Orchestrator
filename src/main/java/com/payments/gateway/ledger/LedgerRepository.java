@@ -150,4 +150,19 @@ public class LedgerRepository {
                                 .query((row, index) -> new MerchantBalance(row.getString("merchant_id"), LedgerAccountType.valueOf(row.getString("type")),
                                                 row.getString("currency"), row.getLong("balance"))).list();
         }
+
+                    public List<LedgerModel.CashMovement> cashMovements(String book, Instant before) {
+                        return jdbc.sql("""
+                                SELECT posting.reference_type, posting.reference_id, posting.type, posting.merchant_id, posting.occurred_at,
+                                       sum(CASE WHEN entry.direction = 'DEBIT' THEN entry.amount ELSE -entry.amount END) AS amount
+                                  FROM ledger_transactions posting JOIN ledger_entries entry ON entry.transaction_id = posting.id
+                                  JOIN ledger_accounts account ON account.id = entry.account_id
+                                 WHERE posting.provider_code = :book AND account.type = 'ESCROW' AND entry.currency = 'INR'
+                                   AND posting.occurred_at < :before
+                                 GROUP BY posting.id, posting.reference_type, posting.reference_id, posting.type, posting.merchant_id, posting.occurred_at
+                                 ORDER BY posting.occurred_at, posting.id
+                                """).param("book", book).param("before", Sql.ts(before))
+                                .query((row, index) -> new LedgerModel.CashMovement(row.getString("reference_type"), row.getString("reference_id"),
+                                        LedgerTransactionType.valueOf(row.getString("type")), row.getString("merchant_id"), row.getLong("amount"), Sql.instant(row, "occurred_at"))).list();
+                    }
 }

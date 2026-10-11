@@ -17,7 +17,8 @@ public enum LedgerAccountType {
     RESERVE(EntryDirection.CREDIT),
     SETTLEMENT_PAYABLE(EntryDirection.CREDIT),
     PLATFORM_FEE_INCOME(EntryDirection.CREDIT),
-    GST_PAYABLE(EntryDirection.CREDIT);
+    GST_PAYABLE(EntryDirection.CREDIT),
+    PLATFORM_FUNDING(EntryDirection.CREDIT);
 
     private final EntryDirection normalSide;
 

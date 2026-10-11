@@ -8,6 +8,71 @@ group_eval_order:
   - payment-gateway-alerts
 
 tests:
+  - name: escrow and payout safety gauges page on the first nonzero observation
+    interval: 1m
+    input_series:
+      - series: 'pg_escrow_discrepancy'
+        values: '0 1 1'
+      - series: 'pg_escrow_statement_missing'
+        values: '0 1 1'
+      - series: 'pg_escrow_negative_merchants'
+        values: '0 1 1'
+      - series: 'pg_payouts_unresolved'
+        values: '0 1 1'
+      - series: 'pg_payouts_returned_open'
+        values: '0 1 1'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: EscrowDiscrepancy
+        exp_alerts: []
+      - eval_time: 0m
+        alertname: EscrowStatementMissing
+        exp_alerts: []
+      - eval_time: 0m
+        alertname: NegativeMerchantBalance
+        exp_alerts: []
+      - eval_time: 0m
+        alertname: PayoutUnresolved
+        exp_alerts: []
+      - eval_time: 0m
+        alertname: PayoutReturned
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: EscrowDiscrepancy
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: Escrow bank evidence or the authoritative book is inconsistent
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#escrowdiscrepancy
+      - eval_time: 1m
+        alertname: EscrowStatementMissing
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: Required escrow bank evidence is missing or stale
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#escrowstatementmissing
+      - eval_time: 1m
+        alertname: NegativeMerchantBalance
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: Merchant liabilities exceed its receipts and available reserve
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#negativemerchantbalance
+      - eval_time: 1m
+        alertname: PayoutUnresolved
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Payout instructions need investigation and must not be resent
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#payoutunresolved
+      - eval_time: 1m
+        alertname: PayoutReturned
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Returned payout funds await finance review
+              runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#payoutreturned
+
   - name: a period without a single 5xx records an error ratio of zero, not no data
     interval: 1m
     input_series:

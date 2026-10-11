@@ -178,6 +178,13 @@ public class OnboardingService {
         return new Approval(profile.collectionOwnerId(), profile.activeKycId());
     }
 
+    public KycDetails.BankAccount bankDestination(String merchantId, String kycId) {
+        Submission submission = repository.find(merchantId, kycId)
+                .filter(row -> "APPROVED".equals(row.status()))
+                .orElseThrow(() -> invalid("The payout destination requires an approved KYC version of this merchant"));
+        return details(submission).bankAccount();
+    }
+
     private KycDetails details(Submission submission) {
         String plaintext = cipher.decrypt(submission.detailsEncrypted(), OnboardingRepository.context(submission.id()));
         if (!MessageDigest.isEqual(Hashing.sha256(plaintext), submission.detailsHash())) {

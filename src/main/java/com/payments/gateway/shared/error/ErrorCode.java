@@ -25,6 +25,7 @@ public enum ErrorCode {
     ONBOARDING_INVALID_STATE(409, "Aggregator onboarding or collection is not allowed in the current state"),
     COLLECTION_LIMIT_EXCEEDED(422, "Merchant collection limit is exceeded"),
     SETTLEMENT_INVALID_STATE(409, "Settlement is held or not valid in its current state"),
+    PAYOUT_INVALID_STATE(409, "Payout operation is not valid in its current state"),
     IDEMPOTENCY_REQUEST_IN_PROGRESS(409, "A request with this Idempotency-Key is still in progress"),
     IDEMPOTENCY_KEY_REUSE(422, "Idempotency-Key was already used with a different request"),
     AMOUNT_EXCEEDS_REFUNDABLE(422, "Refund amount exceeds the refundable amount"),

@@ -57,6 +57,9 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
             assertThat(sql.executeUpdate("UPDATE aggregation_daily_volume SET used_amount = used_amount WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE treasury_control SET version = version + 1 WHERE id = 1")).isEqualTo(1);
             assertThat(sql.executeUpdate("UPDATE settlement_batches SET status = status WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE payout_instructions SET next_check_at = now() WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE payout_webhook_inbox SET next_check_at = now() WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE treasury_control SET bank_mismatch = false WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE dispute_evidence_files SET provider_document_id = 'doc_1', "
                     + "content_key_enc = content_key_enc WHERE false")).as("the two columns that may change").isZero();
         }
@@ -118,6 +121,19 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     "UPDATE settlement_source_claims SET batch_id = 'forged'",
                     "DELETE FROM treasury_control",
                     "INSERT INTO treasury_control (id, version) VALUES (1, 0)",
+                    "DELETE FROM payout_instructions",
+                    "UPDATE payout_instructions SET amount = amount + 1",
+                    "UPDATE payout_instructions SET instruction_hash = instruction_hash",
+                    "DELETE FROM payout_transitions",
+                    "DELETE FROM payout_webhook_inbox",
+                    "UPDATE payout_webhook_inbox SET event_hash = event_hash",
+                    "DELETE FROM escrow_bank_statements",
+                    "DELETE FROM escrow_bank_entries",
+                    "UPDATE escrow_reconciliation_results SET matched = true",
+                    "DELETE FROM treasury_exceptions",
+                    "UPDATE treasury_exceptions SET details = 'forged'",
+                    "DELETE FROM escrow_adjustments",
+                    "UPDATE escrow_adjustments SET amount = amount + 1",
                     "DELETE FROM payment_transitions",
                     "DELETE FROM dispute_evidence_files",
                     "UPDATE dispute_evidence_files SET content_enc = content_enc",

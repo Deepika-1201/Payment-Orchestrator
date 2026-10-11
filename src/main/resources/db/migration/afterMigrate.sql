@@ -38,6 +38,16 @@ BEGIN
     EXECUTE format('REVOKE UPDATE, DELETE ON settlement_batches, settlement_batch_items FROM %I', app);
     EXECUTE format('GRANT UPDATE (status, decided_by, decided_at, decision_reason) ON settlement_batches TO %I', app);
     EXECUTE format('REVOKE UPDATE ON settlement_source_claims FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON payout_instructions FROM %I', app);
+    EXECUTE format('GRANT UPDATE (instruction_enc, status, dispatched_at, provider_reference, bank_reference, reason, checks, next_check_at, updated_at) ON payout_instructions TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON payout_transitions, escrow_bank_statements, escrow_bank_entries, escrow_reconciliation_results FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON payout_webhook_inbox FROM %I', app);
+    EXECUTE format('GRANT UPDATE (event_enc, status, attempts, next_check_at) ON payout_webhook_inbox TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON treasury_exceptions FROM %I', app);
+    EXECUTE format('GRANT UPDATE (status, resolved_at, resolved_by, resolution) ON treasury_exceptions TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON escrow_adjustments FROM %I', app);
+    EXECUTE format('GRANT UPDATE (status, decided_by, decided_at) ON escrow_adjustments TO %I', app);
+    EXECUTE format('GRANT UPDATE (bank_cutoff, bank_mismatch) ON treasury_control TO %I', app);
     -- Evidence is kept with the dispute record (ADR-039): only the PSP's document id and the wrapped key may change.
     EXECUTE format('REVOKE UPDATE, DELETE ON dispute_evidence_files FROM %I', app);
     EXECUTE format('GRANT UPDATE (provider_document_id, content_key_enc) ON dispute_evidence_files TO %I', app);

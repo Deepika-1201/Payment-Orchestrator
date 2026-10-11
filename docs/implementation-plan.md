@@ -16,8 +16,8 @@ V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists it
 | Scope | Planned units | Done | Progress |
 |---|---|---|---|
 | V1 (phases 1–17) | 23 | 22 | 96% |
-| V2 (phases 18–28) | 15.5 | 14 | 90% |
-| **Project** | **38.5** | **36** | **94%** |
+| V2 (phases 18–28) | 15.5 | 15.5 | 100% |
+| **Project** | **38.5** | **37.5** | **97%** |
 
 *As of 2026-10-11.*
 
@@ -54,14 +54,14 @@ These items belong to the phases above but need access the project does not have
 
 | # | Item | Needs | Units | Exit criteria | Status |
 |---|---|---|---|---|---|
-| C1 | Razorpay and Cashfree sandbox runs | PSP test keys | 0.25 | The 6 sandbox contract tests, skipped without keys, pass | |
+| C1 | Razorpay and Cashfree sandbox runs | PSP test keys | 0.25 | The credential-gated sandbox contract tests pass | |
 | C2 | Terraform applied; region failover drill | An AWS account | 0.5 | `terraform apply` to an account and the app healthy in Mumbai; the [region failover runbook](runbooks.md#region-failover) completed within the 30 min RTO (NFR-5); then `terraform destroy` | |
 | C3 | Peak and spike load tests | C2 | 0.25 | The `peak` (1,000/s) and `spike` profiles pass their NFR-1/2 thresholds from a separate load generator | |
 
 **Go-live gates.** These carry no units because they are outside engineering:
 - an external penetration test;
 - legal confirmation of the 8-year retention (NFR-16);
-- for aggregator mode, an RBI Payment Aggregator authorization (FR-PA7).
+- for aggregator mode, an RBI Payment Aggregator authorization (FR-PA7), permitted escrow banking, registered destinations, verified statement delivery, payout-product credentials/IP allowlisting and tax/contract review. Stub tests do not certify any of these.
 
 ## V2 phases
 
@@ -77,11 +77,11 @@ These items belong to the phases above but need access the project does not have
 | 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | Done: [ADR-042](decisions/ADR-042-merchant-billing.md), [LLD §25](low-level-design.md#25-merchant-billing-phase-25-adr-042), [steps](#phase-25-steps). Production tax/legal approval remains a deployment requirement |
 | 26 | Aggregator mode I: onboarding | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA1, FR-PA2 | — | 1 | A merchant reaches aggregator mode only with complete KYC checks and a second operator's approval. Expired KYC stops new payments in that mode | Done: [ADR-043](decisions/ADR-043-aggregator-onboarding.md), [LLD §26](low-level-design.md#26-aggregator-onboarding-phase-26-adr-043), [steps](#phase-26-steps). Real verification and RBI authorization remain deployment gates |
 | 27 | Aggregator mode II: escrow and settlement | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA3, FR-PA4, FR-PA7 | 25, 26 | 2 | Each settlement batch equals captures minus refunds, chargebacks, fees with GST and reserve changes. Property tests over random event sequences keep the ledger balanced and the escrow invariant (NFR-17) | Done: [ADR-044](decisions/ADR-044-escrow-and-merchant-settlement.md), [LLD §27](low-level-design.md#27-authoritative-escrow-and-merchant-settlement-phase-27-adr-044), [steps](#phase-27-steps). Bank registration, calendar and contract review remain deployment requirements |
-| 28 | Aggregator mode III: payouts and escrow reconciliation | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA5, FR-PA6 | 27 | 1.5 | Each payout is sent once despite retries, timeouts and restarts (NFR-18). A returned payout credits the merchant back and raises an exception. A planted difference in the escrow statement raises an exception the same day | |
+| 28 | Aggregator mode III: payouts and escrow reconciliation | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA5, FR-PA6 | 27 | 1.5 | Each payout is sent once despite retries, timeouts and restarts (NFR-18). A returned payout credits the merchant back and raises an exception. A planted difference in the escrow statement raises an exception the same day | Done: [ADR-045](decisions/ADR-045-payouts-and-escrow-reconciliation.md), [LLD §28](low-level-design.md#28-payouts-and-escrow-reconciliation-phase-28-adr-045), [steps](#phase-28-steps). Real escrow, payout-product certification and the bank feed remain deployment gates |
 
 **Not planned:** a merchant dashboard UI, a card vault, direct acquirer integrations, ML-based fraud and multi-region active-active. [ADR-034](decisions/ADR-034-post-v1-scope.md) gives the reasons and when to revisit each. The scale-driven changes in [architecture §11](architecture.md#11-evolution-path) wait for their triggers and are not counted.
 
-**Order of work:** phase 28 next. C1 to C3 follow whenever their access arrives. Left: 2.5 units, 1.5 in V2 and 1 in the close-out.
+**Remaining work:** all V2 engineering phases are complete. C1 to C3 follow when their access arrives: 1 unit remains in external close-out. Production go-live approvals remain separate from engineering completion.
 
 ### Phase 18 steps
 
@@ -220,6 +220,21 @@ No partial credit: the phase's two units count when all steps are done.
 | 7 | Full suite, randomized invariants, deterministic concurrency, rollback and isolated mutation tests | Done: 560 tests, 7 sandbox skips; 65 targeted mutants caught. Five survivors strengthened independent source, cash, cursor and reason assertions |
 | 8 | API error contract, README, runbook, progress and implementation refinements | Done |
 
+### Phase 28 steps
+
+No partial credit: the phase's 1.5 units count when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-045](decisions/ADR-045-payouts-and-escrow-reconciliation.md), [LLD §28](low-level-design.md#28-payouts-and-escrow-reconciliation-phase-28-adr-045), current RBI/provider payout requirements reviewed | Done |
+| 2 | Payout SPI, encrypted immutable instructions, durable mock, dispatch marker, status-only recovery and monotone returns/releases | Done |
+| 3 | RazorpayX composite payout, stable idempotency/reference, source/destination validation, signed durable inbox and production guards | Done against HTTP stubs; real product onboarding and certification remain external |
+| 4 | Immutable normalized bank statements, pooled receipt matching, cross-window transit, per-merchant cash holds and current-statement dispatch gate | Done |
+| 5 | Reviewed bank fees, reversals and protected platform funding; immutable evidence, independent approval and deferred ledger proofs | Done |
+| 6 | Exception operations, debt/payout/bank monitoring, critical alerts, promtool fixtures and runbooks | Done |
+| 7 | Full suite, concurrency/crash recovery, encryption, database grants and isolated mutations | Done: 613 tests, zero failures, seven credential-gated skips; all 83 targeted mutations caught |
+| 8 | API error contract, operator examples, configuration/limitations, README and progress | Done |
+
 ## Changelog
 
 | Date | Change | Progress |
@@ -237,3 +252,4 @@ No partial credit: the phase's two units count when all steps are done.
 | 2026-10-11 | Phase 25 done ([ADR-042](decisions/ADR-042-merchant-billing.md)): prospective gateway pricing, immutable accepted service events, delayed FX and pricing blockers, chronological monthly invoices with minimum/GST allocation, financial-year numbering, bounded idempotent credit notes and hourly catch-up. Issuance uses a stable snapshot; late commits carry forward. Database checks protect document totals, assignment and cumulative credit tax, and reject adding lines after issue. Production GST and fee-legality review remain explicit deployment gates. 54 targeted mutants, all killed | 33 of 38.5 units (86%) |
 | 2026-10-11 | Phase 26 done ([ADR-043](decisions/ADR-043-aggregator-onboarding.md)): encrypted externally verified KYC, independent approval, immutable collection owner, linked platform credentials, masked history and rotation fingerprint, currency-specific business limits, transactional daily reservations and signed event scopes. Expired KYC blocks new collections without blocking existing capture/refund recovery. 57 targeted mutants, all killed; external verification and authorization remain deployment requirements | 34 of 38.5 units (88%) |
 | 2026-10-11 | Phase 27 done ([ADR-044](decisions/ADR-044-escrow-and-merchant-settlement.md)): authoritative escrow/receivable accounting, immutable source journals, customer entitlement, exact invoice/GST deductions, pooled PSP cash allocation, reserves and source-backed settlement batches with independent approval. Cash and holds are rechecked, rejection compensates and retains history, a bounded worker prepares drafts only, and deferred database checks require matching ledger proofs. Fixed documented lowercase KYC risk binding. 65 targeted mutants, all killed | 36 of 38.5 units (94%) |
+| 2026-10-11 | Phase 28 done ([ADR-045](decisions/ADR-045-payouts-and-escrow-reconciliation.md)): immutable send-once payout instructions, status-only recovery, RazorpayX contract, signed durable inbox, confirmed returns, normalized bank matching, protected transit cash, reviewed fee/prefund corrections and escrow alerts. Current bank evidence is required by default; bank discrepancies cannot be cleared by acknowledgement. 613 tests, seven credential-gated skips; 83 targeted mutations, all caught. V2 engineering is complete; C1-C3 and go-live approvals remain external | 37.5 of 38.5 units (97%) |

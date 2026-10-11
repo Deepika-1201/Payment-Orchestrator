@@ -226,6 +226,41 @@ groups:
         annotations:
           summary: Many admin requests were denied for missing permissions
           runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#adminaccessdeniedspike
+      - alert: EscrowDiscrepancy
+        expr: max(pg_escrow_discrepancy) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Escrow bank evidence or the authoritative book is inconsistent
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#escrowdiscrepancy
+      - alert: EscrowStatementMissing
+        expr: max(pg_escrow_statement_missing) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Required escrow bank evidence is missing or stale
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#escrowstatementmissing
+      - alert: NegativeMerchantBalance
+        expr: max(pg_escrow_negative_merchants) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Merchant liabilities exceed its receipts and available reserve
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#negativemerchantbalance
+      - alert: PayoutUnresolved
+        expr: max(pg_payouts_unresolved) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Payout instructions need investigation and must not be resent
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#payoutunresolved
+      - alert: PayoutReturned
+        expr: max(pg_payouts_returned_open) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Returned payout funds await finance review
+          runbook_url: https://github.com/Deepika-1201/Payment-Orchestrator/blob/main/docs/runbooks.md#payoutreturned
       - alert: RiskRuleErrors
         expr: sum by (rule) (increase(pg_risk_rule_errors_total[15m])) > 0
         labels:

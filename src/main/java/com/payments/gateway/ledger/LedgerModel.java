@@ -44,6 +44,10 @@ public final class LedgerModel {
     public record MerchantBalance(String merchantId, LedgerAccountType account, String currency, long balance) {
     }
 
+    public record CashMovement(String referenceType, String referenceId, LedgerTransactionType type, String merchantId,
+                               long amount, Instant occurredAt) {
+    }
+
     public record TransactionView(String id, LedgerTransactionType type, String providerCode, String referenceType,
                                   String referenceId, String description, Instant occurredAt, List<EntryView> entries) {
     }

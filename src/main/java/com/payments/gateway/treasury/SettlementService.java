@@ -173,17 +173,31 @@ public class SettlementService {
             throw invalid("The current verified destination has not been registered with the escrow bank");
         }
         if (!reviews.open(null, merchantId, 1).isEmpty() || !reviews.open(null, approval.ownerId(), 1).isEmpty()
-                || reconciliation.hasOpenExceptions(merchantId) || reconciliation.hasOpenExceptions(approval.ownerId())) {
+            || reconciliation.hasOpenExceptions(merchantId) || reconciliation.hasOpenExceptions(approval.ownerId())
+            || treasury.hasOpenException(merchantId)) {
             throw invalid("Unresolved payment or reconciliation review holds this settlement");
         }
         return policy;
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, noRollbackFor = GatewayException.class)
+    public void checkDispatch(String merchantId, String batchId) {
+        Batch batch = get(merchantId, batchId);
+        Policy policy = releasable(merchantId);
+        if (!"APPROVED".equals(batch.status()) || !batch.kycId().equals(policy.kycId()) || !batch.policyId().equals(policy.id())) {
+            throw invalid("Payout requires an approved batch with the current registered destination and policy");
+        }
+        if (repository.unclaimedNet(merchantId, clock.instant()) < 0) {
+            throw invalid("New debits have reduced the payout's eligible backing");
+        }
+        checkCash(merchantId, 0);
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void checkCash(String merchantId, long additional) {
         var global = repository.balance(null);
         var merchant = repository.balance(merchantId);
-        if (global.difference() != 0 || merchant.difference() != 0
+        if (repository.bankMismatch() || global.difference() != 0 || merchant.difference() != 0
                 || Math.subtractExact(global.escrow(), repository.protectedCash(null)) < additional
                 || Math.subtractExact(merchant.escrow(), repository.protectedCash(merchantId)) < additional) {
             throw invalid("Insufficient uncommitted escrow cash or an unbalanced authoritative book");

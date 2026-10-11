@@ -8,8 +8,11 @@ import com.payments.gateway.ledger.LedgerService;
 import com.payments.gateway.ledger.LedgerTransactionType;
 import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.shared.Ids;
+import com.payments.gateway.shared.audit.AuditLogger;
+import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.events.CurrencyConversion;
 import com.payments.gateway.shared.events.BillingDocumentIssued;
+import com.payments.gateway.shared.events.PayoutFundsMovement;
 import com.payments.gateway.shared.events.FundsMovement;
 import com.payments.gateway.shared.model.Money;
 import com.payments.gateway.treasury.TreasuryAmounts.Kind;
@@ -21,6 +24,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.HashMap;
 import java.time.Clock;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -36,14 +40,16 @@ public class TreasuryService {
     private final MerchantDirectory merchants;
     private final SettlementCalendar calendar;
     private final Clock clock;
+    private final AuditLogger audit;
 
     public TreasuryService(TreasuryRepository repository, LedgerService ledger, MerchantDirectory merchants,
-                           SettlementCalendar calendar, Clock clock) {
+                           SettlementCalendar calendar, Clock clock, AuditLogger audit) {
         this.repository = repository;
         this.ledger = ledger;
         this.merchants = merchants;
         this.calendar = calendar;
         this.clock = clock;
+        this.audit = audit;
     }
 
     @EventListener
@@ -97,6 +103,92 @@ public class TreasuryService {
             merchants.require(merchantId);
         }
         return repository.balance(merchantId);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void lock() {
+        repository.lock();
+    }
+
+    @Transactional
+    public void raiseException(String merchantId, String type, String reference, String details) {
+        repository.openException(Ids.newId("tex"), merchantId, type, reference, details, clock.instant());
+    }
+
+    public boolean hasOpenException(String merchantId) {
+        return repository.hasOpenException(merchantId);
+    }
+
+    public List<TreasuryModel.ExceptionView> exceptions(String merchantId, String status) {
+        String normalized = status == null ? null : status.toUpperCase(java.util.Locale.ROOT);
+        if (normalized != null && !List.of("OPEN", "RESOLVED").contains(normalized)) {
+            throw GatewayException.validation("status", "must be open or resolved");
+        }
+        return repository.exceptions(merchantId, normalized);
+    }
+
+    @Transactional
+    public TreasuryModel.ExceptionView resolveException(String id, String actor, String reason) {
+        if (reason == null || reason.isBlank() || reason.length() > 1000) {
+            throw GatewayException.validation("reason", "must contain 1-1000 characters");
+        }
+        repository.lock();
+        repository.exception(id).orElseThrow(() -> GatewayException.notFound("Treasury exception", id));
+        if (repository.resolveException(id, actor, reason, clock.instant())) {
+            audit.record("ADMIN", actor, "treasury_exception.resolved", "treasury_exception", id, Map.of("reason", reason));
+        }
+        return repository.exception(id).orElseThrow();
+    }
+
+    public long countExceptions(String type) {
+        return repository.countExceptions(type);
+    }
+
+    public Map<String, Long> negativeMerchants() {
+        Map<String, Long> negative = new HashMap<>();
+        for (var balance : ledger.bookBalances(BOOK, null)) {
+            if (balance.account() == LedgerAccountType.MERCHANT_PAYABLE && "INR".equals(balance.currency()) && balance.balance() < 0) {
+                negative.put(balance.merchantId(), balance.balance());
+            }
+        }
+        return Map.copyOf(negative);
+    }
+
+    public boolean bankMismatch() {
+        return repository.bankMismatch();
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void bankResult(Instant cutoff, boolean matched, Map<String, Long> holds) {
+        repository.bankResult(cutoff, matched, holds);
+    }
+
+    @EventListener
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void record(PayoutFundsMovement movement) {
+        repository.lock();
+        if (!movement.amount().inSettlementCurrency() || movement.amount().amount() <= 0) {
+            throw new IllegalArgumentException("Payout postings require a positive INR amount");
+        }
+        LedgerTransactionType type = switch (movement.type()) {
+            case PAID -> LedgerTransactionType.PAYOUT_SENT;
+            case RELEASED -> LedgerTransactionType.SETTLEMENT_RELEASED;
+            case RETURNED -> LedgerTransactionType.PAYOUT_RETURNED;
+        };
+        List<Leg> legs = switch (movement.type()) {
+            case PAID -> List.of(Leg.debit(LedgerAccountType.SETTLEMENT_PAYABLE, movement.amount()),
+                    Leg.credit(LedgerAccountType.ESCROW, movement.amount()));
+            case RELEASED -> List.of(Leg.debit(LedgerAccountType.SETTLEMENT_PAYABLE, movement.amount()),
+                    Leg.credit(LedgerAccountType.MERCHANT_PAYABLE, movement.amount()));
+            case RETURNED -> List.of(Leg.debit(LedgerAccountType.ESCROW, movement.amount()),
+                    Leg.credit(LedgerAccountType.MERCHANT_PAYABLE, movement.amount()));
+        };
+        if (ledger.post(new Posting(movement.merchantId(), BOOK, type, "PAYOUT", movement.payoutId(),
+                "Payout " + movement.type(), movement.occurredAt(), legs)) && movement.type() != PayoutFundsMovement.Type.PAID) {
+            repository.source(movement.merchantId(), BOOK, Kind.PAYOUT_RELEASED, movement.payoutId(), movement.amount().amount(),
+                    0, movement.occurredAt(), movement.occurredAt());
+            recoverReserve(movement.merchantId(), movement.occurredAt());
+        }
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–27 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, cost-aware/adaptive routing, merchant billing, independently approved aggregator onboarding, and authoritative escrow accounting with immutable settlement batches. V1 includes:
+> Status: every roadmap phase (1–28) is built and tested; the remaining validation needs PSP credentials or an AWS account (below). V2 includes recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, cost-aware/adaptive routing, merchant billing, independently approved aggregator onboarding, authoritative escrow accounting, immutable settlement batches, send-once payouts and bank reconciliation. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,9 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 94% done (36 of 38.5).
+> Aggregator go-live additionally requires a permitted escrow account, registered beneficiary accounts, a verified bank-statement feed, payout credentials/IP allowlisting, tax/legal review and RBI authorization. The software and stub tests do not supply or certify these.
+>
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units), V2 is 100% done (15.5 of 15.5), and the whole project is 97% done (37.5 of 38.5). Verification: 613 tests, zero failures, seven credential-gated skips; phase 28 caught all 83 targeted mutations.
 
 ## Documentation
 
@@ -154,6 +156,11 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `POST /admin/v1/merchants/{id}/settlement-policy` · `GET …/settlement-policy` | Versioned settlement delay, INR reserve target, explicit hold and bank-registration evidence bound to the approved destination |
 | `POST /admin/v1/merchants/{id}/settlement-batches` · `GET …/settlement-batches[/{batch}]` · `POST …/{batch}/approve` · `/reject` | Frozen source-backed drafts, independent approval and compensating rejection; a stable reference makes preparation replayable (ADR-044) |
 | `GET /admin/v1/merchants/{id}/treasury` · `GET /admin/v1/treasury/escrow` | Authoritative aggregator balances and the explicit escrow/receivable invariant |
+| `POST /admin/v1/merchants/{id}/settlement-batches/{batch}/payout` · `GET …/payouts[/{payout}]` · `POST …/payouts/{payout}/check` · `/cancel` | One immutable instruction per approved positive batch; status-only recovery and cancellation before dispatch (ADR-045) |
+| `POST /v1/webhooks/payouts/{provider}` | Signed payout evidence, encrypted durable inbox, monotone status and exact-once return accounting |
+| `POST /admin/v1/treasury/statements` · `GET …/statements/{statement}` · `POST …/{statement}/reconcile` | Immutable normalized bank evidence, individual movement matching and explicit known in-transit references |
+| `POST /admin/v1/treasury/adjustments` · `GET …/adjustments/{id}` · `POST …/{id}/approve` · `/reject` | Independently reviewed bank fees, fee reversals or permitted platform prefunding, each tied to a unique bank entry |
+| `GET /admin/v1/treasury/exceptions` · `POST …/exceptions/{id}/resolve` | Finance investigation and reasoned acknowledgement; resolution never edits money or clears a bank mismatch |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/ledger/adjustments` · `POST …/{id}/approve` · `/reject` | Manual ledger corrections: one operator requests, a different one approves (maker-checker, ADR-024) |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/assign` · `/resolve` · `GET …/reports/daily?date=` | Reconcile a merchant PSP account for a window; work the exception queue (owner, 48 h SLA, overdue filter); daily report per business day |
@@ -176,6 +183,8 @@ These are service-billing records, not certified production GST tax invoices. Ta
 Aggregator onboarding is disabled by default (`pg.aggregation.enabled=false`). Enable it with a `platform-merchant-id` whose collection PSP accounts are linked first; production also requires an `authorization-reference`. An unused business merchant submits KYC and a different finance operator approves it. Approval fixes its collection owner permanently; platform credentials are referenced, never copied. KYC expiry stops new payments, confirmations and scheduled debits, while existing refunds and outcomes remain recoverable. Per-currency transaction and daily-volume limits are approved with the KYC. `collections-enabled` is a separate opt-in; keep it false until the escrow and payout stages are ready. Software approval does not perform external KYC or grant RBI authorization. See [aggregator onboarding](docs/runbooks.md#aggregator-onboarding).
 
 Aggregator accounting distinguishes PSP receivables from actual escrow cash. Reconcile the platform collection account once; fully matched completed settlements allocate cash to its business merchants. Draft batches contain immutable sources and reserve only their merchant's settled cash, after maturity and protected balances. A second finance operator approves them; review holds and new debits can stop release. The worker prepares drafts only. T+1 business day, configured bank holidays, fee pass-through and reserve policies are contractual assumptions, not compliance certification. See [escrow and settlement](docs/runbooks.md#escrow-and-settlement).
+
+Payouts are off by default (`pg.payouts.enabled=false`). The local/test `MOCK_PAYOUT` provider and the opt-in `RAZORPAYX` adapter use frozen instructions; after the durable `dispatched_at` marker, every retry is a lookup, even when the provider says not found. A crash before the only HTTP send can therefore require manual investigation. Confirmed returns restore payable once and hold the next batch for review. New dispatch requires a matched bank statement no older than 36 hours by default; explained incoming cash in transit is still unavailable for payout. Production cannot disable that evidence gate or use the mock. See [payouts and bank evidence](docs/runbooks.md#payouts-and-bank-evidence) for configuration, imports, corrections and recovery.
 
 International cards are off by default. Enable a merchant with `PATCH /admin/v1/merchants/{id}` and `{"international_cards":true}`. Non-INR payments use cards only, with integer ISO 4217 minor units: JPY 1300 means JPY 1300, USD 1300 means USD 13.00, and KWD 1300 means KWD 1.300. Refunds stay in the original currency. Payments, refunds and disputes expose `conversion` once the PSP reports the INR amount; rates are exact decimal strings when supplied. The ledger balances each currency and books FX gains or losses (ADR-040).
 
@@ -297,8 +306,8 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 25 | Merchant billing (ADR-042): immutable plans and service events, monthly INR invoices with minimum/GST allocation, transactional financial-year numbering, bounded credit notes, delayed-FX blockers and hourly issuance | Done (production tax/legal review remains a deployment gate) |
 | 26 | Aggregator onboarding (ADR-043): encrypted KYC and bank details, independent approval, immutable collection ownership, linked platform credentials, signed event isolation, expiry and atomic business limits | Done (real verification and RBI authorization remain deployment gates) |
 | 27 | Escrow and settlement (ADR-044): authoritative INR journal, customer-fund protection, pooled PSP cash allocation, exact invoice/GST deductions, reserves, immutable independently approved source-backed batches and bounded draft worker | Done (bank registration, calendar and contracts require deployment review) |
+| 28 | Payouts and escrow reconciliation (ADR-045): durable send-once dispatch, status-only recovery, signed inbox, confirmed returns, RazorpayX adapter, immutable bank evidence, protected transit cash, reviewed corrections and critical alerts | Done (real escrow, payout credentials and bank feed remain deployment gates) |
 
-**Next: V2, phase 28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- Payment Aggregator mode: payouts, returned funds, bank reconciliation and critical escrow alerts.
+**Remaining: external close-out C1-C3.** Run the credential-gated PSP contracts, apply Terraform and complete the regional failover drill, then run the peak/spike profiles from a separate load generator. V2 has no remaining engineering phases. Production authorization and operational certification remain separate gates.
 
 The [implementation plan](docs/implementation-plan.md) gives each phase's exit criteria and size, and measures progress.

@@ -48,6 +48,21 @@ class ProductionConfigurationGuardTest {
     }
 
     @Test
+    void payoutsCannotUseMocksOrDisableTheBankEvidenceGateInProduction() {
+        MockEnvironment environment = new MockEnvironment().withProperty("spring.datasource.url",
+                "jdbc:postgresql://db.internal:5432/payments?sslmode=verify-full").withProperty("pg.payouts.enabled", "true");
+        Runnable start = () -> new ProductionConfigurationGuard(SECURE, environment,
+                new OutboundWebhookProperties(null, null, false, true), new RateLimitProperties(true, null, null),
+                new CheckoutProperties("https://pay.example.com", null, null));
+        assertThatThrownBy(start::run).hasMessageContaining("aggregator mode").hasMessageContaining("never mock payouts");
+        environment.withProperty("pg.aggregation.enabled", "true").withProperty("pg.aggregation.authorization-reference", "declared")
+                .withProperty("pg.payouts.provider", "RAZORPAYX").withProperty("pg.payouts.razorpay.enabled", "true");
+        assertThatCode(start::run).doesNotThrowAnyException();
+        environment.withProperty("pg.escrow.require-current-statement", "false");
+        assertThatThrownBy(start::run).hasMessageContaining("current matched escrow");
+    }
+
+    @Test
     void developmentSettingsStopTheStart() {
         SecurityProperties devKey = new SecurityProperties(List.of(), List.of(), null, "bG9jYWwtZGV2LWtleS0wMDAwMDAwMDAwMDAwMDAwMDA=",
                 null, null, SecurityProperties.ApiKeyMode.LIVE);
