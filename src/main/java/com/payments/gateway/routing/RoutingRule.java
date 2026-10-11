@@ -5,7 +5,8 @@ import java.util.List;
 
 public record RoutingRule(String id, String merchantId, String name, int priority, boolean enabled,
                           List<RuleCondition> conditions, RoutingStrategy strategy, List<Target> targets,
-                          boolean allowFallback, long version, Instant createdAt, Instant updatedAt) {
+                          boolean allowFallback, long version, Instant createdAt, Instant updatedAt,
+                          RoutingStrategy shadowStrategy) {
 
     public record Target(String provider, int weight) {
     }
@@ -13,6 +14,13 @@ public record RoutingRule(String id, String merchantId, String name, int priorit
     public RoutingRule {
         conditions = List.copyOf(conditions);
         targets = List.copyOf(targets);
+    }
+
+    public RoutingRule(String id, String merchantId, String name, int priority, boolean enabled,
+                       List<RuleCondition> conditions, RoutingStrategy strategy, List<Target> targets,
+                       boolean allowFallback, long version, Instant createdAt, Instant updatedAt) {
+        this(id, merchantId, name, priority, enabled, conditions, strategy, targets, allowFallback, version,
+                createdAt, updatedAt, null);
     }
 
     public boolean matches(RoutingContext context) {

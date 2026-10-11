@@ -17,6 +17,8 @@ import com.payments.gateway.provider.spi.ProviderRequests.SettlementReportQuery;
 import com.payments.gateway.provider.spi.SettlementReport;
 import com.payments.gateway.reconciliation.ReconciliationRepository.ExceptionRow;
 import com.payments.gateway.reconciliation.ReconciliationRepository.RunRow;
+import com.payments.gateway.routing.ProviderFeeSchedule;
+import com.payments.gateway.routing.ProviderFeeService;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.ErrorCode;
@@ -138,13 +140,14 @@ public class ReconciliationService {
     private final MerchantDirectory merchants;
     private final AuditLogger audit;
     private final ReconciliationProperties properties;
+    private final ProviderFeeService fees;
     private final Clock clock;
     private final MeterRegistry meters;
 
     public ReconciliationService(ReconciliationRepository repository, PaymentReconciliationService payments,
                                  LedgerService ledger, ProviderClient providerClient, ProviderRegistry providers,
                                  MerchantDirectory merchants, AuditLogger audit, ReconciliationProperties properties,
-                                 Clock clock, MeterRegistry meters) {
+                                 ProviderFeeService fees, Clock clock, MeterRegistry meters) {
         this.repository = repository;
         this.payments = payments;
         this.ledger = ledger;
@@ -153,6 +156,7 @@ public class ReconciliationService {
         this.merchants = merchants;
         this.audit = audit;
         this.properties = properties;
+        this.fees = fees;
         this.clock = clock;
         this.meters = meters;
         Gauge.builder("pg.reconciliation.exceptions.open", repository, r -> r.countOpenExceptions(null))
@@ -397,6 +401,25 @@ public class ReconciliationService {
             if (fee > 0) {
                 postFee(run, line);
             }
+            checkFeeSchedule(run, line, outcome.item());
+        }
+    }
+
+    private void checkFeeSchedule(RunContext run, SettlementReport.Line line, InternalItem item) {
+        if (line.type() != SettlementReport.LineType.PAYMENT || item.method() == null || line.occurredAt() == null) {
+            return;
+        }
+        ProviderFeeSchedule schedule = fees.effective(run.merchantId, List.of(run.provider), item.method(),
+                item.amount().currency(), line.occurredAt()).get(run.provider);
+        if (schedule == null) {
+            return;
+        }
+        long expected = schedule.expectedWithheld(item.amount(), line.amount()).amount();
+        long actual = line.fee() == null ? 0 : line.fee().amount();
+        if (Math.abs(expected - actual) > 1) {
+            run.open("FEE_SCHEDULE_MISMATCH", line.lineId(), item.entityId(), expected, actual,
+                    "Withholding differs from fee schedule " + schedule.id() + " (" + schedule.collection()
+                            + ", effective " + schedule.effectiveAt() + "); amounts in " + line.amount().currency());
         }
     }
 

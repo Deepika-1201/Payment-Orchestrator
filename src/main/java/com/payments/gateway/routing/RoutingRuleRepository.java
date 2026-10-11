@@ -39,9 +39,9 @@ public class RoutingRuleRepository {
     public void insert(RoutingRule rule) {
         jdbc.sql("""
                 INSERT INTO routing_rules (id, merchant_id, name, priority, enabled, conditions, strategy, targets,
-                                           allow_fallback, version, created_at, updated_at)
+                               allow_fallback, version, created_at, updated_at, shadow_strategy)
                 VALUES (:id, :merchantId, :name, :priority, :enabled, CAST(:conditions AS jsonb), :strategy,
-                        CAST(:targets AS jsonb), :allowFallback, 0, :createdAt, :updatedAt)
+                    CAST(:targets AS jsonb), :allowFallback, 0, :createdAt, :updatedAt, :shadowStrategy)
                 """)
                 .params(params(rule))
                 .update();
@@ -52,7 +52,8 @@ public class RoutingRuleRepository {
                 UPDATE routing_rules
                    SET merchant_id = :merchantId, name = :name, priority = :priority, enabled = :enabled,
                        conditions = CAST(:conditions AS jsonb), strategy = :strategy, targets = CAST(:targets AS jsonb),
-                       allow_fallback = :allowFallback, version = version + 1, updated_at = :updatedAt
+                       allow_fallback = :allowFallback, version = version + 1, updated_at = :updatedAt,
+                       shadow_strategy = :shadowStrategy
                  WHERE id = :id AND version = :version
                 """)
                 .params(params(rule))
@@ -69,6 +70,7 @@ public class RoutingRuleRepository {
         params.put("enabled", rule.enabled());
         params.put("conditions", json.write(rule.conditions()));
         params.put("strategy", rule.strategy().name());
+        params.put("shadowStrategy", rule.shadowStrategy() == null ? null : rule.shadowStrategy().name());
         params.put("targets", json.write(rule.targets()));
         params.put("allowFallback", rule.allowFallback());
         params.put("createdAt", Sql.ts(rule.createdAt()));
@@ -89,6 +91,7 @@ public class RoutingRuleRepository {
                 rs.getBoolean("allow_fallback"),
                 rs.getLong("version"),
                 Sql.instant(rs, "created_at"),
-                Sql.instant(rs, "updated_at"));
+                Sql.instant(rs, "updated_at"),
+                rs.getString("shadow_strategy") == null ? null : RoutingStrategy.valueOf(rs.getString("shadow_strategy")));
     }
 }

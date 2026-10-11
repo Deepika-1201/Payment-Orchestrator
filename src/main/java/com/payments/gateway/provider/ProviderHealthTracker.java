@@ -20,7 +20,26 @@ public class ProviderHealthTracker {
     private static final double EWMA_ALPHA = 0.2;
 
     private final ConcurrentMap<String, OutcomeWindow> outcomes = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, OutcomeWindow> predictions = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Ewma> latencies = new ConcurrentHashMap<>();
+
+    public record Prediction(int successes, int failures, boolean bankSpecific) {
+        public int samples() {
+            return successes + failures;
+        }
+
+        public double alpha() {
+            return 19.0 + successes;
+        }
+
+        public double beta() {
+            return 1.0 + failures;
+        }
+
+        public double mean() {
+            return alpha() / (alpha() + beta());
+        }
+    }
 
     public void recordLatency(String provider, Duration duration) {
         latencies.computeIfAbsent(provider, key -> new Ewma()).add(duration.toNanos() / 1_000_000.0);
@@ -28,10 +47,35 @@ public class ProviderHealthTracker {
 
     /** Customer- and issuer-caused failures are ignored so they do not penalize the provider. */
     public void recordAttemptOutcome(String provider, MethodType method, boolean success, FailureCategory failure) {
+        recordAttemptOutcome(provider, method, null, success, failure);
+    }
+
+    public void recordAttemptOutcome(String provider, MethodType method, String bank, boolean success, FailureCategory failure) {
+        String key = provider + "|" + method;
+        if (success || failure == FailureCategory.ISSUER || failure == FailureCategory.NOT_SUBMITTED
+                || (failure != null && failure.countsAgainstProvider())) {
+            predictions.computeIfAbsent(key, ignored -> new OutcomeWindow()).add(success);
+            if (bank != null) {
+                predictions.computeIfAbsent(key + "|" + bank, ignored -> new OutcomeWindow()).add(success);
+            }
+        }
         if (!success && (failure == null || !failure.countsAgainstProvider())) {
             return;
         }
-        outcomes.computeIfAbsent(provider + "|" + method, key -> new OutcomeWindow()).add(success);
+        outcomes.computeIfAbsent(key, ignored -> new OutcomeWindow()).add(success);
+    }
+
+    public Prediction prediction(String provider, MethodType method, String bank) {
+        String key = provider + "|" + method;
+        OutcomeWindow bankWindow = bank == null ? null : predictions.get(key + "|" + bank);
+        if (bankWindow != null) {
+            Prediction specific = bankWindow.prediction(true);
+            if (specific.samples() >= MIN_SAMPLES) {
+                return specific;
+            }
+        }
+        OutcomeWindow window = predictions.get(key);
+        return window == null ? new Prediction(0, 0, false) : window.prediction(false);
     }
 
     public double successRate(String provider, MethodType method) {
@@ -58,6 +102,7 @@ public class ProviderHealthTracker {
 
     public void reset() {
         outcomes.clear();
+        predictions.clear();
         latencies.clear();
     }
 
@@ -88,6 +133,10 @@ public class ProviderHealthTracker {
 
         synchronized int size() {
             return size;
+        }
+
+        synchronized Prediction prediction(boolean bankSpecific) {
+            return new Prediction(successes, size - successes, bankSpecific);
         }
     }
 

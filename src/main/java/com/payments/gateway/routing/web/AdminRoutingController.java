@@ -1,11 +1,18 @@
 package com.payments.gateway.routing.web;
 
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.merchant.web.AdminAuthFilter;
 import com.payments.gateway.provider.ProviderClient;
 import com.payments.gateway.provider.ProviderHealthTracker;
 import com.payments.gateway.provider.ProviderRegistry;
 import com.payments.gateway.provider.spi.PaymentProvider;
 import com.payments.gateway.routing.RoutingRule;
+import com.payments.gateway.routing.RoutingContext;
+import com.payments.gateway.routing.RoutingDecision;
+import com.payments.gateway.routing.RoutingDecisionRepository;
+import com.payments.gateway.routing.RoutingEngine;
+import com.payments.gateway.routing.ProviderFeeSchedule;
+import com.payments.gateway.routing.ProviderFeeService;
 import com.payments.gateway.routing.RoutingRuleCache;
 import com.payments.gateway.routing.RoutingRuleRepository;
 import com.payments.gateway.routing.RoutingStrategy;
@@ -14,6 +21,11 @@ import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.audit.AuditLogger;
 import com.payments.gateway.shared.error.ErrorCode;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.model.MethodType;
+import com.payments.gateway.shared.model.CaptureMethod;
+import com.payments.gateway.shared.model.Money;
+import com.payments.gateway.shared.model.PaymentMethod;
+import com.payments.gateway.shared.model.UpiFlow;
 import com.payments.gateway.shared.web.AdminPermission;
 import com.payments.gateway.shared.web.RequiresAdmin;
 import com.payments.gateway.shared.web.WireEnums;
@@ -23,6 +35,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.time.Clock;
 import java.time.Instant;
@@ -37,6 +50,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -53,13 +67,27 @@ public class AdminRoutingController {
             @NotBlank String strategy,
             @NotEmpty @Size(max = 10) List<@Valid TargetRequest> targets,
             Boolean allowFallback,
-            Long version) {
+            Long version,
+            String shadowStrategy) {
     }
 
     public record ConditionRequest(@NotBlank String field, @NotBlank String op, @NotNull Object value) {
     }
 
     public record TargetRequest(@NotBlank String provider, @Min(0) @Max(10_000) Integer weight) {
+    }
+
+    public record FeeScheduleRequest(@NotBlank String method, @NotBlank @Pattern(regexp = "[A-Z]{3}") String currency,
+                                     @NotNull @Min(0) @Max(1_000_000_000_000L) Long fixedAmount,
+                                     @Min(0) @Max(10_000) Integer rateBps, @Min(0) @Max(10_000) Integer taxBps,
+                                     String collection, Instant effectiveAt) {
+    }
+
+    public record PreviewRequest(@NotBlank String merchantId, @NotBlank String method,
+                                  @NotNull @Min(1) @Max(1_000_000_000_000L) Long amount,
+                                  @NotBlank @Pattern(regexp = "[A-Z]{3}") String currency,
+                                  String upiFlow, String bankCode, String methodProvider,
+                                  String captureMethod, Boolean customerPhoneKnown) {
     }
 
     private final RoutingRuleRepository repository;
@@ -69,9 +97,15 @@ public class AdminRoutingController {
     private final ProviderHealthTracker health;
     private final AuditLogger audit;
     private final Clock clock;
+    private final ProviderFeeService fees;
+    private final RoutingEngine routing;
+    private final RoutingDecisionRepository decisions;
+    private final MerchantDirectory merchants;
 
     public AdminRoutingController(RoutingRuleRepository repository, RoutingRuleCache cache, ProviderRegistry registry,
-                                  ProviderClient providerClient, ProviderHealthTracker health, AuditLogger audit, Clock clock) {
+                                  ProviderClient providerClient, ProviderHealthTracker health, AuditLogger audit, Clock clock,
+                                  ProviderFeeService fees, RoutingEngine routing, RoutingDecisionRepository decisions,
+                                  MerchantDirectory merchants) {
         this.repository = repository;
         this.cache = cache;
         this.registry = registry;
@@ -79,6 +113,57 @@ public class AdminRoutingController {
         this.health = health;
         this.audit = audit;
         this.clock = clock;
+        this.fees = fees;
+        this.routing = routing;
+        this.decisions = decisions;
+        this.merchants = merchants;
+    }
+
+    @PostMapping("/merchants/{id}/provider-accounts/{provider}/fee-schedules")
+    @RequiresAdmin(AdminPermission.FINANCE_WRITE)
+    @ResponseStatus(HttpStatus.CREATED)
+    public ProviderFeeSchedule publishFee(@RequestAttribute(AdminAuthFilter.ACTOR_ATTRIBUTE) String actor,
+                                           @PathVariable String id, @PathVariable String provider,
+                                           @Valid @RequestBody FeeScheduleRequest request) {
+        return fees.publish(id, provider, new ProviderFeeService.PublishCommand(
+                WireEnums.parse(MethodType.class, request.method(), "method"), request.currency(), request.fixedAmount(),
+                request.rateBps() == null ? 0 : request.rateBps(), request.taxBps() == null ? 1800 : request.taxBps(),
+                request.collection() == null ? ProviderFeeSchedule.Collection.WITHHELD
+                        : WireEnums.parse(ProviderFeeSchedule.Collection.class, request.collection(), "collection"),
+                request.effectiveAt()), actor);
+    }
+
+    @GetMapping("/merchants/{id}/provider-accounts/{provider}/fee-schedules")
+    public Map<String, Object> feeHistory(@PathVariable String id, @PathVariable String provider) {
+        return Map.of("data", fees.history(id, provider));
+    }
+
+    @PostMapping("/routing/preview")
+    @RequiresAdmin(AdminPermission.READ)
+    public RoutingDecision preview(@Valid @RequestBody PreviewRequest request) {
+        merchants.require(request.merchantId());
+        MethodType type = WireEnums.parse(MethodType.class, request.method(), "method");
+        if (type == MethodType.MANDATE) {
+            throw GatewayException.validation("method", "mandates are not routed");
+        }
+        UpiFlow flow = type == MethodType.UPI ? request.upiFlow() == null ? UpiFlow.INTENT
+                : WireEnums.parse(UpiFlow.class, request.upiFlow(), "upi_flow") : null;
+        PaymentMethod method = new PaymentMethod(type, flow, flow == UpiFlow.COLLECT ? "preview@routing" : null,
+                request.bankCode(), null, request.methodProvider());
+        CaptureMethod capture = request.captureMethod() == null ? CaptureMethod.AUTOMATIC
+                : WireEnums.parse(CaptureMethod.class, request.captureMethod(), "capture_method");
+        return routing.preview(new RoutingContext(request.merchantId(), method, Money.of(request.amount(), request.currency()),
+                capture, merchants.activeProviders(request.merchantId()), Boolean.TRUE.equals(request.customerPhoneKnown())));
+    }
+
+    @GetMapping("/routing-decisions")
+    public Map<String, Object> decisions(@RequestParam("merchant_id") String merchantId,
+                                         @RequestParam(defaultValue = "100") int limit) {
+        merchants.require(merchantId);
+        if (limit < 1 || limit > 500) {
+            throw GatewayException.validation("limit", "must be between 1 and 500");
+        }
+        return Map.of("data", decisions.recent(merchantId, limit));
     }
 
     @GetMapping("/routing-rules")
@@ -142,6 +227,11 @@ public class AdminRoutingController {
 
     private RoutingRule toRule(String id, RuleRequest request, long version, Instant createdAt, Instant updatedAt) {
         RoutingStrategy strategy = WireEnums.parse(RoutingStrategy.class, request.strategy(), "strategy");
+        RoutingStrategy shadow = request.shadowStrategy() == null ? null
+                : WireEnums.parse(RoutingStrategy.class, request.shadowStrategy(), "shadow_strategy");
+        if (shadow != null && shadow != RoutingStrategy.COST && shadow != RoutingStrategy.ADAPTIVE) {
+            throw GatewayException.validation("shadow_strategy", "must be cost or adaptive");
+        }
         List<RuleCondition> conditions = request.conditions() == null ? List.of() : request.conditions().stream()
                 .map(c -> new RuleCondition(c.field(), c.op(), c.value()))
                 .toList();
@@ -161,6 +251,6 @@ public class AdminRoutingController {
         }
         return new RoutingRule(id, request.merchantId(), request.name(), request.priority(),
                 request.enabled() == null || request.enabled(), conditions, strategy, targets,
-                request.allowFallback() == null || request.allowFallback(), version, createdAt, updatedAt);
+            request.allowFallback() == null || request.allowFallback(), version, createdAt, updatedAt, shadow);
     }
 }

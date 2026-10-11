@@ -20,6 +20,7 @@ import com.payments.gateway.provider.spi.ProviderDisputeResult;
 import com.payments.gateway.provider.spi.ProviderRefundResult;
 import com.payments.gateway.shared.events.CurrencyConversion;
 import com.payments.gateway.shared.model.Conversion;
+import com.payments.gateway.shared.model.MethodType;
 import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
 import java.time.Instant;
@@ -44,7 +45,11 @@ public class PaymentReconciliationService {
         CREDIT
     }
 
-    public record InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount) {
+    public record InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount, MethodType method) {
+
+        public InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount) {
+            this(kind, entityId, paymentId, status, amount, null);
+        }
 
         public boolean succeeded() {
             return "SUCCEEDED".equals(status);
@@ -171,11 +176,12 @@ public class PaymentReconciliationService {
     }
 
     private static InternalItem toItem(TransferCredit credit) {
-        return new InternalItem(Kind.CREDIT, credit.id(), credit.paymentId(), "SUCCEEDED", credit.amount());
+        return new InternalItem(Kind.CREDIT, credit.id(), credit.paymentId(), "SUCCEEDED", credit.amount(), MethodType.BANK_TRANSFER);
     }
 
     private static InternalItem toItem(Payment payment, PaymentAttempt attempt) {
-        return new InternalItem(Kind.PAYMENT, attempt.id(), payment.id(), attempt.status().name(), attempt.capturedAmount());
+        return new InternalItem(Kind.PAYMENT, attempt.id(), payment.id(), attempt.status().name(), attempt.capturedAmount(),
+                attempt.method().type());
     }
 
     private static InternalItem toItem(Refund refund) {

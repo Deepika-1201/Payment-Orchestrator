@@ -182,7 +182,7 @@ public class PaymentStore {
                 continue;
             }
             payment.attempt(change.entityId()).ifPresent(attempt -> {
-                health.recordAttemptOutcome(attempt.providerCode(), attempt.method().type(), succeeded,
+                health.recordAttemptOutcome(attempt.providerCode(), attempt.method().type(), attempt.method().bankCode(), succeeded,
                         attempt.failure() == null ? null : attempt.failure().category());
                 meters.counter("pg.payment.attempts",
                         "provider", attempt.providerCode(),

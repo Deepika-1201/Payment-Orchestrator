@@ -28,6 +28,7 @@ val archunitVersion = "1.5.1"
 val jsonSchemaValidatorVersion = "3.0.7"
 val zxingVersion = "3.5.4"
 val nimbusJoseVersion = "10.10"
+val commonsStatisticsVersion = "1.2"
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
@@ -40,6 +41,7 @@ dependencies {
     implementation("io.github.resilience4j:resilience4j-circuitbreaker:$resilience4jVersion")
     implementation("com.google.zxing:core:$zxingVersion")
     implementation("com.nimbusds:nimbus-jose-jwt:$nimbusJoseVersion")
+    implementation("org.apache.commons:commons-statistics-distribution:$commonsStatisticsVersion")
     runtimeOnly("org.postgresql:postgresql")
     runtimeOnly("io.micrometer:micrometer-registry-prometheus")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")

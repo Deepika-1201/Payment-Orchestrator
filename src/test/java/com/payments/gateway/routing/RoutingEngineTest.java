@@ -28,27 +28,44 @@ import com.payments.gateway.shared.model.PaymentMethod;
 import com.payments.gateway.shared.model.UpiFlow;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
+import java.util.Random;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.ObjectProvider;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyString;
 
 class RoutingEngineTest {
 
     private final List<RoutingRule> rules = new ArrayList<>();
     private ProviderHealthTracker health;
     private ProviderClient client;
+    private ProviderRegistry registry;
+    private ProviderFeeService fees;
     private RoutingEngine engine;
+    private final Map<String, ProviderFeeSchedule> feeSchedules = new HashMap<>();
 
     @BeforeEach
     void setUp() {
@@ -58,7 +75,7 @@ class RoutingEngineTest {
         @SuppressWarnings("unchecked")
         ObjectProvider<PaymentProvider> beans = mock(ObjectProvider.class);
         when(beans.orderedStream()).thenAnswer(invocation -> Stream.of(alpha, beta, gamma));
-        ProviderRegistry registry = new ProviderRegistry(beans);
+        registry = new ProviderRegistry(beans);
         health = new ProviderHealthTracker();
         client = new ProviderClient(registry, health, new SimpleMeterRegistry(), new MerchantAccountResolver() {
             @Override
@@ -74,7 +91,10 @@ class RoutingEngineTest {
         RoutingRuleRepository repository = mock(RoutingRuleRepository.class);
         when(repository.findAll()).thenAnswer(invocation -> List.copyOf(rules));
         RoutingRuleCache cache = new RoutingRuleCache(repository);
-        engine = new RoutingEngine(registry, client, health, cache, () -> 0.9);
+        fees = mock(ProviderFeeService.class);
+        when(fees.effective(anyString(), anyCollection(), any(), anyString(), any())).thenAnswer(invocation -> Map.copyOf(feeSchedules));
+        engine = new RoutingEngine(registry, client, health, cache, () -> 0.9, fees, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC),
+            RoutingEngine.betaSampler(new Random(1234)), RoutingEngine.betaSampler(new Random(5678)));
     }
 
     private static RoutingContext context(PaymentMethod method, long amount, Set<String> linked) {
@@ -136,6 +156,54 @@ class RoutingEngineTest {
     }
 
     @Test
+    void predictionUsesBankHistoryOnlyAfterEnoughObservationsWithoutPenalizingTechnicalHealth() {
+        for (int index = 0; index < 19; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.NETBANKING, "HDFC", true, null);
+        }
+        for (int index = 0; index < 21; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.NETBANKING, "SBIN", false, FailureCategory.ISSUER);
+        }
+        assertThat(health.prediction("ALPHA", MethodType.NETBANKING, "HDFC"))
+                .isEqualTo(new ProviderHealthTracker.Prediction(19, 21, false));
+        health.recordAttemptOutcome("ALPHA", MethodType.NETBANKING, "HDFC", true, null);
+        assertThat(health.prediction("ALPHA", MethodType.NETBANKING, "HDFC"))
+                .isEqualTo(new ProviderHealthTracker.Prediction(20, 0, true));
+        assertThat(health.prediction("ALPHA", MethodType.NETBANKING, "SBIN"))
+                .isEqualTo(new ProviderHealthTracker.Prediction(0, 21, true));
+        assertThat(health.prediction("ALPHA", MethodType.NETBANKING, "ICIC"))
+                .isEqualTo(new ProviderHealthTracker.Prediction(20, 21, false));
+        assertThat(health.samples("ALPHA", MethodType.NETBANKING)).isEqualTo(20);
+        assertThat(health.successRate("ALPHA", MethodType.NETBANKING)).isEqualTo(1);
+        assertThat(health.prediction("ALPHA", MethodType.CARD, null).mean()).isEqualTo(0.95);
+    }
+
+    @Test
+    void predictionExcludesCustomerRiskAndValidationAndKeepsItsPrior() {
+        for (FailureCategory excluded : List.of(FailureCategory.CUSTOMER, FailureCategory.RISK, FailureCategory.VALIDATION)) {
+            health.recordAttemptOutcome("ALPHA", MethodType.CARD, false, excluded);
+        }
+        health.recordAttemptOutcome("ALPHA", MethodType.CARD, false, null);
+        assertThat(health.prediction("ALPHA", MethodType.CARD, null)).isEqualTo(new ProviderHealthTracker.Prediction(0, 0, false));
+        health.recordAttemptOutcome("ALPHA", MethodType.CARD, false, FailureCategory.NOT_SUBMITTED);
+        assertThat(health.prediction("ALPHA", MethodType.CARD, null).beta()).isEqualTo(2);
+        health.reset();
+        assertThat(health.prediction("ALPHA", MethodType.CARD, null).mean()).isEqualTo(0.95);
+    }
+
+    @Test
+    void predictionKeepsOnlyTheLastHundredQualifiedOutcomes() {
+        for (int index = 0; index < 15; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.CARD, false, FailureCategory.PROVIDER);
+        }
+        for (int index = 0; index < 100; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.CARD, true, null);
+        }
+        assertThat(health.prediction("ALPHA", MethodType.CARD, null)).isEqualTo(new ProviderHealthTracker.Prediction(100, 0, false));
+        health.recordAttemptOutcome("ALPHA", MethodType.CARD, false, FailureCategory.TIMEOUT);
+        assertThat(health.prediction("ALPHA", MethodType.CARD, null)).isEqualTo(new ProviderHealthTracker.Prediction(99, 1, false));
+    }
+
+    @Test
     void merchantRuleWinsOverGlobalRuleAndFallbackIsAppended() {
         rules.add(rule("rr_global", null, 1, RoutingStrategy.PRIORITY, List.of(), true, new RoutingRule.Target("GAMMA", 1)));
         rules.add(rule("rr_merchant", "mer_1", 5, RoutingStrategy.PRIORITY,
@@ -156,6 +224,219 @@ class RoutingEngineTest {
 
         assertThat(engine.route(context(PaymentMethod.upi(UpiFlow.INTENT, null), 10_000, Set.of("ALPHA", "GAMMA"))).providers())
                 .containsExactly("GAMMA");
+    }
+
+    @Test
+    void costRanksFeesPerPredictedSuccessAndPlacesUnknownPricesLast() {
+        rules.add(rule("rr_cost", null, 1, RoutingStrategy.COST, List.of(), false,
+                new RoutingRule.Target("ALPHA", 1), new RoutingRule.Target("BETA", 1)));
+        feeSchedules.put("ALPHA", price("ALPHA", 200));
+        feeSchedules.put("BETA", price("BETA", 100));
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        assertThat(engine.route(context).providers()).containsExactly("BETA", "ALPHA");
+        for (int index = 0; index < 100; index++) {
+            health.recordAttemptOutcome("BETA", MethodType.CARD, false, FailureCategory.ISSUER);
+        }
+        assertThat(engine.route(context).providers()).containsExactly("ALPHA", "BETA");
+        feeSchedules.remove("ALPHA");
+        assertThat(engine.route(context).providers()).containsExactly("BETA", "ALPHA");
+        feeSchedules.clear();
+        assertThat(engine.route(context).live().reason()).isEqualTo("missing_fee_schedule");
+        health.recordLatency("ALPHA", Duration.ofSeconds(5));
+        assertThat(engine.route(context).providers()).containsExactly("BETA", "ALPHA");
+    }
+
+    @Test
+    void adaptiveExploresOnlyEveryTenthLiveEvaluationAndPreviewsConsumeNothing() {
+        rules.add(rule("rr_adaptive", null, 1, RoutingStrategy.ADAPTIVE, List.of(), false,
+                new RoutingRule.Target("ALPHA", 1), new RoutingRule.Target("BETA", 1)));
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        for (int index = 1; index <= 30; index++) {
+            for (int preview = 0; preview < 3; preview++) {
+                assertThat(engine.preview(context).live().exploration()).isFalse();
+            }
+            RoutingDecision decision = engine.route(context);
+            assertThat(decision.live().exploration()).as("evaluation %s", index).isEqualTo(index % 10 == 0);
+            if (index % 10 == 0) {
+                assertThat(decision.live().estimates()).allSatisfy(estimate -> assertThat(estimate.sampledSuccess()).isBetween(0.0, 1.0));
+            }
+        }
+    }
+
+    @Test
+    void adaptiveExplorationBudgetIsAtomicAcrossConcurrentEvaluations() throws Exception {
+        rules.add(rule("rr_concurrent", null, 1, RoutingStrategy.ADAPTIVE, List.of(), false,
+                new RoutingRule.Target("ALPHA", 1), new RoutingRule.Target("BETA", 1)));
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        int explored = 0;
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int batch = 1; batch <= 20; batch++) {
+                List<Future<RoutingDecision>> results = new ArrayList<>();
+                for (int index = 0; index < 37; index++) {
+                    results.add(executor.submit(() -> engine.route(context)));
+                }
+                for (Future<RoutingDecision> result : results) {
+                    if (result.get(5, TimeUnit.SECONDS).live().exploration()) {
+                        explored++;
+                    }
+                }
+                assertThat(explored).as("completed batch %s", batch).isEqualTo(batch * 37 / 10);
+            }
+        }
+    }
+
+    @Test
+    void adaptiveLearnsTheBetterProviderAndAdaptsWhenSuccessRatesChange() {
+        rules.add(rule("rr_learning", null, 1, RoutingStrategy.ADAPTIVE, List.of(), false,
+                new RoutingRule.Target("ALPHA", 1), new RoutingRule.Target("BETA", 1)));
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        Random outcomes = new Random(2847);
+        for (int phase = 0; phase < 2; phase++) {
+            String better = phase == 0 ? "BETA" : "ALPHA";
+            int betterInLastThousand = 0;
+            int explored = 0;
+            for (int index = 0; index < 4000; index++) {
+                RoutingDecision decision = engine.route(context);
+                String chosen = decision.providers().getFirst();
+                boolean success = outcomes.nextDouble() < (chosen.equals(better) ? 0.97 : 0.55);
+                health.recordAttemptOutcome(chosen, MethodType.CARD, success, success ? null : FailureCategory.ISSUER);
+                if (decision.live().exploration()) {
+                    explored++;
+                }
+                if (index >= 3000 && chosen.equals(better)) {
+                    betterInLastThousand++;
+                }
+            }
+            assertThat(explored).isEqualTo(400);
+            assertThat(betterInLastThousand).as("phase %s should favor %s", phase, better).isGreaterThanOrEqualTo(900);
+        }
+    }
+
+    @Test
+    void shadowSamplingAndPreviewsDoNotChangeLiveChoicesOrRandomDraws() {
+        RoutingRule liveRule = rule("rr_isolated", null, 1, RoutingStrategy.ADAPTIVE, List.of(), false,
+                new RoutingRule.Target("ALPHA", 1), new RoutingRule.Target("BETA", 1));
+        RoutingRule shadowRule = new RoutingRule(liveRule.id(), null, liveRule.name(), 1, true, List.of(),
+                RoutingStrategy.ADAPTIVE, liveRule.targets(), false, 0, Instant.EPOCH, Instant.EPOCH, RoutingStrategy.ADAPTIVE);
+        rules.add(shadowRule);
+        RoutingRuleRepository liveRepository = mock(RoutingRuleRepository.class);
+        when(liveRepository.findAll()).thenReturn(List.of(liveRule));
+        RoutingEngine liveOnly = new RoutingEngine(registry, client, health, new RoutingRuleCache(liveRepository),
+                () -> 0.9, fees, Clock.fixed(Instant.EPOCH, ZoneOffset.UTC),
+                RoutingEngine.betaSampler(new Random(1234)), (alpha, beta) -> {
+                    throw new AssertionError("No shadow evaluation was configured");
+                });
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        for (int index = 0; index < 250; index++) {
+            engine.preview(context);
+            engine.preview(context);
+            RoutingDecision expected = liveOnly.route(context);
+            RoutingDecision actual = engine.route(context);
+            assertThat(actual.live()).isEqualTo(expected.live());
+            assertThat(actual.providers()).isEqualTo(expected.providers());
+            assertThat(actual.shadow().exploration()).isEqualTo((index + 1) % 10 == 0);
+        }
+    }
+
+    @Test
+    void weightedPreviewsDoNotConsumeTheLiveRandomStream() {
+        RoutingRuleRepository repository = mock(RoutingRuleRepository.class);
+        when(repository.findAll()).thenReturn(List.of(rule("rr_weighted_preview", null, 1, RoutingStrategy.WEIGHTED,
+                List.of(), false, new RoutingRule.Target("ALPHA", 80), new RoutingRule.Target("BETA", 20))));
+        AtomicInteger draws = new AtomicInteger();
+        RoutingEngine previewed = new RoutingEngine(registry, client, health, new RoutingRuleCache(repository),
+                () -> { draws.incrementAndGet(); return 0.9; }, fees, Clock.systemUTC(),
+                RoutingEngine.betaSampler(new Random(1)), RoutingEngine.betaSampler(new Random(2)));
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        for (int index = 0; index < 25; index++) {
+            assertThat(previewed.preview(context).providers()).containsExactly("ALPHA", "BETA");
+        }
+        assertThat(draws).hasValue(0);
+        assertThat(previewed.route(context).providers()).containsExactly("BETA", "ALPHA");
+        assertThat(draws).hasValue(1);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = RoutingStrategy.class, names = {"COST", "ADAPTIVE"})
+    void advancedStrategiesNeverSelectAnOpenCircuitEvenInShadowOrExploration(RoutingStrategy strategy) {
+        for (int index = 0; index < 12; index++) {
+            assertThatThrownBy(() -> client.initiate("mer_1", "GAMMA", null)).isInstanceOf(ProviderUnavailableException.class);
+        }
+        for (int index = 0; index < 100; index++) {
+            health.recordAttemptOutcome("GAMMA", MethodType.UPI, true, null);
+        }
+        feeSchedules.put("GAMMA", new ProviderFeeSchedule("pfs_gamma", "mer_1", "GAMMA", MethodType.UPI, "INR", 0,
+                0, 0, ProviderFeeSchedule.Collection.WITHHELD, Instant.EPOCH, Instant.EPOCH));
+        feeSchedules.put("ALPHA", new ProviderFeeSchedule("pfs_alpha", "mer_1", "ALPHA", MethodType.UPI, "INR", 100,
+                0, 0, ProviderFeeSchedule.Collection.WITHHELD, Instant.EPOCH, Instant.EPOCH));
+        rules.add(new RoutingRule("rr_circuit", null, "Circuit guard", 1, true, List.of(), strategy,
+                List.of(new RoutingRule.Target("GAMMA", 1), new RoutingRule.Target("ALPHA", 1)), false, 0,
+                Instant.EPOCH, Instant.EPOCH, RoutingStrategy.ADAPTIVE));
+        RoutingContext context = context(PaymentMethod.upi(UpiFlow.INTENT, null), 10_000, Set.of("ALPHA", "GAMMA"));
+        for (int index = 0; index < 100; index++) {
+            RoutingDecision decision = engine.route(context);
+            assertThat(decision.providers()).containsExactly("ALPHA");
+            assertThat(decision.shadow().providers()).containsExactly("ALPHA");
+        }
+    }
+
+    @Test
+    void routingUsesTheKnownBanksPosteriorInsteadOfTheMethodAverage() {
+        for (int index = 0; index < 30; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.NETBANKING, "HDFC", false, FailureCategory.ISSUER);
+        }
+        for (int index = 0; index < 70; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.NETBANKING, "SBIN", true, null);
+        }
+        rules.add(rule("rr_bank", null, 1, RoutingStrategy.ADAPTIVE, List.of(), false, new RoutingRule.Target("ALPHA", 1)));
+        RoutingDecision decision = engine.preview(context(PaymentMethod.netbanking("HDFC"), 10_000, Set.of("ALPHA")));
+        assertThat(decision.live().estimates()).singleElement().satisfies(estimate -> {
+            assertThat(estimate.bankSpecific()).isTrue();
+            assertThat(estimate.samples()).isEqualTo(30);
+            assertThat(estimate.predictedSuccess()).isEqualTo(19.0 / 50);
+        });
+    }
+
+    @Test
+    void explorationOrdersByTheSampleOnlyWithinItsBudgetedSlot() {
+        for (int index = 0; index < 100; index++) {
+            health.recordAttemptOutcome("ALPHA", MethodType.CARD, true, null);
+        }
+        RoutingRuleRepository repository = mock(RoutingRuleRepository.class);
+        when(repository.findAll()).thenReturn(List.of(rule("rr_forced_sample", null, 1, RoutingStrategy.ADAPTIVE,
+                List.of(), false, new RoutingRule.Target("ALPHA", 1), new RoutingRule.Target("BETA", 1))));
+        AtomicInteger draws = new AtomicInteger();
+        RoutingEngine sampled = new RoutingEngine(registry, client, health, new RoutingRuleCache(repository),
+                () -> 0.9, fees, Clock.systemUTC(), (alpha, beta) -> {
+                    draws.incrementAndGet();
+                    return alpha > 100 ? 0.1 : 0.99;
+                }, (alpha, beta) -> { throw new AssertionError("No shadow configured"); });
+        RoutingContext context = context(PaymentMethod.card(), 10_000, Set.of("ALPHA", "BETA"));
+        for (int index = 0; index < 9; index++) {
+            assertThat(sampled.route(context).providers()).containsExactly("ALPHA", "BETA");
+        }
+        assertThat(draws).hasValue(0);
+        assertThat(sampled.route(context).providers()).containsExactly("BETA", "ALPHA");
+        assertThat(draws).hasValue(2);
+        assertThat(sampled.route(context).providers()).containsExactly("ALPHA", "BETA");
+    }
+
+    @Test
+    void productionSamplerProducesVariableBetaSamplesAroundThePosteriorMean() {
+        for (double[] shapes : new double[][] {{19, 1}, {2, 8}}) {
+            var sampler = RoutingEngine.betaSampler(new Random(9417));
+            var samples = java.util.stream.IntStream.range(0, 4000)
+                    .mapToDouble(index -> sampler.applyAsDouble(shapes[0], shapes[1])).summaryStatistics();
+            double expected = shapes[0] / (shapes[0] + shapes[1]);
+            assertThat(samples.getAverage()).isBetween(expected - 0.01, expected + 0.01);
+            assertThat(samples.getMin()).isBetween(0.0, expected - 0.05);
+            assertThat(samples.getMax()).isBetween(expected + 0.02, 1.0);
+        }
+    }
+
+    private static ProviderFeeSchedule price(String provider, long fixed) {
+        return new ProviderFeeSchedule("pfs_" + provider, "mer_1", provider, MethodType.CARD, "INR", fixed,
+                0, 0, ProviderFeeSchedule.Collection.WITHHELD, Instant.EPOCH, Instant.EPOCH);
     }
 
     @Test

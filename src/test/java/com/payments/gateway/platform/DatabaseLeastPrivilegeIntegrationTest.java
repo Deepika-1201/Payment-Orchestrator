@@ -49,6 +49,7 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     INSERT INTO audit_log (actor_type, actor_id, action, resource_type, resource_id, occurred_at)
                     VALUES ('system', 'test', 'test.action', 'test', 'test', now())""")).isEqualTo(1);
             assertThat(sql.executeUpdate("DELETE FROM idempotency_records WHERE false")).isZero();
+            assertThat(sql.executeUpdate("DELETE FROM routing_decisions WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE dispute_evidence_files SET provider_document_id = 'doc_1', "
                     + "content_key_enc = content_key_enc WHERE false")).as("the two columns that may change").isZero();
         }
@@ -70,6 +71,9 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     "DELETE FROM ledger_transactions",
                     "UPDATE fx_conversions SET settled_amount = settled_amount + 1",
                     "DELETE FROM fx_conversions",
+                    "UPDATE provider_fee_schedules SET fixed_amount = fixed_amount + 1",
+                    "DELETE FROM provider_fee_schedules",
+                    "UPDATE routing_decisions SET chosen_provider = 'forged'",
                     "DELETE FROM payment_transitions",
                     "DELETE FROM dispute_evidence_files",
                     "UPDATE dispute_evidence_files SET content_enc = content_enc",

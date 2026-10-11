@@ -1621,19 +1621,19 @@ Requirements: [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-2
 
 - `RoutingEngine.preview` is read-only. Hosted checkout switches to it; opening a checkout must not train a model, consume an exploration slot or create history.
 - `POST /admin/v1/routing/preview` (`read`) accepts merchant, method, amount, currency, optional bank/UPI flow/method provider, capture method and whether a customer phone is known. It returns the live and shadow evaluation without an attempt or PSP call.
-- A real confirmation records its decision after persisting the new attempt, in the same transaction. History includes attempt and merchant ids, method/bank, rule, timestamp, live and shadow strategies, candidates, reasons and estimates. It contains no card or customer data.
+- A real confirmation using `COST`, `ADAPTIVE` or a shadow strategy records its decision after persisting the initial attempt, in the same transaction. History includes attempt and merchant ids, method/bank, rule, timestamp, live and shadow strategies, candidates, reasons and estimates. It contains no card or customer data. Legacy strategies without a shadow add no history rows.
 - `GET /admin/v1/routing-decisions?merchant_id=&limit=` lists recent decisions (default 100, maximum 500). The retention job removes history after 90 days in bounded batches; fee schedules are retained.
 
 ### 24.5 Settlement fee checks
 
 - After a capture or bank-transfer credit matches, reconciliation finds the fee schedule effective at the report line's occurrence time and compares expected withholding with the actual PSP fee.
 - For another charge currency, compute the percentage on the reported settlement gross and allocate the fixed component by `fixed_amount * settled_gross / original_gross`. Round the base fee and tax in settlement minor units. This uses reported amounts, not an invented exchange rate.
-- Postpaid schedules expect zero withholding. No schedule means no comparison. A difference greater than one settlement minor unit opens `FEE_SCHEDULE_MISMATCH`, identifying the schedule and expected/actual fee.
+- Postpaid schedules expect zero withholding. Missing schedules or occurrence timestamps skip the comparison; a current price is never substituted for unknown historical timing. Comparisons still run when actual withholding is zero. A difference greater than one settlement minor unit opens `FEE_SCHEDULE_MISMATCH`, identifying the schedule and expected/actual fee.
 - This is a pricing exception, not an amount mismatch: the capture stays matched, the real fee is posted once, and payout matching still uses the real withheld fee. Replaying a window does not duplicate the open exception.
 
 ### 24.6 Schema and checks
 
 `V20__cost_adaptive_routing.sql` adds `COST` and `ADAPTIVE` to routing rules, plus nullable `shadow_strategy`; creates append-only `provider_fee_schedules` referencing the merchant/provider account; creates `routing_decisions` with an attempt foreign key and retention index; and extends reconciliation exception types. The application role cannot update/delete fee schedules or update decision history.
 
-Tests cover exact fee/tax arithmetic and effective dates, per-bank prediction fallback, deterministic exploration bounds under concurrency, convergence in simulated traffic, circuit exclusion, missing-price behavior, preview purity, shadow isolation, atomic decision history, fee reconciliation including postpaid/foreign charges, retention and database grants. Mutation checks target these boundaries before the full build and CI gate.
+Tests cover exact fee/tax arithmetic and effective dates, per-bank prediction fallback, deterministic exploration bounds under concurrency, convergence when provider success rates change, circuit exclusion, missing-price behavior, preview purity, shadow isolation, atomic decision history, rule promotion, fee reconciliation including postpaid/foreign charges and zero withholding, retention and database grants. All 53 targeted mutations are caught. Four survivors added explicit checks for the production sampler, adaptive checkout previews, the account foreign key and zero-withholding comparisons; two invalid SQL permission mutations were corrected and rerun.
 

@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–23 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, and international cards with multi-currency accounting and INR settlement. V1 includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–24 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, and cost-aware/adaptive routing with shadow evaluation. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 81% done (31 of 38.5).
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 83% done (32 of 38.5).
 
 ## Documentation
 
@@ -144,6 +144,8 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `/admin/v1/merchants` · `/routing-rules` · `/providers/health` · `/webhook-deliveries` | Admin |
 | `PATCH /admin/v1/merchants/{id}` · `/suspend` · `/reactivate` · `/webhook-secret` · `/api-keys[/{key_id}/revoke]` | Merchant settings (`international_cards`, `mandate_debit_limit`, `bank_transfer_credits`, `bank_transfer_short_at_expiry`), suspension, webhook secret rotation (both secrets valid during a grace period), API key rotation and revocation |
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` · `GET …/provider-accounts` · `POST …/{provider}/disable` | Merchant's own PSP accounts: encrypted credentials (shown masked), per-account webhook path |
+| `POST /admin/v1/merchants/{id}/provider-accounts/{provider}/fee-schedules` · `GET …/fee-schedules` | Finance publishes immutable, effective-dated PSP prices: fixed amount, percentage, tax and withheld/postpaid collection (ADR-041) |
+| `POST /admin/v1/routing/preview` · `GET /admin/v1/routing-decisions?merchant_id=` | Read-only live/shadow preview and recent decision history; previews consume no exploration slots or PSP calls |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/ledger/adjustments` · `POST …/{id}/approve` · `/reject` | Manual ledger corrections: one operator requests, a different one approves (maker-checker, ADR-024) |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/assign` · `/resolve` · `GET …/reports/daily?date=` | Reconcile a merchant PSP account for a window; work the exception queue (owner, 48 h SLA, overdue filter); daily report per business day |
@@ -154,6 +156,10 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 Merchant endpoints have per-merchant rate limits, with separate budgets for reads and writes. When a limit is hit, the API answers `429` with `Retry-After`. The request was not processed and its Idempotency-Key was not used up, so it can be retried unchanged. Operators can raise or lower one merchant's budgets with `PUT /admin/v1/merchants/{id}/rate-limits`, and the change applies from that merchant's next request (ADR-020).
 
 Admin callers are named operators with roles (`admin`, `ops`, `finance`, `read_only`). They sign in through the company identity provider (OIDC access tokens whose `roles` claim carries the gateway role, ADR-023) or use tokens configured by SHA-256 under `pg.security.admin-users`. Each admin endpoint requires one permission, and write endpoints without a declared permission are refused (ADR-019). The audit log records the operator's name.
+
+Routing rules also accept `strategy: cost` or `adaptive`. Cost ranks the fee including tax per predicted successful payment; absent prices sort last, with health ordering when every price is missing. Adaptive routing uses method/bank success history and a Beta posterior, exploring at most once per ten live evaluations per rule and instance. Set `shadow_strategy: cost` or `adaptive` to compare a new strategy without changing live choices. Live/shadow samplers are independent; hosted checkout and administrative previews consume neither stream. Advanced and shadow decisions are stored with the initial attempt and retained for 90 days ([ADR-041](docs/decisions/ADR-041-cost-aware-adaptive-routing.md)).
+
+Fee schedules use `fixed_amount` in the charge currency's minor units, `rate_bps` and `tax_bps` (default 1800), `collection: withheld | postpaid`, and optional `effective_at` (now or later). Reconciliation compares capture-time prices with actual withholding, including zero fees; differences over one settlement minor unit become `fee_schedule_mismatch` exceptions. The actual fee and payout remain unchanged in the ledger.
 
 International cards are off by default. Enable a merchant with `PATCH /admin/v1/merchants/{id}` and `{"international_cards":true}`. Non-INR payments use cards only, with integer ISO 4217 minor units: JPY 1300 means JPY 1300, USD 1300 means USD 13.00, and KWD 1300 means KWD 1.300. Refunds stay in the original currency. Payments, refunds and disputes expose `conversion` once the PSP reports the INR amount; rates are exact decimal strings when supplied. The ledger balances each currency and books FX gains or losses (ADR-040).
 
@@ -270,9 +276,9 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 21 | Bank transfers (ADR-038): a virtual account per attempt; each credit recorded once and applied under the payment lock, added up or exact per merchant; excess, late and repeated credits sent back; a short payment refunded or accepted at expiry; unmatched credits reviewed; ledger and reconciliation by credit; the mock PSP and Razorpay Smart Collect (behind `pg.providers.razorpay.extra-methods`) | Done (sandbox run needs keys) |
 | 22 | Dispute evidence (ADR-039): evidence files uploaded through the API, encrypted per file and never deleted; one contest or acceptance per dispute, delivered to the PSP with retries until its deadline; `dispute.evidence_due` 3 days ahead and an operator alert; the mock PSP and Razorpay's Documents and Disputes APIs | Done (sandbox run needs keys) |
 | 23 | International cards (ADR-040): merchant opt-in, PSP currency ranges and steps, integer minor units, immutable INR conversions, per-currency ledger balance and FX gains/losses, INR reconciliation; mock rates and Razorpay `base_amount` | Done (sandbox run needs keys) |
+| 24 | Cost-aware and adaptive routing (ADR-041): versioned PSP fees, cost per predicted success, method/bank Beta posteriors, bounded exploration, independent shadow decisions, read-only previews, 90-day decision history and settlement fee checks | Done |
 
-**Next: V2, phases 24–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- cost-aware routing;
+**Next: V2, phases 25–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
 - merchant billing;
 - Payment Aggregator mode: onboarding, escrow and settlement, payouts.
 

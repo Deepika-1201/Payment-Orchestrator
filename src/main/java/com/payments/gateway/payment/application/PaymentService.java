@@ -27,6 +27,7 @@ import com.payments.gateway.risk.RiskEngine;
 import com.payments.gateway.risk.RiskProperties;
 import com.payments.gateway.routing.RoutingContext;
 import com.payments.gateway.routing.RoutingDecision;
+import com.payments.gateway.routing.RoutingDecisionRepository;
 import com.payments.gateway.routing.RoutingEngine;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.error.ErrorCode;
@@ -79,6 +80,7 @@ public class PaymentService {
     private final RiskEngine risk;
     private final RiskProperties riskProperties;
     private final RoutingEngine routing;
+    private final RoutingDecisionRepository routingDecisions;
     private final ProviderClient providerClient;
     private final ProviderRegistry providers;
     private final PaymentProperties properties;
@@ -88,7 +90,8 @@ public class PaymentService {
 
     public PaymentService(PaymentRepository payments, PaymentStore store, PaymentOutcomeService outcomes,
                           MerchantDirectory merchants, RiskEngine risk, RiskProperties riskProperties,
-                          RoutingEngine routing, ProviderClient providerClient, ProviderRegistry providers,
+                          RoutingEngine routing, RoutingDecisionRepository routingDecisions,
+                          ProviderClient providerClient, ProviderRegistry providers,
                           PaymentProperties properties, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
         this.payments = payments;
         this.store = store;
@@ -97,6 +100,7 @@ public class PaymentService {
         this.risk = risk;
         this.riskProperties = riskProperties;
         this.routing = routing;
+        this.routingDecisions = routingDecisions;
         this.providerClient = providerClient;
         this.providers = providers;
         this.properties = properties;
@@ -189,6 +193,7 @@ public class PaymentService {
                     route.ruleId(), properties.maxAttempts(), now);
             payment.recordRisk(attempt.id(), new RiskAssessment(decision.outcome().name(), decision.reasons()), now);
             store.save(payment);
+            routingDecisions.append(merchantId, attempt.id(), command.method(), route, now);
             return new Started(payment, attempt.id(), route.providers(), false);
         });
         if (started.expired()) {

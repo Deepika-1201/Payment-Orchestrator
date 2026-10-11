@@ -68,7 +68,7 @@ public class PaymentCheckoutService {
         List<PaymentMethod> routable = new ArrayList<>();
         SortedSet<Integer> emiTenures = new TreeSet<>();
         for (PaymentMethod probe : probes) {
-            RoutingDecision decision = routing.route(new RoutingContext(merchantId, probe, payment.amount(),
+            RoutingDecision decision = routing.preview(new RoutingContext(merchantId, probe, payment.amount(),
                     payment.captureMethod(), linked, payment.customer().phone() != null));
             if (decision.isEmpty()) {
                 continue;

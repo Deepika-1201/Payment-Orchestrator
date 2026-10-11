@@ -2,10 +2,12 @@ package com.payments.gateway.platform;
 
 import com.payments.gateway.checkout.CheckoutService;
 import com.payments.gateway.idempotency.IdempotencyService;
+import com.payments.gateway.routing.RoutingDecisionRepository;
 import com.payments.gateway.webhook.inbound.ProviderWebhookService;
 import com.payments.gateway.webhook.outbound.WebhookDeliveryWorker;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -30,10 +32,11 @@ public class RetentionJob {
     private final RetentionProperties properties;
     private final Clock clock;
     private final MeterRegistry meters;
+    private final RoutingDecisionRepository routingDecisions;
 
     public RetentionJob(IdempotencyService idempotency, CheckoutService checkout, ProviderWebhookService providerWebhooks,
                         WebhookDeliveryWorker merchantWebhooks, RetentionProperties properties, Clock clock,
-                        MeterRegistry meters) {
+                        MeterRegistry meters, RoutingDecisionRepository routingDecisions) {
         this.idempotency = idempotency;
         this.checkout = checkout;
         this.providerWebhooks = providerWebhooks;
@@ -41,6 +44,7 @@ public class RetentionJob {
         this.properties = properties;
         this.clock = clock;
         this.meters = meters;
+        this.routingDecisions = routingDecisions;
     }
 
     /** Returns rows deleted per data set. */
@@ -53,6 +57,7 @@ public class RetentionJob {
         deleted.put("checkout_sessions", purge(checkout::purgeExpired));
         deleted.put("provider_webhook_events", purge(limit -> providerWebhooks.purgeHandledBefore(providerCutoff, limit)));
         deleted.put("merchant_events_and_deliveries", purge(limit -> merchantWebhooks.purgeBefore(merchantCutoff, limit)));
+        deleted.put("routing_decisions", purge(limit -> routingDecisions.purgeBefore(now.minus(Duration.ofDays(90)), limit)));
         deleted.forEach((table, count) -> meters.counter("pg.retention.deleted", "table", table).increment(count));
         if (deleted.values().stream().anyMatch(count -> count > 0)) {
             log.info("Retention purge deleted {}", deleted);
