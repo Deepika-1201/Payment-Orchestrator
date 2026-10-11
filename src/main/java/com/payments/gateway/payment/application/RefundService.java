@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.Failure;
 import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentAttempt;
@@ -61,11 +62,12 @@ public class RefundService {
     private final PaymentConversionService conversions;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final MerchantDirectory merchants;
 
     public RefundService(PaymentRepository payments, RefundRepository refunds, TransferCreditRepository credits,
                          DisputeRepository disputes, PaymentStore store,
                          ProviderClient providerClient, ProviderRegistry providers, PaymentConversionService conversions,
-                         TransactionTemplate tx, Clock clock) {
+                         TransactionTemplate tx, Clock clock, MerchantDirectory merchants) {
         this.payments = payments;
         this.refunds = refunds;
         this.credits = credits;
@@ -76,6 +78,7 @@ public class RefundService {
         this.conversions = conversions;
         this.tx = tx;
         this.clock = clock;
+        this.merchants = merchants;
     }
 
     public Refund create(String merchantId, String paymentId, CreateCommand command) {
@@ -213,7 +216,7 @@ public class RefundService {
         if (refund.isEmpty() || event.refund().outcome() == ProviderRefundResult.Outcome.NOT_FOUND) {
             return false;
         }
-        if (merchantScope != null && !merchantScope.equals(refund.get().merchantId())) {
+        if (!merchants.acceptsProviderScope(refund.get().merchantId(), providerCode, merchantScope)) {
             log.warn("Ignored {} event {} from merchant {}'s account: refund {} belongs to another merchant",
                     providerCode, event.eventId(), merchantScope, refund.get().id());
             return false;

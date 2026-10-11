@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.Dispute;
 import com.payments.gateway.payment.domain.DisputeStatus;
@@ -44,9 +45,11 @@ public class DisputeService {
     private final TransactionTemplate tx;
     private final Clock clock;
     private final MeterRegistry meters;
+    private final MerchantDirectory merchants;
 
     public DisputeService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
-                          PaymentStore store, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
+                          PaymentStore store, TransactionTemplate tx, Clock clock, MeterRegistry meters,
+                          MerchantDirectory merchants) {
         this.payments = payments;
         this.refunds = refunds;
         this.disputes = disputes;
@@ -54,6 +57,7 @@ public class DisputeService {
         this.tx = tx;
         this.clock = clock;
         this.meters = meters;
+        this.merchants = merchants;
         meters.counter("pg.provider.conflicts", "source", "dispute");
     }
 
@@ -69,7 +73,7 @@ public class DisputeService {
             log.warn("Ignored {} dispute event {}: disputed payment is unknown", providerCode, event.eventId());
             return false;
         }
-        if (merchantScope != null && !merchantScope.equals(attempt.get().merchantId())) {
+        if (!merchants.acceptsProviderScope(attempt.get().merchantId(), providerCode, merchantScope)) {
             log.warn("Ignored {} dispute event {} from merchant {}'s account: attempt {} belongs to another merchant",
                     providerCode, event.eventId(), merchantScope, attempt.get().attemptId());
             return false;

@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–25 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, cost-aware/adaptive routing, and merchant billing with immutable invoices and credit notes. V1 includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–26 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, cost-aware/adaptive routing, merchant billing with immutable invoices and credit notes, and independently approved aggregator onboarding. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 86% done (33 of 38.5).
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 88% done (34 of 38.5).
 
 ## Documentation
 
@@ -140,7 +140,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `POST /v1/mandates` · `GET /v1/mandates/{id}` · `POST /v1/mandates/{id}/revoke` | Recurring payments: register a UPI AutoPay, card or eNACH mandate (the customer authorizes it at the PSP), follow `mandate.*` webhooks, revoke (ADR-035) |
 | `POST /v1/mandates/{id}/debits` · `GET …/debits[/{debit_id}]` · `POST …/debits/{debit_id}/cancel` | Debit an active mandate: the gateway notifies the customer at least 24 h ahead (UPI, card), executes, and retries up to 3 times a day apart; each debit is a payment with `payment.*` webhooks |
 | `POST /v1/checkout-sessions` · `GET/POST /checkout/{token}` | Hosted checkout session; the customer-facing page (HTML, no JavaScript; UPI app, UPI ID or scannable QR, card, netbanking, and the wallets, EMI and pay-later providers that can be routed) |
-| `POST /v1/webhooks/providers/{code}/{account_id}` · `POST /v1/webhooks/providers/{code}` | PSP webhooks for a merchant's own PSP account (can only affect that merchant) or with platform-level secrets |
+| `POST /v1/webhooks/providers/{code}/{account_id}` · `POST /v1/webhooks/providers/{code}` | Signed PSP webhooks scoped to that merchant or the aggregator merchants explicitly linked to its collection account; provider-wide secrets retain their scope |
 | `/admin/v1/merchants` · `/routing-rules` · `/providers/health` · `/webhook-deliveries` | Admin |
 | `PATCH /admin/v1/merchants/{id}` · `/suspend` · `/reactivate` · `/webhook-secret` · `/api-keys[/{key_id}/revoke]` | Merchant settings (`international_cards`, `mandate_debit_limit`, `bank_transfer_credits`, `bank_transfer_short_at_expiry`), suspension, webhook secret rotation (both secrets valid during a grace period), API key rotation and revocation |
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` · `GET …/provider-accounts` · `POST …/{provider}/disable` | Merchant's own PSP accounts: encrypted credentials (shown masked), per-account webhook path |
@@ -150,6 +150,7 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `GET /admin/v1/merchants/{id}/billing-events?unbilled=true` · `POST …/billing-events/{event}/price` | Inspect retained service activity and FX/pricing blockers; finance can resolve a missing price explicitly |
 | `POST /admin/v1/merchants/{id}/invoices` · `GET …/invoices` · `GET …/invoices/{invoice}` | Issue closed months in chronological order, or retrieve frozen invoices; repeated issue returns the same document |
 | `POST /admin/v1/merchants/{id}/invoices/{invoice}/credit-notes` · `GET …/credit-notes` | Immutable corrections by original invoice line, with reference-based replay and bounded cumulative tax reversal |
+| `POST /admin/v1/merchants/{id}/kyc` · `GET …/kyc` · `POST …/kyc/{submission}/approve` · `/reject` | Encrypted, externally verified KYC submissions; independent finance approval; masked history, current approval and expiry (ADR-043) |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/ledger/adjustments` · `POST …/{id}/approve` · `/reject` | Manual ledger corrections: one operator requests, a different one approves (maker-checker, ADR-024) |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/assign` · `/resolve` · `GET …/reports/daily?date=` | Reconcile a merchant PSP account for a window; work the exception queue (owner, 48 h SLA, overdue filter); daily report per business day |
@@ -168,6 +169,8 @@ Fee schedules use `fixed_amount` in the charge currency's minor units, `rate_bps
 Merchant billing is separate from PSP fees. Publishing the first billing plan enrolls a merchant prospectively. Plans contain `payment_fees` and optional `refund_fees`, keyed by method with `{fixed_amount, rate_bps}`, plus an INR `monthly_minimum`. Only accepted successful payments and configured merchant-refund services are billed; mandate authorization charges and automatic reversals are excluded. Foreign activity waits for its reported INR conversion. Invoices use Indian calendar months and the plan's assumed 18% GST; an hourly bounded worker issues closed months, or finance can post `{"month":"2026-10"}` manually. Invoice and credit-note numbers are unique within Indian financial years, and issued records never change ([ADR-042](docs/decisions/ADR-042-merchant-billing.md)).
 
 These are service-billing records, not certified production GST tax invoices. Tax profiles, place-of-supply treatment, e-invoicing applicability and payment-method fee restrictions still require deployment/legal review. Current invoices are payable by the merchant; settlement deduction belongs to aggregator mode. See the [billing runbook](docs/runbooks.md#billing).
+
+Aggregator onboarding is disabled by default (`pg.aggregation.enabled=false`). Enable it with a `platform-merchant-id` whose collection PSP accounts are linked first; production also requires an `authorization-reference`. An unused business merchant submits KYC and a different finance operator approves it. Approval fixes its collection owner permanently; platform credentials are referenced, never copied. KYC expiry stops new payments, confirmations and scheduled debits, while existing refunds and outcomes remain recoverable. Per-currency transaction and daily-volume limits are approved with the KYC. `collections-enabled` is a separate opt-in; keep it false until the escrow and payout stages are ready. Software approval does not perform external KYC or grant RBI authorization. See [aggregator onboarding](docs/runbooks.md#aggregator-onboarding).
 
 International cards are off by default. Enable a merchant with `PATCH /admin/v1/merchants/{id}` and `{"international_cards":true}`. Non-INR payments use cards only, with integer ISO 4217 minor units: JPY 1300 means JPY 1300, USD 1300 means USD 13.00, and KWD 1300 means KWD 1.300. Refunds stay in the original currency. Payments, refunds and disputes expose `conversion` once the PSP reports the INR amount; rates are exact decimal strings when supplied. The ledger balances each currency and books FX gains or losses (ADR-040).
 
@@ -287,8 +290,9 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 23 | International cards (ADR-040): merchant opt-in, PSP currency ranges and steps, integer minor units, immutable INR conversions, per-currency ledger balance and FX gains/losses, INR reconciliation; mock rates and Razorpay `base_amount` | Done (sandbox run needs keys) |
 | 24 | Cost-aware and adaptive routing (ADR-041): versioned PSP fees, cost per predicted success, method/bank Beta posteriors, bounded exploration, independent shadow decisions, read-only previews, 90-day decision history and settlement fee checks | Done |
 | 25 | Merchant billing (ADR-042): immutable plans and service events, monthly INR invoices with minimum/GST allocation, transactional financial-year numbering, bounded credit notes, delayed-FX blockers and hourly issuance | Done (production tax/legal review remains a deployment gate) |
+| 26 | Aggregator onboarding (ADR-043): encrypted KYC and bank details, independent approval, immutable collection ownership, linked platform credentials, signed event isolation, expiry and atomic business limits | Done (real verification and RBI authorization remain deployment gates) |
 
-**Next: V2, phases 26–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- Payment Aggregator mode: onboarding, escrow and settlement, payouts.
+**Next: V2, phases 27–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
+- Payment Aggregator mode: authoritative escrow and settlement, then payouts and bank reconciliation.
 
 The [implementation plan](docs/implementation-plan.md) gives each phase's exit criteria and size, and measures progress.

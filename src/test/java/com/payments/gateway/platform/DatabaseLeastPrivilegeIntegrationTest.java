@@ -53,6 +53,8 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
             assertThat(sql.executeUpdate("UPDATE billing_events SET service_fee = service_fee WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE billing_accounts SET next_month = next_month WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE billing_series SET last_value = last_value WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE merchant_kyc_submissions SET details_enc = details_enc WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE aggregation_daily_volume SET used_amount = used_amount WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE dispute_evidence_files SET provider_document_id = 'doc_1', "
                     + "content_key_enc = content_key_enc WHERE false")).as("the two columns that may change").isZero();
         }
@@ -91,6 +93,15 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     "DELETE FROM billing_series",
                     "UPDATE billing_series SET financial_year = 2027",
                     "UPDATE billing_series SET series = 'CN'",
+                    "DELETE FROM merchant_provider_accounts",
+                    "DELETE FROM merchant_kyc_submissions",
+                    "UPDATE merchant_kyc_submissions SET submitted_by = 'forged'",
+                    "UPDATE merchant_kyc_submissions SET valid_until = now()",
+                    "UPDATE merchant_kyc_submissions SET details_hash = details_hash",
+                    "DELETE FROM aggregation_collection_reservations",
+                    "UPDATE aggregation_collection_reservations SET amount = amount + 1",
+                    "DELETE FROM aggregation_daily_volume",
+                    "UPDATE aggregation_daily_volume SET business_date = current_date",
                     "DELETE FROM payment_transitions",
                     "DELETE FROM dispute_evidence_files",
                     "UPDATE dispute_evidence_files SET content_enc = content_enc",

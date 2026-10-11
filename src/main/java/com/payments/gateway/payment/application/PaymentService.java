@@ -118,7 +118,10 @@ public class PaymentService {
                 command.captureMethod(), command.description(), command.customer(), command.metadata(),
                 now.plus(expiry), now);
         MDC.put(Mdc.PAYMENT_ID, payment.id());
-        tx.executeWithoutResult(status -> store.save(payment));
+        tx.executeWithoutResult(status -> {
+            merchants.checkCollection(merchantId, payment.amount(), null);
+            store.save(payment);
+        });
         // Not "pg.payments.created": Prometheus reserves the _created suffix, so it would export as pg_payments_total anyway.
         meters.counter("pg.payments").increment();
         return payment;
@@ -189,6 +192,7 @@ public class PaymentService {
             if (route.isEmpty()) {
                 throw noRoute(route, command.method());
             }
+            merchants.checkCollection(merchantId, payment.amount(), payment.id());
             PaymentAttempt attempt = payment.startAttempt(Ids.newId("att"), command.method(), route.providers().getFirst(),
                     route.ruleId(), properties.maxAttempts(), now);
             payment.recordRisk(attempt.id(), new RiskAssessment(decision.outcome().name(), decision.reasons()), now);

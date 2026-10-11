@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.AttemptUpdate;
 import com.payments.gateway.payment.domain.Failure;
@@ -25,6 +26,7 @@ import com.payments.gateway.provider.spi.ProviderTimeoutException;
 import com.payments.gateway.provider.spi.ProviderUnavailableException;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.config.WorkerProperties;
+import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.model.FailureCategory;
 import java.time.Clock;
 import java.time.Duration;
@@ -60,10 +62,12 @@ public class MandateScheduler {
     private final WorkerProperties workers;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final MerchantDirectory merchants;
 
     public MandateScheduler(MandateRepository mandates, PaymentRepository payments, MandateService service,
                             PaymentStore store, PaymentOutcomeService outcomes, ProviderClient providerClient,
-                            MandateProperties properties, WorkerProperties workers, TransactionTemplate tx, Clock clock) {
+                            MandateProperties properties, WorkerProperties workers, TransactionTemplate tx, Clock clock,
+                            MerchantDirectory merchants) {
         this.mandates = mandates;
         this.payments = payments;
         this.service = service;
@@ -74,6 +78,7 @@ public class MandateScheduler {
         this.workers = workers;
         this.tx = tx;
         this.clock = clock;
+        this.merchants = merchants;
     }
 
     public int processDueMandates() {
@@ -203,6 +208,12 @@ public class MandateScheduler {
             if (!providerClient.isAvailable(mandate.providerCode())) {
                 debit.checkAgainAt(now.plus(UNAVAILABLE_RETRY), now);
                 store.saveDebit(debit);
+                return null;
+            }
+            try {
+                merchants.checkCollection(payment.merchantId(), payment.amount(), payment.id());
+            } catch (GatewayException exception) {
+                service.failWaitingPayment(payment, debit, exception.code().code(), exception.getMessage(), TransitionSource.SYSTEM, now);
                 return null;
             }
             debit.executionStarted(now);

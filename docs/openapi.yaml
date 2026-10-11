@@ -22,6 +22,9 @@ info:
       on webhooks (see `webhooks`) or `GET /v1/payments/{payment_id}` for the final status.
     - **Recurring payments**: register a mandate once, then create debits on it. Each debit is a payment, so its
       outcome arrives as `payment.*` events.
+    - **Aggregator collections**: merchants activated by independent KYC approval collect through linked platform
+      accounts. Expired KYC blocks new payments and mandate debits with `409 onboarding_invalid_state`; approved
+      business limits can return `422 collection_limit_exceeded`. Existing refunds and outcomes remain recoverable.
 
     This document is the contract: `ApiContractTest` fails the build if the implementation drifts from it.
 servers:
@@ -1362,6 +1365,7 @@ components:
                  unsupported_media_type, payment_invalid_state, refund_already_exists, mandate_invalid_state,
                  mandate_debit_already_exists, dispute_invalid_state, idempotency_request_in_progress,
                  billing_invalid_state, billing_invoice_blocked, billing_reference_reuse,
+                 onboarding_invalid_state, collection_limit_exceeded,
                  idempotency_key_reuse, amount_exceeds_refundable, amount_exceeds_mandate_limit,
                  capture_amount_mismatch, unsupported_payment_method, unsupported_currency,
                  dispute_response_unsupported, rate_limited, no_provider_available, internal_error]

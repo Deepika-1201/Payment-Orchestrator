@@ -25,6 +25,12 @@ BEGIN
     EXECUTE format('GRANT UPDATE (next_month) ON billing_accounts TO %I', app);
     EXECUTE format('REVOKE UPDATE, DELETE ON billing_series FROM %I', app);
     EXECUTE format('GRANT UPDATE (last_value) ON billing_series TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON merchant_kyc_submissions FROM %I', app);
+    EXECUTE format('REVOKE DELETE ON merchant_provider_accounts FROM %I', app);
+    EXECUTE format('GRANT UPDATE (details_enc, status, reviewed_by, reviewed_at) ON merchant_kyc_submissions TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON aggregation_collection_reservations FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON aggregation_daily_volume FROM %I', app);
+    EXECUTE format('GRANT UPDATE (used_amount) ON aggregation_daily_volume TO %I', app);
     -- Evidence is kept with the dispute record (ADR-039): only the PSP's document id and the wrapped key may change.
     EXECUTE format('REVOKE UPDATE, DELETE ON dispute_evidence_files FROM %I', app);
     EXECUTE format('GRANT UPDATE (provider_document_id, content_key_enc) ON dispute_evidence_files TO %I', app);

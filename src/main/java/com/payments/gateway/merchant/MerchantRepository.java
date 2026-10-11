@@ -25,7 +25,7 @@ public class MerchantRepository {
 
     public record ProviderAccountRow(String id, String merchantId, String providerCode, String status,
                                      byte[] credentialsEncrypted, Instant credentialsUpdatedAt, Instant createdAt,
-                                     Instant disabledAt) {
+                                     Instant disabledAt, String credentialOwnerId) {
     }
 
     private final JdbcClient jdbc;
@@ -305,8 +305,12 @@ public class MerchantRepository {
 
     public List<String> findActiveProviderCodes(String merchantId) {
         return jdbc.sql("""
-                SELECT provider_code FROM merchant_provider_accounts
-                 WHERE merchant_id = :merchantId AND status = 'ACTIVE' ORDER BY provider_code
+                                                                SELECT account.provider_code FROM merchant_provider_accounts account
+                                                                        LEFT JOIN merchant_provider_accounts owner ON owner.id = account.credential_owner_id
+                                                                        LEFT JOIN merchants owner_merchant ON owner_merchant.id = owner.merchant_id
+                                                                 WHERE account.merchant_id = :merchantId AND account.status = 'ACTIVE'
+                                                                         AND (account.credential_owner_id IS NULL OR (owner.status = 'ACTIVE' AND owner_merchant.status = 'ACTIVE'))
+                                                                 ORDER BY account.provider_code
                 """)
                 .param("merchantId", merchantId)
                 .query(String.class)
@@ -344,6 +348,25 @@ public class MerchantRepository {
     private static ProviderAccountRow mapProviderAccount(ResultSet rs, int rowNum) throws SQLException {
         return new ProviderAccountRow(rs.getString("id"), rs.getString("merchant_id"), rs.getString("provider_code"),
                 rs.getString("status"), rs.getBytes("credentials_enc"), Sql.instant(rs, "credentials_updated_at"),
-                Sql.instant(rs, "created_at"), Sql.instant(rs, "disabled_at"));
+                                Sql.instant(rs, "created_at"), Sql.instant(rs, "disabled_at"), rs.getString("credential_owner_id"));
     }
+
+        public List<String> providerScope(String ownerMerchantId, String providerCode) {
+                return jdbc.sql("""
+                                SELECT :owner AS merchant_id
+                                UNION
+                                SELECT account.merchant_id FROM merchant_provider_accounts account
+                                  JOIN merchant_provider_accounts owner ON owner.id = account.credential_owner_id
+                                 WHERE owner.merchant_id = :owner AND owner.provider_code = :provider
+                                """).param("owner", ownerMerchantId).param("provider", providerCode).query(String.class).list();
+        }
+
+        public boolean ownsProviderAccount(String merchantId, String providerCode, String ownerMerchantId) {
+                return jdbc.sql("""
+                                SELECT EXISTS (SELECT 1 FROM merchant_provider_accounts account
+                                        JOIN merchant_provider_accounts owner ON owner.id = account.credential_owner_id
+                                        WHERE account.merchant_id = :merchant AND account.provider_code = :provider AND owner.merchant_id = :owner)
+                                """).param("merchant", merchantId).param("provider", providerCode).param("owner", ownerMerchantId)
+                                .query(Boolean.class).single();
+        }
 }

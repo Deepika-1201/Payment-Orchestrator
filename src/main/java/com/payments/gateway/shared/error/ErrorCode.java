@@ -22,6 +22,8 @@ public enum ErrorCode {
     BILLING_INVALID_STATE(409, "Billing operation is not allowed in the current state"),
     BILLING_INVOICE_BLOCKED(409, "Invoice has activity awaiting conversion or pricing"),
     BILLING_REFERENCE_REUSE(422, "Credit-note reference was reused with different content"),
+    ONBOARDING_INVALID_STATE(409, "Aggregator onboarding or collection is not allowed in the current state"),
+    COLLECTION_LIMIT_EXCEEDED(422, "Merchant collection limit is exceeded"),
     IDEMPOTENCY_REQUEST_IN_PROGRESS(409, "A request with this Idempotency-Key is still in progress"),
     IDEMPOTENCY_KEY_REUSE(422, "Idempotency-Key was already used with a different request"),
     AMOUNT_EXCEEDS_REFUNDABLE(422, "Refund amount exceeds the refundable amount"),

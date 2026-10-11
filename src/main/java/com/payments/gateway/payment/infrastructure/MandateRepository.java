@@ -66,11 +66,11 @@ public class MandateRepository {
     }
 
     /** Finds a mandate by one of the PSP's references, within one merchant when the event came from its account. */
-    public Optional<String> findIdByProviderReference(String providerCode, String reference, String merchantScope) {
+    public Optional<String> findIdByProviderReference(String providerCode, String reference, String[] merchantScope) {
         return jdbc.sql("""
                 SELECT id FROM mandates
                  WHERE provider_code = :provider AND (provider_reference = :reference OR provider_mandate_reference = :reference)
-                   AND (CAST(:merchant AS text) IS NULL OR merchant_id = :merchant)
+                   AND (CAST(:merchant AS text[]) IS NULL OR merchant_id = ANY(:merchant))
                  ORDER BY created_at
                  LIMIT 1
                 """)
@@ -234,11 +234,11 @@ public class MandateRepository {
     }
 
     public Optional<ClaimedDebit> findDebitByNotificationReference(String providerCode, String reference,
-                                                                    String merchantScope) {
+                                                                    String[] merchantScope) {
         return jdbc.sql("""
                 SELECT d.id, d.payment_id, d.mandate_id FROM mandate_debits d JOIN mandates m ON m.id = d.mandate_id
                  WHERE d.notification_reference = :reference AND m.provider_code = :provider
-                   AND (CAST(:merchant AS text) IS NULL OR d.merchant_id = :merchant)
+                   AND (CAST(:merchant AS text[]) IS NULL OR d.merchant_id = ANY(:merchant))
                 """)
                 .param("reference", reference)
                 .param("provider", providerCode)

@@ -13,6 +13,7 @@ import org.springframework.mock.env.MockEnvironment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class ProductionConfigurationGuardTest {
 
@@ -28,6 +29,22 @@ class ProductionConfigurationGuardTest {
                 "jdbc:postgresql://db.internal:5432/payments?sslmode=verify-full&sslrootcert=/app/certs/rds.pem",
                 "https://api.razorpay.com/v1", "https://api.cashfree.com/pg"))
                 .isEmpty();
+    }
+
+    @Test
+    void aggregationRequiresAnExplicitProductionAuthorizationDeclaration() {
+        MockEnvironment environment = new MockEnvironment().withProperty("spring.datasource.url",
+                "jdbc:postgresql://db.internal:5432/payments?sslmode=verify-full");
+        Runnable start = () -> new ProductionConfigurationGuard(SECURE, environment,
+                new OutboundWebhookProperties(null, null, false, true), new RateLimitProperties(true, null, null),
+                new CheckoutProperties("https://pay.example.com", null, null));
+        assertThatCode(start::run).doesNotThrowAnyException();
+        environment.withProperty("pg.aggregation.enabled", "true");
+        assertThatThrownBy(start::run).hasMessageContaining("authorization-reference");
+        environment.withProperty("pg.aggregation.authorization-reference", "   ");
+        assertThatThrownBy(start::run).hasMessageContaining("authorization-reference");
+        environment.withProperty("pg.aggregation.authorization-reference", "authorization-declared-for-test");
+        assertThatCode(start::run).doesNotThrowAnyException();
     }
 
     @Test

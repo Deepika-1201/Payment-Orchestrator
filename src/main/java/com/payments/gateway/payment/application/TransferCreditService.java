@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.AttemptUpdate;
 import com.payments.gateway.payment.domain.CreditAllocation;
@@ -59,10 +60,12 @@ public class TransferCreditService {
     private final TransactionTemplate tx;
     private final Clock clock;
     private final MeterRegistry meters;
+    private final MerchantDirectory merchants;
 
     public TransferCreditService(PaymentRepository payments, TransferCreditRepository credits, PaymentStore store,
                                  RefundService refunds, PaymentOutcomeService outcomes, ProviderClient providerClient,
-                                 PaymentProperties properties, TransactionTemplate tx, Clock clock, MeterRegistry meters) {
+                                 PaymentProperties properties, TransactionTemplate tx, Clock clock, MeterRegistry meters,
+                                 MerchantDirectory merchants) {
         this.payments = payments;
         this.credits = credits;
         this.store = store;
@@ -73,6 +76,7 @@ public class TransferCreditService {
         this.tx = tx;
         this.clock = clock;
         this.meters = meters;
+        this.merchants = merchants;
         for (String result : List.of("applied", "returned", "unmatched")) {
             meters.counter("pg.transfer.credits", "result", result);
         }
@@ -168,7 +172,7 @@ public class TransferCreditService {
         if (locator.isEmpty()) {
             return recordUnmatched(providerCode, merchantScope, reported);
         }
-        if (merchantScope != null && !merchantScope.equals(locator.get().merchantId())) {
+        if (!merchants.acceptsProviderScope(locator.get().merchantId(), providerCode, merchantScope)) {
             log.warn("Ignored {} credit {} from merchant {}'s account: attempt {} belongs to another merchant",
                     providerCode, reported.providerReference(), merchantScope, locator.get().attemptId());
             return false;

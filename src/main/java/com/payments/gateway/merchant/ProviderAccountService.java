@@ -48,9 +48,11 @@ public class ProviderAccountService implements MerchantAccountResolver {
     private final AuditLogger audit;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final OnboardingRepository onboarding;
 
     public ProviderAccountService(MerchantRepository repository, ProviderRegistry providers, SecretCipher cipher,
-                                  JsonCodec json, AuditLogger audit, TransactionTemplate tx, Clock clock) {
+                                  JsonCodec json, AuditLogger audit, TransactionTemplate tx, Clock clock,
+                                  OnboardingRepository onboarding) {
         this.repository = repository;
         this.providers = providers;
         this.cipher = cipher;
@@ -58,6 +60,7 @@ public class ProviderAccountService implements MerchantAccountResolver {
         this.audit = audit;
         this.tx = tx;
         this.clock = clock;
+        this.onboarding = onboarding;
     }
 
     public List<AccountView> list(String merchantId) {
@@ -75,6 +78,21 @@ public class ProviderAccountService implements MerchantAccountResolver {
         Instant now = clock.instant();
         return tx.execute(status -> {
             repository.lockById(merchantId).orElseThrow(() -> GatewayException.notFound("Merchant", merchantId));
+            var profile = onboarding.profile(merchantId, false);
+            if (profile.aggregator()) {
+                if (credentials != null) {
+                    throw GatewayException.validation("credentials", "aggregator accounts use their immutable collection owner");
+                }
+                ProviderAccountRow owner = repository.findProviderAccount(profile.collectionOwnerId(), providerCode)
+                        .filter(account -> ACTIVE.equals(account.status()))
+                        .orElseThrow(() -> GatewayException.validation("provider", "requires an active platform collection account"));
+                onboarding.link(merchantId, owner.id(), providerCode, now);
+                ProviderAccountRow linked = repository.findProviderAccount(merchantId, providerCode).orElseThrow();
+                repository.updateProviderAccount(linked.id(), ACTIVE, null, null, null);
+                audit.record("ADMIN", actor, "provider_account.linked", "provider_account", linked.id(),
+                        Map.of("merchant_id", merchantId, "provider", providerCode, "credential_owner_id", owner.id()));
+                return view(repository.findProviderAccountById(linked.id()).orElseThrow());
+            }
             Optional<ProviderAccountRow> existing = repository.findProviderAccount(merchantId, providerCode);
             String id = existing.map(ProviderAccountRow::id).orElseGet(() -> Ids.newId("mpa"));
             if (existing.isEmpty()) {
@@ -153,8 +171,10 @@ public class ProviderAccountService implements MerchantAccountResolver {
     }
 
     private MerchantAccount toAccount(ProviderAccountRow row) {
-        Map<String, String> credentials = row.credentialsEncrypted() == null ? Map.of()
-                : decrypt(row.id(), row.credentialsEncrypted());
+        ProviderAccountRow owner = row.credentialOwnerId() == null ? row
+            : repository.findProviderAccountById(row.credentialOwnerId()).orElseThrow();
+        Map<String, String> credentials = owner.credentialsEncrypted() == null ? Map.of()
+            : decrypt(owner.id(), owner.credentialsEncrypted());
         return new MerchantAccount(row.id(), row.merchantId(), row.providerCode(), credentials);
     }
 

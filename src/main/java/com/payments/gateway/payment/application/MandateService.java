@@ -127,6 +127,7 @@ public class MandateService {
         MandateSupport support = provider.capabilities().mandates().get(command.instrument());
         Instant authorizationExpiresAt = now.plus(properties.authorizationWindow());
         Created created = tx.execute(status -> {
+            merchants.checkCollection(merchantId, maxAmount, null);
             Mandate mandate = Mandate.create(Ids.newId("mdt"), merchantId, provider.code(), command.instrument(), maxAmount,
                     command.frequency(), startAt, endAt, command.description(), command.customer(), command.metadata(),
                     authorizationExpiresAt, now);
@@ -143,6 +144,7 @@ public class MandateService {
             }
             PaymentAttempt attempt = registration.startMandateAttempt(Ids.newId("att"), provider.code(), null, now);
             store.save(registration);
+            merchants.checkCollection(merchantId, registration.amount(), registration.id());
             return new Created(mandate, registration.id(), attempt.id());
         });
         Mandate mandate = created.mandate();
@@ -207,13 +209,13 @@ public class MandateService {
         Optional<String> mandateId = Optional.empty();
         for (String reference : new String[] {result.providerReference(), result.providerMandateReference()}) {
             if (mandateId.isEmpty() && reference != null) {
-                mandateId = mandates.findIdByProviderReference(providerCode, reference, merchantScope);
+                mandateId = mandates.findIdByProviderReference(providerCode, reference, merchants.providerScope(merchantScope, providerCode));
             }
         }
         if (mandateId.isEmpty() && event.merchantReference() != null) {
             Optional<Mandate> byOurId = mandates.findById(event.merchantReference())
                     .filter(m -> m.providerCode().equals(providerCode));
-            if (byOurId.isPresent() && merchantScope != null && !merchantScope.equals(byOurId.get().merchantId())) {
+            if (byOurId.isPresent() && !merchants.acceptsProviderScope(byOurId.get().merchantId(), providerCode, merchantScope)) {
                 log.warn("Ignored {} mandate event {} from merchant {}'s account: mandate {} belongs to another merchant",
                         providerCode, event.eventId(), merchantScope, byOurId.get().id());
                 meters.counter("pg.mandates.provider_events", "result", "foreign_resource").increment();
@@ -321,6 +323,7 @@ public class MandateService {
             Payment payment = Payment.createForMandate(paymentId, merchantId, command.merchantDebitId(), debit.amount(),
                     command.description(), customerOf(mandate), Map.of(), paymentExpiry(debit.notBefore(), now),
                     mandateId, properties.attemptLimit(), now);
+                merchants.checkCollection(merchantId, payment.amount(), null);
             store.save(payment);
             store.saveDebit(debit);
             meters.counter("pg.mandates.debits", "instrument", mandate.instrument().name().toLowerCase(Locale.ROOT))
@@ -364,7 +367,7 @@ public class MandateService {
     public boolean applyNotificationEvent(String providerCode, String merchantScope, ProviderEvent event) {
         ProviderNotificationResult result = event.notification();
         Optional<MandateRepository.ClaimedDebit> debit = result.providerReference() == null ? Optional.empty()
-                : mandates.findDebitByNotificationReference(providerCode, result.providerReference(), merchantScope);
+                : mandates.findDebitByNotificationReference(providerCode, result.providerReference(), merchants.providerScope(merchantScope, providerCode));
         if (debit.isEmpty()) {
             meters.counter("pg.mandates.provider_events", "result", "ignored").increment();
             return false;

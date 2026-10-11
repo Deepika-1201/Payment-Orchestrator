@@ -40,6 +40,10 @@ public class ProductionConfigurationGuard {
                 ? environment.getProperty("pg.providers.cashfree.base-url", CASHFREE_API + "pg") : null;
         List<String> problems = check(security, mockProviders, webhooks, rateLimits, checkout, datasourceUrl, razorpayBaseUrl,
                 cashfreeBaseUrl);
+        if (environment.getProperty("pg.aggregation.enabled", Boolean.class, false)
+            && environment.getProperty("pg.aggregation.authorization-reference", "").isBlank()) {
+            problems.add("pg.aggregation.authorization-reference must declare the production RBI authorization");
+        }
         if (!problems.isEmpty()) {
             throw new IllegalStateException("Unsafe production configuration: " + String.join("; ", problems));
         }

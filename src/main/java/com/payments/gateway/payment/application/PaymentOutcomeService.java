@@ -135,7 +135,7 @@ public class PaymentOutcomeService {
         if (locator.isEmpty()) {
             return false;
         }
-        if (merchantScope != null && !merchantScope.equals(locator.get().merchantId())) {
+        if (!merchants.acceptsProviderScope(locator.get().merchantId(), providerCode, merchantScope)) {
             log.warn("Ignored {} event {} from merchant {}'s account: attempt {} belongs to another merchant",
                     providerCode, event.eventId(), merchantScope, locator.get().attemptId());
             meters.counter("pg.webhooks.inbound", "provider", providerCode, "result", "foreign_resource").increment();

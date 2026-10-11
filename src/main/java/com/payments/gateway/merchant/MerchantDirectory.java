@@ -3,6 +3,7 @@ package com.payments.gateway.merchant;
 import com.payments.gateway.shared.crypto.Hashing;
 import com.payments.gateway.shared.crypto.SecretCipher;
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.model.Money;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -25,11 +26,13 @@ public class MerchantDirectory {
     private final MerchantRepository repository;
     private final SecretCipher cipher;
     private final Clock clock;
+    private final OnboardingService onboarding;
 
-    public MerchantDirectory(MerchantRepository repository, SecretCipher cipher, Clock clock) {
+    public MerchantDirectory(MerchantRepository repository, SecretCipher cipher, Clock clock, OnboardingService onboarding) {
         this.repository = repository;
         this.cipher = cipher;
         this.clock = clock;
+        this.onboarding = onboarding;
     }
 
     public Merchant require(String merchantId) {
@@ -49,6 +52,22 @@ public class MerchantDirectory {
 
     public Set<String> activeProviders(String merchantId) {
         return new LinkedHashSet<>(repository.findActiveProviderCodes(merchantId));
+    }
+
+    public void checkCollection(String merchantId, Money amount, String paymentId) {
+        onboarding.checkCollection(merchantId, amount, paymentId);
+    }
+
+    public boolean isAggregator(String merchantId) {
+        return onboarding.isAggregator(merchantId);
+    }
+
+    public boolean acceptsProviderScope(String merchantId, String providerCode, String scope) {
+        return scope == null || scope.equals(merchantId) || repository.ownsProviderAccount(merchantId, providerCode, scope);
+    }
+
+    public String[] providerScope(String scope, String providerCode) {
+        return scope == null ? null : repository.providerScope(scope, providerCode).toArray(String[]::new);
     }
 
     /** Any status: disabled accounts still settle and reconcile. */
