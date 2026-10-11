@@ -2,6 +2,7 @@ package com.payments.gateway.ledger;
 
 import com.payments.gateway.ledger.LedgerModel.Leg;
 import com.payments.gateway.ledger.LedgerModel.Posting;
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.shared.events.CurrencyConversion;
 import com.payments.gateway.shared.events.FundsMovement;
 import com.payments.gateway.shared.model.Money;
@@ -15,13 +16,18 @@ import org.springframework.stereotype.Component;
 public class LedgerPostingListener {
 
     private final LedgerService ledger;
+        private final MerchantDirectory merchants;
 
-    public LedgerPostingListener(LedgerService ledger) {
+        public LedgerPostingListener(LedgerService ledger, MerchantDirectory merchants) {
         this.ledger = ledger;
+                this.merchants = merchants;
     }
 
     @EventListener
     public void on(FundsMovement movement) {
+                if (merchants.escrowControlled(movement.merchantId())) {
+                        return;
+                }
         LedgerAccountType counterparty = movement.amount().inSettlementCurrency()
                 ? LedgerAccountType.PSP_RECEIVABLE : LedgerAccountType.FX_CONVERSION;
         Posting posting = switch (movement.type()) {
@@ -67,6 +73,9 @@ public class LedgerPostingListener {
 
         @EventListener
         public void on(CurrencyConversion conversion) {
+                if (merchants.escrowControlled(conversion.merchantId())) {
+                        return;
+                }
                 List<Leg> legs = new ArrayList<>();
                 boolean received = conversion.kind() == CurrencyConversion.Kind.CAPTURE
                                 || conversion.kind() == CurrencyConversion.Kind.CHARGEBACK_REVERSAL;

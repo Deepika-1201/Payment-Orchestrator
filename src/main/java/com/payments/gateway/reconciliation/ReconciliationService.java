@@ -26,6 +26,9 @@ import com.payments.gateway.shared.error.GatewayException;
 import com.payments.gateway.shared.events.CurrencyConversion.Kind;
 import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.Money;
+import com.payments.gateway.treasury.TreasuryService;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -115,6 +118,8 @@ public class ReconciliationService {
         long chargebacks;
         long adjustments;
         final Map<String, Long> internalNetBySettlement = new HashMap<>();
+        final Map<String, Map<String, Long>> allocations = new HashMap<>();
+        final Set<String> incompleteSettlements = new HashSet<>();
 
         RunContext(String runId, String merchantId, String provider, Instant now) {
             this.runId = runId;
@@ -143,11 +148,12 @@ public class ReconciliationService {
     private final ProviderFeeService fees;
     private final Clock clock;
     private final MeterRegistry meters;
+    private final TreasuryService treasury;
 
     public ReconciliationService(ReconciliationRepository repository, PaymentReconciliationService payments,
                                  LedgerService ledger, ProviderClient providerClient, ProviderRegistry providers,
                                  MerchantDirectory merchants, AuditLogger audit, ReconciliationProperties properties,
-                                 ProviderFeeService fees, Clock clock, MeterRegistry meters) {
+                                 ProviderFeeService fees, Clock clock, MeterRegistry meters, TreasuryService treasury) {
         this.repository = repository;
         this.payments = payments;
         this.ledger = ledger;
@@ -159,6 +165,7 @@ public class ReconciliationService {
         this.fees = fees;
         this.clock = clock;
         this.meters = meters;
+        this.treasury = treasury;
         Gauge.builder("pg.reconciliation.exceptions.open", repository, r -> r.countOpenExceptions(null))
                 .description("Open reconciliation exceptions").register(meters);
         Gauge.builder("pg.reconciliation.exceptions.overdue", repository, r -> r.countOverdueExceptions(null, clock.instant()))
@@ -167,6 +174,9 @@ public class ReconciliationService {
 
     public RunSummary run(String merchantId, String providerCode, Instant from, Instant to) {
         merchants.require(merchantId);
+        if (merchants.isAggregator(merchantId)) {
+            throw GatewayException.validation("merchant_id", "reconcile the platform collection owner once, not its business-merchant aliases");
+        }
         PaymentProvider provider = providers.find(providerCode)
                 .orElseThrow(() -> GatewayException.validation("provider", "is unknown: " + providerCode));
         if (!provider.capabilities().settlementReports()) {
@@ -347,6 +357,10 @@ public class ReconciliationService {
 
     // ------------------------------------------------------------------ reconciliation steps
 
+    public boolean hasOpenExceptions(String merchantId) {
+        return repository.countOpenExceptions(merchantId) > 0;
+    }
+
     private void reconcileLines(RunContext run, SettlementReport report) {
         Set<String> seen = new HashSet<>();
         List<SettlementReport.Line> ordered = report.lines().stream().sorted(Comparator
@@ -371,6 +385,7 @@ public class ReconciliationService {
             }
             String reference = line.providerReference() == null ? line.lineId() : line.providerReference();
             if (!seen.add(line.type() + "|" + reference)) {
+                run.incompleteSettlements.add(line.settlementId());
                 run.open("DUPLICATE", reference, null, null, line.amount().amount(), "Reference appears more than once in the report");
                 repository.insertLine(run.runId, run.provider, line, Result.EXCEPTION.name(), null);
                 continue;
@@ -385,6 +400,7 @@ public class ReconciliationService {
             repository.insertLine(run.runId, run.provider, line, outcome.result().name(),
                     outcome.item() == null ? null : outcome.item().entityId());
             if (outcome.result() == Result.EXCEPTION) {
+                run.incompleteSettlements.add(line.settlementId());
                 continue;
             }
             if (outcome.result() == Result.MATCHED) {
@@ -396,10 +412,12 @@ public class ReconciliationService {
             long internal = line.amount().amount();
             long signedInternal = (line.type().credit() ? internal : -internal) - fee;
             if (line.settlementId() != null) {
-                run.internalNetBySettlement.merge(line.settlementId(), signedInternal, Long::sum);
+                run.internalNetBySettlement.merge(line.settlementId(), signedInternal, Math::addExact);
+                String merchant = outcome.item().merchantId() == null ? run.merchantId : outcome.item().merchantId();
+                run.allocations.computeIfAbsent(line.settlementId(), ignored -> new HashMap<>()).merge(merchant, signedInternal, Math::addExact);
             }
             if (fee > 0) {
-                postFee(run, line);
+                postFee(run, line, outcome.item());
             }
             checkFeeSchedule(run, line, outcome.item());
         }
@@ -409,7 +427,7 @@ public class ReconciliationService {
         if (line.type() != SettlementReport.LineType.PAYMENT || item.method() == null || line.occurredAt() == null) {
             return;
         }
-        ProviderFeeSchedule schedule = fees.effective(run.merchantId, List.of(run.provider), item.method(),
+        ProviderFeeSchedule schedule = fees.effective(item.merchantId() == null ? run.merchantId : item.merchantId(), List.of(run.provider), item.method(),
                 item.amount().currency(), line.occurredAt()).get(run.provider);
         if (schedule == null) {
             return;
@@ -567,7 +585,14 @@ public class ReconciliationService {
         return new LineOutcome(Result.EXCEPTION, null);
     }
 
-    private void postFee(RunContext run, SettlementReport.Line line) {
+    private void postFee(RunContext run, SettlementReport.Line line, InternalItem item) {
+        if (merchants.escrowControlled(run.merchantId)) {
+            long merchantFee = BigDecimal.valueOf(line.fee().amount()).multiply(BigDecimal.valueOf(item.merchantAmount()))
+                    .divide(BigDecimal.valueOf(item.amount().amount()), 0, RoundingMode.HALF_EVEN).longValueExact();
+            treasury.pspFee(item.merchantId(), run.provider, run.provider + ":" + run.merchantId + ":" + line.lineId(),
+                    line.fee(), merchantFee, line.occurredAt() == null ? run.now : line.occurredAt());
+            return;
+        }
         ledger.post(new Posting(run.merchantId, run.provider, LedgerTransactionType.PSP_FEE, "REPORT_LINE",
                 run.provider + ":" + line.lineId(), "PSP fee on "
                         + (line.providerReference() == null ? line.lineId() : line.providerReference()),
@@ -579,6 +604,18 @@ public class ReconciliationService {
     private void postSettlements(RunContext run, SettlementReport report) {
         for (SettlementReport.Settlement settlement : report.settlements()) {
             run.settled += settlement.netAmount();
+            if (merchants.escrowControlled(run.merchantId)) {
+                long expected = run.internalNetBySettlement.getOrDefault(settlement.settlementId(), 0L);
+                Map<String, Long> allocations = run.allocations.getOrDefault(settlement.settlementId(), Map.of());
+                if (run.incompleteSettlements.contains(settlement.settlementId()) || expected != settlement.netAmount() || allocations.isEmpty()) {
+                    run.open("SETTLEMENT_MISMATCH", settlement.settlementId(), null, expected, settlement.netAmount(),
+                            "Platform settlement has incomplete allocations or a mismatched total; no escrow cash was booked");
+                } else {
+                    treasury.receive(run.merchantId, run.provider, settlement.settlementId(), settlement.netAmount(), settlement.currency(),
+                            settlement.bankReference(), settlement.settledAt() == null ? run.now : settlement.settledAt(), allocations);
+                }
+                continue;
+            }
             if (settlement.netAmount() != 0) {
                 Money amount = Money.of(Math.abs(settlement.netAmount()), settlement.currency());
                 List<Leg> legs = settlement.netAmount() > 0

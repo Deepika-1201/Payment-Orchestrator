@@ -1,5 +1,6 @@
 package com.payments.gateway.payment.application;
 
+import com.payments.gateway.merchant.MerchantDirectory;
 import com.payments.gateway.payment.domain.AttemptStatus;
 import com.payments.gateway.payment.domain.AttemptUpdate;
 import com.payments.gateway.payment.domain.Dispute;
@@ -45,7 +46,12 @@ public class PaymentReconciliationService {
         CREDIT
     }
 
-    public record InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount, MethodType method) {
+    public record InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount, MethodType method,
+                               String merchantId, long merchantAmount) {
+
+        public InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount, MethodType method) {
+            this(kind, entityId, paymentId, status, amount, method, null, amount.amount());
+        }
 
         public InternalItem(Kind kind, String entityId, String paymentId, String status, Money amount) {
             this(kind, entityId, paymentId, status, amount, null);
@@ -68,12 +74,13 @@ public class PaymentReconciliationService {
     private final PaymentStore store;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private final MerchantDirectory merchants;
 
     public PaymentReconciliationService(PaymentRepository payments, RefundRepository refunds, DisputeRepository disputes,
                                         TransferCreditRepository credits, ReconciliationQueries queries,
                                         PaymentOutcomeService outcomes, RefundService refundService,
                                         DisputeService disputeService, PaymentConversionService conversions,
-                                        PaymentStore store, TransactionTemplate tx, Clock clock) {
+                                        PaymentStore store, TransactionTemplate tx, Clock clock, MerchantDirectory merchants) {
         this.payments = payments;
         this.refunds = refunds;
         this.disputes = disputes;
@@ -86,6 +93,7 @@ public class PaymentReconciliationService {
         this.store = store;
         this.tx = tx;
         this.clock = clock;
+        this.merchants = merchants;
     }
 
     /** Scoped to the merchant whose PSP account produced the report. */
@@ -99,10 +107,10 @@ public class PaymentReconciliationService {
         if (locator.isEmpty()) {
             return providerReference == null ? Optional.empty()
                     : credits.findByProviderReference(providerCode, providerReference)
-                            .filter(credit -> credit.merchantId().equals(merchantId))
+                            .filter(credit -> merchants.acceptsProviderScope(credit.merchantId(), providerCode, merchantId))
                             .map(PaymentReconciliationService::toItem);
         }
-        return locator.filter(l -> l.merchantId().equals(merchantId)).flatMap(l -> payments.findById(l.paymentId())
+        return locator.filter(l -> merchants.acceptsProviderScope(l.merchantId(), providerCode, merchantId)).flatMap(l -> payments.findById(l.paymentId())
                 .flatMap(payment -> payment.attempt(l.attemptId()).map(attempt -> toItem(payment, attempt))));
     }
 
@@ -113,7 +121,7 @@ public class PaymentReconciliationService {
         if (refund.isEmpty() && merchantReference != null) {
             refund = refunds.findById(merchantReference).filter(r -> r.providerCode().equals(providerCode));
         }
-        return refund.filter(r -> r.merchantId().equals(merchantId)).map(PaymentReconciliationService::toItem);
+        return refund.filter(r -> merchants.acceptsProviderScope(r.merchantId(), providerCode, merchantId)).map(this::toItem);
     }
 
     /** Applies a PSP-settled capture; the result reflects the attempt after the domain rules ran. */
@@ -167,31 +175,38 @@ public class PaymentReconciliationService {
     }
 
     public List<InternalItem> succeededBetween(String merchantId, String providerCode, Instant from, Instant to) {
-        List<InternalItem> items = new ArrayList<>(queries.succeededBetween(merchantId, providerCode, from, to).stream()
-                .map(s -> new InternalItem("REFUND".equals(s.entity()) ? Kind.REFUND : Kind.PAYMENT, s.entityId(),
-                        s.paymentId(), "SUCCEEDED", s.amount()))
-                .toList());
-        credits.findReceivedBetween(merchantId, providerCode, from, to).forEach(credit -> items.add(toItem(credit)));
+        List<InternalItem> items = new ArrayList<>();
+        for (String scopedMerchant : merchants.providerScope(merchantId, providerCode)) {
+            queries.succeededBetween(scopedMerchant, providerCode, from, to).forEach(found ->
+                items.add(new InternalItem("REFUND".equals(found.entity()) ? Kind.REFUND : Kind.PAYMENT, found.entityId(),
+                    found.paymentId(), "SUCCEEDED", found.amount(), null, scopedMerchant, found.amount().amount())));
+            credits.findReceivedBetween(scopedMerchant, providerCode, from, to).forEach(credit -> items.add(toItem(credit)));
+        }
         return items;
     }
 
     private static InternalItem toItem(TransferCredit credit) {
-        return new InternalItem(Kind.CREDIT, credit.id(), credit.paymentId(), "SUCCEEDED", credit.amount(), MethodType.BANK_TRANSFER);
+        return new InternalItem(Kind.CREDIT, credit.id(), credit.paymentId(), "SUCCEEDED", credit.amount(), MethodType.BANK_TRANSFER,
+            credit.merchantId(), credit.paymentId() == null ? 0 : credit.amount().amount());
     }
 
     private static InternalItem toItem(Payment payment, PaymentAttempt attempt) {
         return new InternalItem(Kind.PAYMENT, attempt.id(), payment.id(), attempt.status().name(), attempt.capturedAmount(),
-                attempt.method().type());
+            attempt.method().type(), payment.merchantId(),
+            attempt.id().equals(payment.succeededAttemptId()) ? attempt.capturedAmount().amount() : 0);
     }
 
-    private static InternalItem toItem(Refund refund) {
+    private InternalItem toItem(Refund refund) {
+        Payment payment = payments.findById(refund.paymentId()).orElseThrow();
         return new InternalItem(Kind.REFUND, refund.id(), refund.paymentId(),
-                refund.status() == RefundStatus.SUCCEEDED ? "SUCCEEDED" : refund.status().name(), refund.amount());
+                refund.status() == RefundStatus.SUCCEEDED ? "SUCCEEDED" : refund.status().name(), refund.amount(), null,
+                refund.merchantId(), !refund.returnsCredit() && refund.attemptId().equals(payment.succeededAttemptId()) ? refund.amount().amount() : 0);
     }
 
     public Optional<InternalItem> findDispute(String merchantId, String providerCode, String providerDisputeId) {
-        return disputes.findByProviderDisputeId(providerCode, merchantId, providerDisputeId)
-                .map(PaymentReconciliationService::toItem);
+        return java.util.Arrays.stream(merchants.providerScope(merchantId, providerCode))
+            .flatMap(scopedMerchant -> disputes.findByProviderDisputeId(providerCode, scopedMerchant, providerDisputeId).stream())
+            .findFirst().map(this::toItem);
     }
 
     /**
@@ -202,7 +217,7 @@ public class PaymentReconciliationService {
                                                 String attemptId, Money amount) {
         Optional<AttemptLocator> locator = attemptId == null ? Optional.empty()
                 : payments.findAttemptById(attemptId)
-                .filter(l -> l.providerCode().equals(providerCode) && l.merchantId().equals(merchantId))
+                .filter(l -> l.providerCode().equals(providerCode) && merchants.acceptsProviderScope(l.merchantId(), providerCode, merchantId))
                 .filter(found -> payments.findById(found.paymentId()).orElseThrow().amount().currency().equals(amount.currency()));
         return locator.map(l -> toItem(disputeService.record(l, new ProviderDisputeResult(providerDisputeId, null,
                 ProviderDisputeResult.Status.OPEN, amount, "reported_in_settlement", null, "settlement_report"),
@@ -218,7 +233,9 @@ public class PaymentReconciliationService {
                 TransitionSource.RECONCILIATION));
     }
 
-    private static InternalItem toItem(Dispute dispute) {
-        return new InternalItem(Kind.DISPUTE, dispute.id(), dispute.paymentId(), dispute.status().name(), dispute.amount());
+    private InternalItem toItem(Dispute dispute) {
+        Payment payment = payments.findById(dispute.paymentId()).orElseThrow();
+        return new InternalItem(Kind.DISPUTE, dispute.id(), dispute.paymentId(), dispute.status().name(), dispute.amount(), null,
+                dispute.merchantId(), dispute.attemptId().equals(payment.succeededAttemptId()) ? dispute.amount().amount() : 0);
     }
 }

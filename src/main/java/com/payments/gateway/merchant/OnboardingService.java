@@ -32,6 +32,9 @@ public class OnboardingService {
     public record Overview(String mode, String collectionOwnerId, String activeKycId, List<View> data) {
     }
 
+    public record Approval(String ownerId, String kycId) {
+    }
+
     private final OnboardingRepository repository;
     private final MerchantRepository merchants;
     private final AggregationProperties properties;
@@ -100,7 +103,10 @@ public class OnboardingService {
                     throw invalid("Merchant collection ownership is already in use");
                 }
                 String owner = profile.aggregator() ? profile.collectionOwnerId() : properties.platformMerchantId();
-                Merchant platform = merchants.findById(owner).orElseThrow(() -> invalid("The platform merchant does not exist"));
+                Merchant platform = merchants.lockById(owner).orElseThrow(() -> invalid("The platform merchant does not exist"));
+                if (repository.financialHistory(owner)) {
+                    throw invalid("The collection owner must not have business payment or mandate history");
+                }
                 if (platform.status() != Merchant.Status.ACTIVE || repository.profile(owner, false).aggregator()) {
                     throw invalid("The collection owner must be an active orchestrator merchant");
                 }
@@ -132,6 +138,9 @@ public class OnboardingService {
     public void checkCollection(String merchantId, Money amount, String paymentId) {
         Profile profile = repository.profile(merchantId, true);
         if (!profile.aggregator()) {
+            if (repository.collectionOwner(merchantId)) {
+                throw invalid("A collection owner cannot accept direct business payments");
+            }
             return;
         }
         requireEnabled();
@@ -155,6 +164,18 @@ public class OnboardingService {
 
     public boolean isAggregator(String merchantId) {
         return repository.profile(merchantId, false).aggregator();
+    }
+
+    public boolean escrowControlled(String merchantId) {
+        return isAggregator(merchantId) || repository.collectionOwner(merchantId);
+    }
+
+    public Approval approvedDestination(String merchantId) {
+        Profile profile = repository.profile(merchantId, false);
+        if (!profile.aggregator() || profile.activeKycId() == null) {
+            throw invalid("An approved aggregator destination is required");
+        }
+        return new Approval(profile.collectionOwnerId(), profile.activeKycId());
     }
 
     private KycDetails details(Submission submission) {

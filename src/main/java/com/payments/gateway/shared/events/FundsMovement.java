@@ -9,7 +9,12 @@ import java.time.Instant;
  * so the ledger posting commits atomically with it. {@code paymentId} is null for an unmatched credit.
  */
 public record FundsMovement(Type type, String merchantId, String providerCode, String referenceId, String paymentId,
-                            Money amount, Instant occurredAt) {
+                            Money amount, Instant occurredAt, boolean merchantEntitled) {
+
+    public FundsMovement(Type type, String merchantId, String providerCode, String referenceId, String paymentId,
+                         Money amount, Instant occurredAt) {
+        this(type, merchantId, providerCode, referenceId, paymentId, amount, occurredAt, true);
+    }
 
     public enum Type {
         CAPTURE,

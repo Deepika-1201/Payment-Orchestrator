@@ -62,6 +62,18 @@ public class MerchantDirectory {
         return onboarding.isAggregator(merchantId);
     }
 
+    public boolean escrowControlled(String merchantId) {
+        return onboarding.escrowControlled(merchantId);
+    }
+
+    public Merchant lockForSettlement(String merchantId) {
+        return repository.shareById(merchantId).orElseThrow(() -> GatewayException.notFound("Merchant", merchantId));
+    }
+
+    public OnboardingService.Approval approvedDestination(String merchantId) {
+        return onboarding.approvedDestination(merchantId);
+    }
+
     public boolean acceptsProviderScope(String merchantId, String providerCode, String scope) {
         return scope == null || scope.equals(merchantId) || repository.ownsProviderAccount(merchantId, providerCode, scope);
     }

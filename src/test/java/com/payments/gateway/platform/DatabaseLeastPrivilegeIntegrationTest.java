@@ -55,6 +55,8 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
             assertThat(sql.executeUpdate("UPDATE billing_series SET last_value = last_value WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE merchant_kyc_submissions SET details_enc = details_enc WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE aggregation_daily_volume SET used_amount = used_amount WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE treasury_control SET version = version + 1 WHERE id = 1")).isEqualTo(1);
+            assertThat(sql.executeUpdate("UPDATE settlement_batches SET status = status WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE dispute_evidence_files SET provider_document_id = 'doc_1', "
                     + "content_key_enc = content_key_enc WHERE false")).as("the two columns that may change").isZero();
         }
@@ -102,6 +104,20 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     "UPDATE aggregation_collection_reservations SET amount = amount + 1",
                     "DELETE FROM aggregation_daily_volume",
                     "UPDATE aggregation_daily_volume SET business_date = current_date",
+                    "UPDATE ledger_accounts SET normal_side = 'CREDIT'",
+                    "DELETE FROM treasury_movements",
+                    "UPDATE treasury_conversions SET amount = amount + 1",
+                    "DELETE FROM treasury_sources",
+                    "UPDATE treasury_psp_fees SET amount = amount + 1",
+                    "DELETE FROM escrow_receipts",
+                    "UPDATE escrow_receipt_allocations SET amount = amount + 1",
+                    "DELETE FROM settlement_policies",
+                    "UPDATE settlement_batches SET amount = amount + 1",
+                    "DELETE FROM settlement_batches",
+                    "DELETE FROM settlement_batch_items",
+                    "UPDATE settlement_source_claims SET batch_id = 'forged'",
+                    "DELETE FROM treasury_control",
+                    "INSERT INTO treasury_control (id, version) VALUES (1, 0)",
                     "DELETE FROM payment_transitions",
                     "DELETE FROM dispute_evidence_files",
                     "UPDATE dispute_evidence_files SET content_enc = content_enc",

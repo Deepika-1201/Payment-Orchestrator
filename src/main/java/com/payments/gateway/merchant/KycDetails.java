@@ -1,6 +1,9 @@
 package com.payments.gateway.merchant;
 
 import com.payments.gateway.shared.error.GatewayException;
+import com.payments.gateway.shared.web.WireEnums;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Currency;
@@ -19,6 +22,16 @@ public record KycDetails(String legalName, String pan, String gstin, BankAccount
 
         Risk(int refreshDays) {
             this.refreshDays = refreshDays;
+        }
+
+        @JsonCreator
+        public static Risk parse(String value) {
+            return WireEnums.parse(Risk.class, value, "risk");
+        }
+
+        @JsonValue
+        public String wire() {
+            return WireEnums.wire(this);
         }
 
         public Instant expiresAt(Instant verifiedAt) {

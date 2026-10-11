@@ -31,6 +31,13 @@ BEGIN
     EXECUTE format('REVOKE UPDATE, DELETE ON aggregation_collection_reservations FROM %I', app);
     EXECUTE format('REVOKE UPDATE, DELETE ON aggregation_daily_volume FROM %I', app);
     EXECUTE format('GRANT UPDATE (used_amount) ON aggregation_daily_volume TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON ledger_accounts, treasury_movements, treasury_conversions, treasury_sources, settlement_policies FROM %I', app);
+    EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON treasury_control FROM %I', app);
+    EXECUTE format('GRANT UPDATE (version) ON treasury_control TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON treasury_psp_fees, escrow_receipts, escrow_receipt_allocations FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON settlement_batches, settlement_batch_items FROM %I', app);
+    EXECUTE format('GRANT UPDATE (status, decided_by, decided_at, decision_reason) ON settlement_batches TO %I', app);
+    EXECUTE format('REVOKE UPDATE ON settlement_source_claims FROM %I', app);
     -- Evidence is kept with the dispute record (ADR-039): only the PSP's document id and the wrapped key may change.
     EXECUTE format('REVOKE UPDATE, DELETE ON dispute_evidence_files FROM %I', app);
     EXECUTE format('GRANT UPDATE (provider_document_id, content_key_enc) ON dispute_evidence_files TO %I', app);

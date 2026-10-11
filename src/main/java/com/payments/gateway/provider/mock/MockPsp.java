@@ -668,15 +668,15 @@ public final class MockPsp {
         return Optional.empty();
     }
 
-    List<Txn> capturedBetween(String merchantId, Instant from, Instant to) {
+    List<Txn> capturedBetween(String merchantId, String accountId, Instant from, Instant to) {
         List<Txn> result = new ArrayList<>();
         for (Txn txn : transactions.values()) {
-            if (inWindow(txn, merchantId, from, to)) {
+            if (inWindow(txn, merchantId, accountId, from, to)) {
                 result.add(txn);
             }
         }
         for (Txn txn : orphanCaptures) {
-            if (inWindow(txn, merchantId, from, to)) {
+            if (inWindow(txn, merchantId, accountId, from, to)) {
                 result.add(txn);
             }
         }
@@ -684,19 +684,23 @@ public final class MockPsp {
         return result;
     }
 
-    List<RefundTxn> refundsBetween(String merchantId, Instant from, Instant to) {
+    List<RefundTxn> refundsBetween(String merchantId, String accountId, Instant from, Instant to) {
         return refunds.values().stream()
                 .filter(refund -> refund.state() == RefundState.SUCCEEDED)
                 .filter(refund -> !refund.createdAt().isBefore(from) && refund.createdAt().isBefore(to))
-                .filter(refund -> find(refund.paymentReference(), null).map(txn -> txn.merchantId().equals(merchantId)).orElse(false))
+                .filter(refund -> find(refund.paymentReference(), null).map(txn -> accountMatches(txn, merchantId, accountId)).orElse(false))
                 .sorted((a, b) -> a.createdAt().compareTo(b.createdAt()))
                 .toList();
     }
 
-    private static boolean inWindow(Txn txn, String merchantId, Instant from, Instant to) {
+    private static boolean inWindow(Txn txn, String merchantId, String accountId, Instant from, Instant to) {
         Instant capturedAt = txn.capturedAt();
-        return txn.merchantId().equals(merchantId) && capturedAt != null
+        return accountMatches(txn, merchantId, accountId) && capturedAt != null
                 && !capturedAt.isBefore(from) && capturedAt.isBefore(to);
+    }
+
+    private static boolean accountMatches(Txn txn, String merchantId, String accountId) {
+        return accountId.equals(txn.accountId()) || (txn.accountId() == null && txn.merchantId().equals(merchantId));
     }
 
     // ------------------------------------------------------------------ disputes (simulation only)
@@ -716,17 +720,17 @@ public final class MockPsp {
         dispute.moveTo(state, now);
     }
 
-    List<DisputeTxn> disputesOpenedBetween(String merchantId, Instant from, Instant to) {
+    List<DisputeTxn> disputesOpenedBetween(String merchantId, String accountId, Instant from, Instant to) {
         return disputes.values().stream()
-                .filter(d -> d.payment().merchantId().equals(merchantId))
+                .filter(d -> accountMatches(d.payment(), merchantId, accountId))
                 .filter(d -> !d.createdAt().isBefore(from) && d.createdAt().isBefore(to))
                 .sorted((a, b) -> a.createdAt().compareTo(b.createdAt()))
                 .toList();
     }
 
-    List<DisputeTxn> disputesWonBetween(String merchantId, Instant from, Instant to) {
+    List<DisputeTxn> disputesWonBetween(String merchantId, String accountId, Instant from, Instant to) {
         return disputes.values().stream()
-                .filter(d -> d.payment().merchantId().equals(merchantId))
+                .filter(d -> accountMatches(d.payment(), merchantId, accountId))
                 .filter(d -> d.wonAt() != null && !d.wonAt().isBefore(from) && d.wonAt().isBefore(to))
                 .sorted((a, b) -> a.wonAt().compareTo(b.wonAt()))
                 .toList();

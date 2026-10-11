@@ -4,6 +4,7 @@ import com.payments.gateway.ledger.LedgerModel.AccountBalance;
 import com.payments.gateway.ledger.LedgerModel.EntryView;
 import com.payments.gateway.ledger.LedgerModel.Posting;
 import com.payments.gateway.ledger.LedgerModel.TransactionView;
+import com.payments.gateway.ledger.LedgerModel.MerchantBalance;
 import com.payments.gateway.shared.Ids;
 import com.payments.gateway.shared.jdbc.Sql;
 import com.payments.gateway.shared.model.Money;
@@ -136,4 +137,17 @@ public class LedgerRepository {
         }
         return result;
     }
+
+        public List<MerchantBalance> bookBalances(String book, String merchantId) {
+                return jdbc.sql("""
+                                SELECT account.merchant_id, account.type, account.currency,
+                                           coalesce(sum(CASE WHEN entry.direction = account.normal_side THEN entry.amount ELSE -entry.amount END), 0) AS balance
+                                  FROM ledger_accounts account LEFT JOIN ledger_entries entry ON entry.account_id = account.id
+                                 WHERE account.provider_code = :book AND (CAST(:merchant AS text) IS NULL OR account.merchant_id = :merchant)
+                                 GROUP BY account.id, account.merchant_id, account.type, account.currency
+                                 ORDER BY account.merchant_id, account.type, account.currency
+                                """).param("book", book).param("merchant", merchantId)
+                                .query((row, index) -> new MerchantBalance(row.getString("merchant_id"), LedgerAccountType.valueOf(row.getString("type")),
+                                                row.getString("currency"), row.getLong("balance"))).list();
+        }
 }

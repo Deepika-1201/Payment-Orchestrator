@@ -66,6 +66,11 @@ public class MerchantRepository {
                 .optional();
     }
 
+        public Optional<Merchant> shareById(String id) {
+                return jdbc.sql("SELECT * FROM merchants WHERE id = :id FOR SHARE").param("id", id)
+                                .query(MerchantRepository::mapMerchant).optional();
+        }
+
     public void updateSettings(Merchant merchant, Instant now) {
         jdbc.sql("""
                 UPDATE merchants SET name = :name, webhook_url = :webhookUrl, late_success_policy = :policy,
@@ -321,7 +326,7 @@ public class MerchantRepository {
     public List<MerchantDirectory.ProviderAccount> findAccountsToReconcile(Instant disabledSince) {
         return jdbc.sql("""
                 SELECT merchant_id, provider_code FROM merchant_provider_accounts
-                 WHERE status = 'ACTIVE' OR disabled_at >= :since
+                 WHERE credential_owner_id IS NULL AND (status = 'ACTIVE' OR disabled_at >= :since)
                  ORDER BY merchant_id, provider_code
                 """)
                 .param("since", Sql.ts(disabledSince))

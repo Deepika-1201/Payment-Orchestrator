@@ -16,8 +16,8 @@ V1, phases 1–17, is built; the [README roadmap](../README.md#roadmap) lists it
 | Scope | Planned units | Done | Progress |
 |---|---|---|---|
 | V1 (phases 1–17) | 23 | 22 | 96% |
-| V2 (phases 18–28) | 15.5 | 12 | 77% |
-| **Project** | **38.5** | **34** | **88%** |
+| V2 (phases 18–28) | 15.5 | 14 | 90% |
+| **Project** | **38.5** | **36** | **94%** |
 
 *As of 2026-10-11.*
 
@@ -76,12 +76,12 @@ These items belong to the phases above but need access the project does not have
 | 24 | Cost-aware and adaptive routing | [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24) | — | 1 | In simulated traffic, `COST` picks the cheapest healthy PSP, and `ADAPTIVE` converges on the better success rate without ever routing to an unhealthy PSP. Shadow mode changes no route | Done: [ADR-041](decisions/ADR-041-cost-aware-adaptive-routing.md), [LLD §24](low-level-design.md#24-cost-aware-and-adaptive-routing-phase-24-adr-041), [steps](#phase-24-steps) |
 | 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | Done: [ADR-042](decisions/ADR-042-merchant-billing.md), [LLD §25](low-level-design.md#25-merchant-billing-phase-25-adr-042), [steps](#phase-25-steps). Production tax/legal approval remains a deployment requirement |
 | 26 | Aggregator mode I: onboarding | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA1, FR-PA2 | — | 1 | A merchant reaches aggregator mode only with complete KYC checks and a second operator's approval. Expired KYC stops new payments in that mode | Done: [ADR-043](decisions/ADR-043-aggregator-onboarding.md), [LLD §26](low-level-design.md#26-aggregator-onboarding-phase-26-adr-043), [steps](#phase-26-steps). Real verification and RBI authorization remain deployment gates |
-| 27 | Aggregator mode II: escrow and settlement | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA3, FR-PA4, FR-PA7 | 25, 26 | 2 | Each settlement batch equals captures minus refunds, chargebacks, fees with GST and reserve changes. Property tests over random event sequences keep the ledger balanced and the escrow invariant (NFR-17) | |
+| 27 | Aggregator mode II: escrow and settlement | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA3, FR-PA4, FR-PA7 | 25, 26 | 2 | Each settlement batch equals captures minus refunds, chargebacks, fees with GST and reserve changes. Property tests over random event sequences keep the ledger balanced and the escrow invariant (NFR-17) | Done: [ADR-044](decisions/ADR-044-escrow-and-merchant-settlement.md), [LLD §27](low-level-design.md#27-authoritative-escrow-and-merchant-settlement-phase-27-adr-044), [steps](#phase-27-steps). Bank registration, calendar and contract review remain deployment requirements |
 | 28 | Aggregator mode III: payouts and escrow reconciliation | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA5, FR-PA6 | 27 | 1.5 | Each payout is sent once despite retries, timeouts and restarts (NFR-18). A returned payout credits the merchant back and raises an exception. A planted difference in the escrow statement raises an exception the same day | |
 
 **Not planned:** a merchant dashboard UI, a card vault, direct acquirer integrations, ML-based fraud and multi-region active-active. [ADR-034](decisions/ADR-034-post-v1-scope.md) gives the reasons and when to revisit each. The scale-driven changes in [architecture §11](architecture.md#11-evolution-path) wait for their triggers and are not counted.
 
-**Order of work:** phases 27 and 28 in number order (27 needs 25 and 26; 28 needs 27). C1 to C3 follow whenever their access arrives. Left: 4.5 units, 3.5 in V2 and 1 in the close-out.
+**Order of work:** phase 28 next. C1 to C3 follow whenever their access arrives. Left: 2.5 units, 1.5 in V2 and 1 in the close-out.
 
 ### Phase 18 steps
 
@@ -205,6 +205,21 @@ No partial credit: the phase's unit counts when all steps are done.
 | 6 | Unit/integration, concurrency, database privilege and production guard tests; mutation checks and full build | Done: 532 tests, 7 sandbox skips; 57 targeted mutants caught. Two survivors strengthened duplicate-owner and independent irreversible-mode fixtures |
 | 7 | Merchant error contract, README, operator runbook and progress | Done |
 
+### Phase 27 steps
+
+No partial credit: the phase's two units count when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-044](decisions/ADR-044-escrow-and-merchant-settlement.md), [LLD §27](low-level-design.md#27-authoritative-escrow-and-merchant-settlement-phase-27-adr-044), RBI escrow rules reviewed | Done |
+| 2 | Authoritative journal, INR/nominal-currency separation, customer entitlement and atomic ledger postings | Done |
+| 3 | Exact invoice and credit-note settlement deductions; protected GST and reserve recovery | Done |
+| 4 | Pooled PSP report scoping, immutable fee allocation and fully matched signed escrow receipts | Done |
+| 5 | Bank-registered policy versions, business-day maturity, immutable drafts, independent approval, rejection and holds | Done |
+| 6 | Bounded draft worker, cash isolation, deferred database ledger proofs and restricted grants | Done |
+| 7 | Full suite, randomized invariants, deterministic concurrency, rollback and isolated mutation tests | Done: 560 tests, 7 sandbox skips; 65 targeted mutants caught. Five survivors strengthened independent source, cash, cursor and reason assertions |
+| 8 | API error contract, README, runbook, progress and implementation refinements | Done |
+
 ## Changelog
 
 | Date | Change | Progress |
@@ -221,3 +236,4 @@ No partial credit: the phase's unit counts when all steps are done.
 | 2026-10-11 | Phase 24 done ([ADR-041](decisions/ADR-041-cost-aware-adaptive-routing.md)): immutable PSP fee schedules, cost per predicted success, method/bank Beta posteriors, one exploration slot per ten live evaluations, independent shadow decisions and read-only previews. Advanced decisions commit with their initial attempt and expire after 90 days. Reconciliation compares historical expected withholding with actual fees without changing ledger amounts, including postpaid, foreign and zero-fee cases. 53 targeted mutants, all killed | 32 of 38.5 units (83%) |
 | 2026-10-11 | Phase 25 done ([ADR-042](decisions/ADR-042-merchant-billing.md)): prospective gateway pricing, immutable accepted service events, delayed FX and pricing blockers, chronological monthly invoices with minimum/GST allocation, financial-year numbering, bounded idempotent credit notes and hourly catch-up. Issuance uses a stable snapshot; late commits carry forward. Database checks protect document totals, assignment and cumulative credit tax, and reject adding lines after issue. Production GST and fee-legality review remain explicit deployment gates. 54 targeted mutants, all killed | 33 of 38.5 units (86%) |
 | 2026-10-11 | Phase 26 done ([ADR-043](decisions/ADR-043-aggregator-onboarding.md)): encrypted externally verified KYC, independent approval, immutable collection owner, linked platform credentials, masked history and rotation fingerprint, currency-specific business limits, transactional daily reservations and signed event scopes. Expired KYC blocks new collections without blocking existing capture/refund recovery. 57 targeted mutants, all killed; external verification and authorization remain deployment requirements | 34 of 38.5 units (88%) |
+| 2026-10-11 | Phase 27 done ([ADR-044](decisions/ADR-044-escrow-and-merchant-settlement.md)): authoritative escrow/receivable accounting, immutable source journals, customer entitlement, exact invoice/GST deductions, pooled PSP cash allocation, reserves and source-backed settlement batches with independent approval. Cash and holds are rechecked, rejection compensates and retains history, a bounded worker prepares drafts only, and deferred database checks require matching ledger proofs. Fixed documented lowercase KYC risk binding. 65 targeted mutants, all killed | 36 of 38.5 units (94%) |

@@ -99,7 +99,7 @@ public class PaymentStore {
                 events.publishFundsMovement(new FundsMovement(
                         refund.returnsCredit() ? FundsMovement.Type.CREDIT_RETURNED : FundsMovement.Type.REFUND,
                         refund.merchantId(), refund.providerCode(), refund.id(), payment.id(), refund.amount(),
-                        change.occurredAt()));
+                        change.occurredAt(), refund.attemptId().equals(payment.succeededAttemptId()) && !refund.returnsCredit()));
                     if (refund.initiatedBy() == RefundInitiator.MERCHANT) {
                         var attempt = payment.attempt(refund.attemptId()).orElseThrow();
                         events.publishBillableActivity(new BillableActivity(refund.merchantId(), BillableActivity.Kind.REFUND,
@@ -136,7 +136,8 @@ public class PaymentStore {
                     : DisputeStatus.WON.name().equals(change.toStatus()) ? FundsMovement.Type.CHARGEBACK_REVERSAL : null;
             if (movement != null) {
                 events.publishFundsMovement(new FundsMovement(movement, dispute.merchantId(), dispute.providerCode(),
-                        dispute.id(), payment.id(), dispute.amount(), change.occurredAt()));
+                    dispute.id(), payment.id(), dispute.amount(), change.occurredAt(),
+                    dispute.attemptId().equals(payment.succeededAttemptId())));
             }
         }
         events.publishDisputeEvents(dispute, disputeEvents);
@@ -184,7 +185,7 @@ public class PaymentStore {
                         attempt.method().type() == MethodType.BANK_TRANSFER
                                 ? FundsMovement.Type.CREDIT_APPLIED : FundsMovement.Type.CAPTURE,
                         payment.merchantId(), attempt.providerCode(), attempt.id(),
-                        payment.id(), attempt.capturedAmount(), change.occurredAt())));
+                        payment.id(), attempt.capturedAmount(), change.occurredAt(), attempt.id().equals(payment.succeededAttemptId()))));
             }
         }
     }

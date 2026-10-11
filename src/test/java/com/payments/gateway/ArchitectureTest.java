@@ -33,7 +33,18 @@ class ArchitectureTest {
             .that().resideInAPackage("..shared..")
             .should().dependOnClassesThat().resideInAnyPackage("..payment..", "..merchant..", "..provider..", "..routing..",
                     "..risk..", "..webhook..", "..idempotency..", "..platform..", "..ledger..", "..reconciliation..",
-                    "..checkout..", "..billing..");
+                    "..checkout..", "..billing..", "..treasury..");
+
+    @ArchTest
+    static final ArchRule treasuryUsesPublicPaymentApis = noClasses()
+            .that().resideInAPackage("..treasury..")
+            .should().dependOnClassesThat().resideInAnyPackage("..payment.domain..", "..payment.infrastructure..", "..payment.web..",
+                    "..provider..", "..billing..");
+
+    @ArchTest
+    static final ArchRule treasuryDoesNotAccessLedgerPersistence = noClasses()
+            .that().resideInAPackage("..treasury..")
+            .should().dependOnClassesThat().haveSimpleName("LedgerRepository");
 
     @ArchTest
     static final ArchRule checkoutUsesOnlyPaymentApplicationApi = noClasses()

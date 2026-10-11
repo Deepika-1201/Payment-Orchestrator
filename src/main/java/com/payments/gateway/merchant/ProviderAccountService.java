@@ -175,7 +175,7 @@ public class ProviderAccountService implements MerchantAccountResolver {
             : repository.findProviderAccountById(row.credentialOwnerId()).orElseThrow();
         Map<String, String> credentials = owner.credentialsEncrypted() == null ? Map.of()
             : decrypt(owner.id(), owner.credentialsEncrypted());
-        return new MerchantAccount(row.id(), row.merchantId(), row.providerCode(), credentials);
+        return new MerchantAccount(owner.id(), row.merchantId(), row.providerCode(), credentials);
     }
 
     private AccountView view(ProviderAccountRow row) {

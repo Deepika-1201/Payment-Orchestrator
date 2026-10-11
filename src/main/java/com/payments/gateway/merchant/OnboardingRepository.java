@@ -46,6 +46,18 @@ public class OnboardingRepository implements KeyRingCiphertexts {
                 """).param("id", merchantId).query(Boolean.class).single();
     }
 
+    public boolean financialHistory(String merchantId) {
+        return jdbc.sql("""
+                SELECT EXISTS (SELECT 1 FROM payments WHERE merchant_id = :id)
+                    OR EXISTS (SELECT 1 FROM mandates WHERE merchant_id = :id)
+                """).param("id", merchantId).query(Boolean.class).single();
+    }
+
+    public boolean collectionOwner(String merchantId) {
+        return jdbc.sql("SELECT EXISTS (SELECT 1 FROM merchants WHERE collection_owner_id = :id)")
+                .param("id", merchantId).query(Boolean.class).single();
+    }
+
     public void insert(Submission submission) {
         jdbc.sql("""
                 INSERT INTO merchant_kyc_submissions

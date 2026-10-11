@@ -61,7 +61,9 @@ class OnboardingIntegrationTest extends IntegrationTest {
     @Test
     void encryptedSubmissionIndependentApprovalAndFrozenOwnership() {
         KycDetails details = KycDetailsTest.details(KycDetails.Risk.HIGH, clock.instant());
-        Response created = admin("POST", path(), details);
+                Map<String, Object> request = json.read(json.write(details), new tools.jackson.core.type.TypeReference<Map<String, Object>>() { });
+                request.put("risk", "high");
+                Response created = admin("POST", path(), request);
         assertThat(created.status()).as(created.raw()).isEqualTo(201);
         String submissionId = str(created.body(), "id");
         assertThat(created.raw()).doesNotContain(details.pan(), details.gstin(), details.bankAccount().accountNumber(),

@@ -612,7 +612,7 @@ public class MockPaymentProvider implements PaymentProvider {
         List<SettlementReport.Line> lines = new ArrayList<>();
         long net = 0;
         String currency = "INR";
-        for (Txn txn : psp.capturedBetween(query.merchantId(), query.from(), query.to())) {
+        for (Txn txn : psp.capturedBetween(query.merchantId(), account.id(), query.from(), query.to())) {
             if (psp.isDroppedFromReport(txn.reference())) {
                 continue;
             }
@@ -626,21 +626,21 @@ public class MockPaymentProvider implements PaymentProvider {
                 net += gross.amount() - fee.amount();
             }
         }
-        for (RefundTxn refund : psp.refundsBetween(query.merchantId(), query.from(), query.to())) {
+        for (RefundTxn refund : psp.refundsBetween(query.merchantId(), account.id(), query.from(), query.to())) {
             Money settled = refund.conversion() == null ? refund.amount() : refund.conversion().settled();
             lines.add(new SettlementReport.Line("line_" + refund.reference(), SettlementReport.LineType.REFUND,
                 refund.reference(), refund.merchantReference(), settled, Money.of(0, currency), settlementId,
                 refund.createdAt(), null, charged(refund.amount())));
             net -= settled.amount();
         }
-        for (MockPsp.DisputeTxn dispute : psp.disputesOpenedBetween(query.merchantId(), query.from(), query.to())) {
+        for (MockPsp.DisputeTxn dispute : psp.disputesOpenedBetween(query.merchantId(), account.id(), query.from(), query.to())) {
             Money settled = dispute.conversion() == null ? dispute.amount() : dispute.conversion().settled();
             lines.add(new SettlementReport.Line("line_" + dispute.reference(), SettlementReport.LineType.CHARGEBACK,
                 dispute.reference(), dispute.payment().merchantReference(), settled, Money.of(0, currency),
                 settlementId, dispute.createdAt(), null, charged(dispute.amount())));
             net -= settled.amount();
         }
-        for (MockPsp.DisputeTxn dispute : psp.disputesWonBetween(query.merchantId(), query.from(), query.to())) {
+        for (MockPsp.DisputeTxn dispute : psp.disputesWonBetween(query.merchantId(), account.id(), query.from(), query.to())) {
             Money settled = dispute.reversalConversion() == null ? dispute.amount() : dispute.reversalConversion().settled();
             lines.add(new SettlementReport.Line("line_" + dispute.reference() + "_reversal",
                     SettlementReport.LineType.CHARGEBACK_REVERSAL, dispute.reference(),

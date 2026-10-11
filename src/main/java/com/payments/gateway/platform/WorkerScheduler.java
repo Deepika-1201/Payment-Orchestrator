@@ -1,6 +1,7 @@
 package com.payments.gateway.platform;
 
 import com.payments.gateway.billing.BillingJob;
+import com.payments.gateway.treasury.SettlementJob;
 import com.payments.gateway.payment.application.DisputeDeadlineJob;
 import com.payments.gateway.payment.application.DisputeResponseService;
 import com.payments.gateway.payment.application.ExpiryJob;
@@ -33,11 +34,12 @@ public class WorkerScheduler {
     private final DisputeResponseService disputeResponses;
     private final DisputeDeadlineJob disputeDeadlines;
     private final BillingJob billing;
+    private final SettlementJob settlements;
 
     public WorkerScheduler(StatusResolver statusResolver, ExpiryJob expiryJob, ProviderWebhookService inbox,
                            WebhookDeliveryWorker deliveries, ReconciliationService reconciliation,
                            RetentionJob retention, MandateScheduler mandates, DisputeResponseService disputeResponses,
-                           DisputeDeadlineJob disputeDeadlines, BillingJob billing) {
+                           DisputeDeadlineJob disputeDeadlines, BillingJob billing, SettlementJob settlements) {
         this.statusResolver = statusResolver;
         this.expiryJob = expiryJob;
         this.inbox = inbox;
@@ -48,6 +50,7 @@ public class WorkerScheduler {
         this.disputeResponses = disputeResponses;
         this.disputeDeadlines = disputeDeadlines;
         this.billing = billing;
+        this.settlements = settlements;
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
@@ -97,6 +100,11 @@ public class WorkerScheduler {
     @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
     void billing() {
         run("billing", billing::run);
+    }
+
+    @Scheduled(fixedDelay = 5, initialDelay = 1, timeUnit = TimeUnit.MINUTES)
+    void settlements() {
+        run("settlements", settlements::run);
     }
 
     @Scheduled(cron = "0 30 2 * * *", zone = "${pg.reconciliation.zone:Asia/Kolkata}")

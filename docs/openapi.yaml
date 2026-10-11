@@ -1366,6 +1366,7 @@ components:
                  mandate_debit_already_exists, dispute_invalid_state, idempotency_request_in_progress,
                  billing_invalid_state, billing_invoice_blocked, billing_reference_reuse,
                  onboarding_invalid_state, collection_limit_exceeded,
+                 settlement_invalid_state,
                  idempotency_key_reuse, amount_exceeds_refundable, amount_exceeds_mandate_limit,
                  capture_amount_mismatch, unsupported_payment_method, unsupported_currency,
                  dispute_response_unsupported, rate_limited, no_provider_available, internal_error]

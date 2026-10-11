@@ -1,5 +1,7 @@
 package com.payments.gateway.billing;
 
+import com.payments.gateway.shared.events.BillingDocumentIssued;
+import org.springframework.context.ApplicationEventPublisher;
 import com.payments.gateway.billing.BillingAmounts.Price;
 import com.payments.gateway.billing.BillingDocuments.Invoice;
 import com.payments.gateway.billing.BillingDocuments.InvoiceLine;
@@ -47,14 +49,16 @@ public class BillingService {
     private final TransactionTemplate tx;
     private final Clock clock;
     private final TransactionTemplate invoiceTx;
+    private final ApplicationEventPublisher events;
 
     public BillingService(BillingRepository repository, MerchantDirectory merchants, AuditLogger audit,
-                          TransactionTemplate tx, Clock clock) {
+                          TransactionTemplate tx, Clock clock, ApplicationEventPublisher events) {
         this.repository = repository;
         this.merchants = merchants;
         this.audit = audit;
         this.tx = tx;
         this.clock = clock;
+        this.events = events;
         this.invoiceTx = new TransactionTemplate(java.util.Objects.requireNonNull(tx.getTransactionManager()));
         this.invoiceTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
@@ -138,8 +142,11 @@ public class BillingService {
             int year = BillingAmounts.financialYear(now);
             long sequence = repository.nextNumber("INV", year);
             Invoice invoice = new Invoice(Ids.newId("binv"), "billing_invoice", merchantId, BillingAmounts.number("INV", year, sequence),
-                    month, "INR", subtotal, tax, Math.addExact(subtotal, tax), "MERCHANT_PAYMENT", now, lines);
+                    month, "INR", subtotal, tax, Math.addExact(subtotal, tax),
+                    merchants.isAggregator(merchantId) ? "SETTLEMENT_DEDUCTION" : "MERCHANT_PAYMENT", now, lines);
             repository.insertInvoice(invoice, minimumPlan.id(), year, sequence);
+                events.publishEvent(new BillingDocumentIssued(invoice.id(), merchantId, false,
+                    "SETTLEMENT_DEDUCTION".equals(invoice.collectionMode()), subtotal, tax, now));
                 audit.record(actor == null ? "SYSTEM" : "ADMIN", actor == null ? "billing-worker" : actor,
                     "billing_invoice.issued", "billing_invoice", invoice.id(),
                     Map.of("merchant_id", merchantId, "month", month.toString(), "total", invoice.total()));
@@ -235,6 +242,8 @@ public class BillingService {
             CreditNote note = new CreditNote(Ids.newId("bcn"), "billing_credit_note", merchantId, invoiceId, command.reference(), command.reason(),
                     BillingAmounts.number("CN", year, sequence), "INR", subtotal, tax, Math.addExact(subtotal, tax), now, lines);
             repository.insertCredit(note, year, sequence);
+                events.publishEvent(new BillingDocumentIssued(note.id(), merchantId, true,
+                    "SETTLEMENT_DEDUCTION".equals(invoice.collectionMode()), subtotal, tax, now));
             audit.record("ADMIN", actor, "billing_credit_note.issued", "billing_credit_note", note.id(),
                     Map.of("invoice_id", invoiceId, "reference", command.reference(), "reason", command.reason(), "total", note.total()));
             return note;

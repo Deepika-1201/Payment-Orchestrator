@@ -63,6 +63,10 @@ public class LedgerService {
         return repository.transactionsForReference(referenceId);
     }
 
+    public List<LedgerModel.MerchantBalance> bookBalances(String book, String merchantId) {
+        return repository.bookBalances(book, merchantId);
+    }
+
     static void validate(Posting posting) {
         if (posting.legs().size() < 2) {
             throw new IllegalArgumentException("a ledger transaction needs at least two legs");
