@@ -74,7 +74,7 @@ These items belong to the phases above but need access the project does not have
 | 22 | Dispute evidence | [§8.5](requirements.md#85-dispute-evidence-phase-22) | — | 1 | Evidence reaches the PSP (mock and a real adapter's stub) before the deadline. An approaching deadline raises the event and the alert. Accepting a dispute books the loss | Done: [ADR-039](decisions/ADR-039-dispute-evidence.md), [LLD §22](low-level-design.md#22-dispute-evidence-phase-22-adr-039), [steps](#phase-22-steps). Razorpay's Documents and Disputes APIs; its sandbox check needs keys, as C1 does. Cashfree merchants keep answering on its dashboard |
 | 23 | International cards and multi-currency | [§8.6](requirements.md#86-international-cards-and-multi-currency-phase-23) | — | 1.5 | Payments in 0-, 2- and 3-decimal currencies are created, captured and refunded in minor units (NFR-20). The ledger balances in both currencies with the FX difference booked. Reconciliation matches in INR | Done: [ADR-040](decisions/ADR-040-international-cards.md), [LLD §23](low-level-design.md#23-international-cards-and-multi-currency-phase-23-adr-040), [steps](#phase-23-steps). Mock PSP and Razorpay stub; real account settlement format remains C1 |
 | 24 | Cost-aware and adaptive routing | [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-24) | — | 1 | In simulated traffic, `COST` picks the cheapest healthy PSP, and `ADAPTIVE` converges on the better success rate without ever routing to an unhealthy PSP. Shadow mode changes no route | Done: [ADR-041](decisions/ADR-041-cost-aware-adaptive-routing.md), [LLD §24](low-level-design.md#24-cost-aware-and-adaptive-routing-phase-24-adr-041), [steps](#phase-24-steps) |
-| 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | |
+| 25 | Merchant billing | [§8.8](requirements.md#88-merchant-billing-phase-25) | — | 1 | A month's invoice equals the plan applied to the merchant's billable events, with GST. Issued invoices never change, corrections are credit notes, and numbers are sequential per financial year | In progress: [ADR-042](decisions/ADR-042-merchant-billing.md), [LLD §25](low-level-design.md#25-merchant-billing-phase-25-adr-042), [steps](#phase-25-steps) |
 | 26 | Aggregator mode I: onboarding | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA1, FR-PA2 | — | 1 | A merchant reaches aggregator mode only with complete KYC checks and a second operator's approval. Expired KYC stops new payments in that mode | |
 | 27 | Aggregator mode II: escrow and settlement | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA3, FR-PA4, FR-PA7 | 25, 26 | 2 | Each settlement batch equals captures minus refunds, chargebacks, fees with GST and reserve changes. Property tests over random event sequences keep the ledger balanced and the escrow invariant (NFR-17) | |
 | 28 | Aggregator mode III: payouts and escrow reconciliation | [§8.9](requirements.md#89-payment-aggregator-mode-phases-26-to-28) FR-PA5, FR-PA6 | 27 | 1.5 | Each payout is sent once despite retries, timeouts and restarts (NFR-18). A returned payout credits the merchant back and raises an exception. A planted difference in the escrow statement raises an exception the same day | |
@@ -176,6 +176,20 @@ No partial credit: the phase's unit counts when all steps are done.
 | 5 | Settlement fee comparisons, mismatch exceptions and runbook | Done |
 | 6 | Unit/integration tests, simulated convergence, concurrency and shadow isolation, mutation checks; full build and CI | Done: 53 mutants, all killed. Four survivors strengthened sampler, checkout-preview, account-integrity and zero-withholding tests; invalid SQL permission variants were corrected and rerun |
 | 7 | README, progress and changelog | Done |
+
+### Phase 25 steps
+
+No partial credit: the phase's unit counts when all steps are done.
+
+| Step | Work | Status |
+|---|---|---|
+| 1 | Design: [ADR-042](decisions/ADR-042-merchant-billing.md), [LLD §25](low-level-design.md#25-merchant-billing-phase-25-adr-042) | Done |
+| 2 | Billing model, exact arithmetic, schema V21, immutable plan versions and enrollment API | |
+| 3 | Accepted service events, deduplication, delayed conversion and explicit missing-price resolution | |
+| 4 | Chronological invoice issuance, monthly minimum, GST allocation, numbering and immutable documents | |
+| 5 | Idempotent credit notes, cumulative amount/tax limits, finance APIs and bounded billing worker | |
+| 6 | Unit/integration and concurrency tests, database grants, mutation checks, full build and CI | |
+| 7 | README, runbook, progress and changelog | |
 
 ## Changelog
 

@@ -1637,3 +1637,63 @@ Requirements: [§8.7](requirements.md#87-cost-aware-and-adaptive-routing-phase-2
 
 Tests cover exact fee/tax arithmetic and effective dates, per-bank prediction fallback, deterministic exploration bounds under concurrency, convergence when provider success rates change, circuit exclusion, missing-price behavior, preview purity, shadow isolation, atomic decision history, rule promotion, fee reconciliation including postpaid/foreign charges and zero withholding, retention and database grants. All 53 targeted mutations are caught. Four survivors added explicit checks for the production sampler, adaptive checkout previews, the account foreign key and zero-withholding comparisons; two invalid SQL permission mutations were corrected and rerun.
 
+## 25. Merchant billing (phase 25, ADR-042)
+
+Requirements: [§8.8](requirements.md#88-merchant-billing-phase-25). Gateway service prices are separate from PSP prices. The new `billing` module receives accepted service outcomes through shared events and never reads payment persistence.
+
+### 25.1 Plan versions and enrollment
+
+- `POST /admin/v1/merchants/{id}/billing-plans` (`finance_write`) publishes `{name, effective_at, payment_fees, refund_fees, monthly_minimum}`. Fee maps are keyed by payment method; each value is `{fixed_amount, rate_bps}`. Fixed amounts and the minimum are INR paise; rates are basis points from 0 to 10,000. Refund fees default to none; minimum defaults to zero.
+- `effective_at` defaults to now and cannot be backdated. Versions are immutable and unique per merchant/effective timestamp. `GET` on the same collection lists history. Publishing the first plan enrolls the merchant prospectively; earlier transactions are not retroactively billed.
+- Missing payment-method prices produce a visible pricing blocker, not an assumed zero. Missing refund-method prices mean that refund service is not charged, as declared by the optional refund schedule.
+- The monthly minimum is taken from the version effective immediately before the next month starts. It is not prorated when enrollment or a plan change occurs mid-month.
+
+### 25.2 Billable service events
+
+- Shared `BillableActivity` contains merchant, kind (`PAYMENT` or `REFUND`), stable source reference, payment id, method, original amount, optional settled INR amount and recognition timestamp.
+- `PaymentStore` emits a payment activity only on the aggregate's accepted transition to `SUCCEEDED`. The reference is its succeeded attempt. Duplicate and rejected late captures produce no extra payment charge. Mandate registration payments are excluded; actual mandate debits are included.
+- Successful merchant-requested refunds emit refund activity. Automatic late/duplicate refunds and bank-credit returns do not. Repeated evidence is deduplicated by kind/reference.
+- The listener snapshots the effective plan id. Unenrolled activity is not charged. Original INR amounts are immediately priceable; foreign amounts wait for the PSP's conversion. The existing `CurrencyConversion` event gains its source reference so a delayed conversion can complete the billing event.
+- A conversion that was recorded before activity publication is included in the activity itself. Billing records permit only set-once completion of missing settlement/price fields; their source, recognition timestamp and plan cannot change.
+- Fee arithmetic is `round_half_up(INR_amount * rate_bps / 10000 + fixed_amount)`. A plan's refund fee is a separate service charge; refunding the customer's payment does not automatically reverse the original gateway service charge.
+
+### 25.3 Pricing blockers and resolution
+
+- `GET /admin/v1/merchants/{id}/billing-events?unbilled=true&limit=` lists retained activity, price/FX status and invoice assignment; default limit 100, maximum 500.
+- `POST /admin/v1/merchants/{id}/billing-events/{event}/price` (`finance_write`) takes `{amount, reason}` to resolve a missing method price explicitly. The event must belong to the merchant, have its INR value known and have no price yet. The resolution is audited and cannot replace a price already frozen.
+- Invoice issuance refuses any eligible event still missing conversion or pricing, returning a bounded list of blockers. It never silently drops such events.
+
+### 25.4 Invoice issuance
+
+- `POST /admin/v1/merchants/{id}/invoices` (`finance_write`) takes `{month: "2026-10"}`. `GET` lists invoices; `GET /admin/v1/merchants/{id}/invoices/{invoice}` returns one immutable document.
+- Period boundaries are month starts in `Asia/Kolkata`, converted to UTC. Only closed months may issue, in chronological order starting with the enrollment month. A repeated request for an issued month returns the existing document.
+- Under a per-merchant billing-account lock, select all unassigned eligible activity recognized before the period end, including older carry-forward activity. Group priced activity by plan version, kind and method; retain event-to-line links so every event is assigned once.
+- Add a minimum-shortfall line if event fees are below the month's minimum. GST is 18% of the total subtotal, rounded half-up to paise. Allocate that GST to lines by cumulative taxable subtotal so line taxes sum exactly to the invoice tax.
+- Freeze the invoice header, lines, event links and number in one transaction. New late activity that commits after issue remains unassigned and is picked up by the next chronological invoice, retaining its service timestamp and price version.
+- Current collection mode is `MERCHANT_PAYMENT`. `SETTLEMENT_DEDUCTION` is reserved for phase 27; no current endpoint enables it or claims to deduct money from PSP funds.
+
+### 25.5 Credit notes
+
+- `POST /admin/v1/merchants/{id}/invoices/{invoice}/credit-notes` (`finance_write`) takes `{reference, reason, lines: [{invoice_line_id, amount}]}`. Amounts are taxable INR paise. Lines must be distinct and belong to that invoice.
+- `GET` on the same collection lists notes. A merchant-scoped reference is idempotent for identical content; changing the invoice, reason or line amounts under that reference is rejected.
+- Lock the same billing account before checking previous credits. For original line taxable value B and tax T, a new taxable credit A after previous taxable credits P reverses `round_half_up(T * (P + A) / B) - round_half_up(T * P / B)` tax. Cumulative taxable credits cannot exceed B. A full credit therefore reverses exactly T, including rounding remainders.
+- Credit notes and their lines are immutable. They never edit the original invoice or create a customer refund.
+
+### 25.6 Numbering and locking
+
+- Separate `INV` and `CN` counters per financial-year start year. April through March share one year; issue date, not service month, selects the series. Numbers such as `INV/2026/000001` are unique and at most 16 characters; exhaustion fails explicitly.
+- Lock order: billing account, then series counter. Payment transactions insert/complete activity without locking billing accounts or counters. Issuance reads immutable prices and known activity values, then appends documents and assignment links; it never takes a payment lock.
+- Counter increments roll back with failed documents. Unique merchant/month and event-assignment constraints protect repeated and concurrent issuance.
+
+### 25.7 Worker and operational scope
+
+- An hourly billing job issues closed months in order for enrolled merchants, bounded by account and month batches. It skips no blocked month, logs failures with merchant/month, and retries later. Tests drive it explicitly; the existing worker enable switch controls it.
+- Finance can inspect unbilled events and retry issuance after a delayed conversion or explicit price resolution. Service billing does not include email delivery, PDF rendering or a merchant dashboard.
+- The assumed GST calculation is an engineering billing model. Production tax documents still require legal review of tax profiles, place of supply, GST split/e-invoicing and payment-method fee restrictions; no RBI or GST authorization is implied.
+
+### 25.8 Schema and verification
+
+`V21__merchant_billing.sql` adds billing accounts, immutable plan versions, set-once service-event pricing, invoices/lines/event assignments, credit notes/lines and transactional series counters. Financial documents and pricing history reject updates/deletes; the application role receives only the mutations each table needs. The integration-test reset includes standalone series counters.
+
+Coverage includes effective-date boundaries, accepted versus duplicate/late PSP outcomes, mandate registration exclusions, refund policy, delayed FX, missing prices, exact fee/minimum/GST arithmetic, month and financial-year boundaries, carry-forward events, immutable issue and credit notes, idempotency, concurrent numbering/credits, rollback, account isolation and database rules. Mutation checks and a green build/CI gate completion.
+
