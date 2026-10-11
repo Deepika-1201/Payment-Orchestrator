@@ -1361,6 +1361,7 @@ components:
                  invalid_api_key, invalid_signature, resource_not_found, method_not_allowed, payload_too_large,
                  unsupported_media_type, payment_invalid_state, refund_already_exists, mandate_invalid_state,
                  mandate_debit_already_exists, dispute_invalid_state, idempotency_request_in_progress,
+                 billing_invalid_state, billing_invoice_blocked, billing_reference_reuse,
                  idempotency_key_reuse, amount_exceeds_refundable, amount_exceeds_mandate_limit,
                  capture_amount_mismatch, unsupported_payment_method, unsupported_currency,
                  dispute_response_unsupported, rate_limited, no_provider_available, internal_error]

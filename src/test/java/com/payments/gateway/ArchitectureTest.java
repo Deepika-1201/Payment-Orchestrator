@@ -33,7 +33,7 @@ class ArchitectureTest {
             .that().resideInAPackage("..shared..")
             .should().dependOnClassesThat().resideInAnyPackage("..payment..", "..merchant..", "..provider..", "..routing..",
                     "..risk..", "..webhook..", "..idempotency..", "..platform..", "..ledger..", "..reconciliation..",
-                    "..checkout..");
+                    "..checkout..", "..billing..");
 
     @ArchTest
     static final ArchRule checkoutUsesOnlyPaymentApplicationApi = noClasses()
@@ -72,4 +72,10 @@ class ArchitectureTest {
     static final ArchRule routingAndRiskDoNotDependOnPayments = noClasses()
             .that().resideInAnyPackage("..routing..", "..risk..")
             .should().dependOnClassesThat().resideInAPackage("..payment..");
+
+    @ArchTest
+    static final ArchRule billingIsIndependentOfPaymentPersistenceAndProviderFees = noClasses()
+            .that().resideInAPackage("..billing..")
+            .should().dependOnClassesThat().resideInAnyPackage("..payment..", "..provider..", "..routing..", "..ledger..",
+                    "..reconciliation..", "..checkout..");
 }

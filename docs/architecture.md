@@ -120,6 +120,7 @@ flowchart TB
 | `risk` | Risk rules and decisions | shared |
 | `webhook` | Inbound PSP webhook inbox; outbound merchant events and deliveries | shared, payment (events + inbound port), merchant, provider (SPI) |
 | `ledger` | Double-entry shadow ledger, balances and FX gains/losses | shared (listens to `FundsMovement` and `CurrencyConversion`) |
+| `billing` | Gateway service prices, immutable monthly invoices and credit notes, financial-year numbering | shared service/conversion events, merchant (enrollment lookup); no payment persistence or PSP fee dependency |
 | `reconciliation` | Settlement-report matching, auto-heal, exception queue | payment (application API), provider (SPI), ledger, merchant |
 | `checkout` | Hosted checkout sessions and server-rendered pages (ADR-013) | payment (application API), merchant, idempotency |
 

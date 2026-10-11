@@ -16,6 +16,15 @@ BEGIN
     EXECUTE format('REVOKE UPDATE, DELETE ON ledger_transactions, ledger_entries, audit_log, payment_transitions, mandate_transitions, fx_conversions FROM %I', app);
     EXECUTE format('REVOKE UPDATE, DELETE ON provider_fee_schedules FROM %I', app);
     EXECUTE format('REVOKE UPDATE ON routing_decisions FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON billing_plans, billing_plan_prices FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON billing_events FROM %I', app);
+    EXECUTE format('GRANT UPDATE (settled_amount, service_fee, price_reason) ON billing_events TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON billing_invoices, billing_invoice_lines, billing_event_assignments FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON billing_credit_notes, billing_credit_lines FROM %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON billing_accounts FROM %I', app);
+    EXECUTE format('GRANT UPDATE (next_month) ON billing_accounts TO %I', app);
+    EXECUTE format('REVOKE UPDATE, DELETE ON billing_series FROM %I', app);
+    EXECUTE format('GRANT UPDATE (last_value) ON billing_series TO %I', app);
     -- Evidence is kept with the dispute record (ADR-039): only the PSP's document id and the wrapped key may change.
     EXECUTE format('REVOKE UPDATE, DELETE ON dispute_evidence_files FROM %I', app);
     EXECUTE format('GRANT UPDATE (provider_document_id, content_key_enc) ON dispute_evidence_files TO %I', app);

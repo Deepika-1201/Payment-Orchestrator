@@ -2,7 +2,7 @@
 
 A payment gateway reference implementation built around a multi-PSP orchestrator. It is designed for India first (UPI, cards, netbanking) and built to commercial engineering standards: explicit state machines, layered idempotency, unknown-outcome handling, a transactional outbox, signed webhooks, and routing based on PSP capabilities and health.
 
-> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–24 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, and cost-aware/adaptive routing with shadow evaluation. V1 includes:
+> Status: every roadmap phase (1–17) is built and tested; what is left needs PSP sandbox keys or an AWS account (below). V2 phases 18–25 are built and tested: recurring payments, partial capture, wallets and EMI, bank transfers, dispute evidence, international cards with INR settlement, cost-aware/adaptive routing, and merchant billing with immutable invoices and credit notes. V1 includes:
 > - the double-entry shadow ledger and PSP reconciliation, with exception SLAs and a daily report;
 > - chargebacks and UPI disputes;
 > - the risk engine, with an external fraud connector and a manual review queue;
@@ -13,7 +13,7 @@ A payment gateway reference implementation built around a multi-PSP orchestrator
 >
 > Remaining: the Razorpay (ADR-030) and Cashfree (ADR-031) adapters, including their settlement reports for reconciliation (ADR-032), are built and tested against stubs of their APIs, but their sandbox contract tests need PSP test keys. The Terraform is written and tested without AWS but has not been applied to an account, so the 1,000 TPS peak load test still needs that environment. Going live also needs an external security review (penetration test) and legal confirmation of the 8-year retention assumption (NFR-16). See the [Roadmap](#roadmap).
 >
-> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 83% done (32 of 38.5).
+> Progress, measured in the [implementation plan](docs/implementation-plan.md#progress): V1 is 96% done (22 of 23 units). With the V2 phases planned there, the whole project is 86% done (33 of 38.5).
 
 ## Documentation
 
@@ -146,6 +146,10 @@ curl -X POST localhost:8080/v1/checkout-sessions -H "Authorization: Bearer $KEY"
 | `PUT /admin/v1/merchants/{id}/provider-accounts/{provider}` · `GET …/provider-accounts` · `POST …/{provider}/disable` | Merchant's own PSP accounts: encrypted credentials (shown masked), per-account webhook path |
 | `POST /admin/v1/merchants/{id}/provider-accounts/{provider}/fee-schedules` · `GET …/fee-schedules` | Finance publishes immutable, effective-dated PSP prices: fixed amount, percentage, tax and withheld/postpaid collection (ADR-041) |
 | `POST /admin/v1/routing/preview` · `GET /admin/v1/routing-decisions?merchant_id=` | Read-only live/shadow preview and recent decision history; previews consume no exploration slots or PSP calls |
+| `POST /admin/v1/merchants/{id}/billing-plans` · `GET …/billing-plans` | Gateway service pricing: immutable prospective versions, method-specific payment/refund charges and a monthly INR minimum (ADR-042) |
+| `GET /admin/v1/merchants/{id}/billing-events?unbilled=true` · `POST …/billing-events/{event}/price` | Inspect retained service activity and FX/pricing blockers; finance can resolve a missing price explicitly |
+| `POST /admin/v1/merchants/{id}/invoices` · `GET …/invoices` · `GET …/invoices/{invoice}` | Issue closed months in chronological order, or retrieve frozen invoices; repeated issue returns the same document |
+| `POST /admin/v1/merchants/{id}/invoices/{invoice}/credit-notes` · `GET …/credit-notes` | Immutable corrections by original invoice line, with reference-based replay and bounded cumulative tax reversal |
 | `GET /admin/v1/ledger/balances?merchant_id=` · `GET /admin/v1/ledger/transactions?reference_id=` | Shadow ledger balances and postings |
 | `POST /admin/v1/ledger/adjustments` · `POST …/{id}/approve` · `/reject` | Manual ledger corrections: one operator requests, a different one approves (maker-checker, ADR-024) |
 | `POST /admin/v1/reconciliation/runs` · `GET /admin/v1/reconciliation/exceptions` · `POST …/exceptions/{id}/assign` · `/resolve` · `GET …/reports/daily?date=` | Reconcile a merchant PSP account for a window; work the exception queue (owner, 48 h SLA, overdue filter); daily report per business day |
@@ -160,6 +164,10 @@ Admin callers are named operators with roles (`admin`, `ops`, `finance`, `read_o
 Routing rules also accept `strategy: cost` or `adaptive`. Cost ranks the fee including tax per predicted successful payment; absent prices sort last, with health ordering when every price is missing. Adaptive routing uses method/bank success history and a Beta posterior, exploring at most once per ten live evaluations per rule and instance. Set `shadow_strategy: cost` or `adaptive` to compare a new strategy without changing live choices. Live/shadow samplers are independent; hosted checkout and administrative previews consume neither stream. Advanced and shadow decisions are stored with the initial attempt and retained for 90 days ([ADR-041](docs/decisions/ADR-041-cost-aware-adaptive-routing.md)).
 
 Fee schedules use `fixed_amount` in the charge currency's minor units, `rate_bps` and `tax_bps` (default 1800), `collection: withheld | postpaid`, and optional `effective_at` (now or later). Reconciliation compares capture-time prices with actual withholding, including zero fees; differences over one settlement minor unit become `fee_schedule_mismatch` exceptions. The actual fee and payout remain unchanged in the ledger.
+
+Merchant billing is separate from PSP fees. Publishing the first billing plan enrolls a merchant prospectively. Plans contain `payment_fees` and optional `refund_fees`, keyed by method with `{fixed_amount, rate_bps}`, plus an INR `monthly_minimum`. Only accepted successful payments and configured merchant-refund services are billed; mandate authorization charges and automatic reversals are excluded. Foreign activity waits for its reported INR conversion. Invoices use Indian calendar months and the plan's assumed 18% GST; an hourly bounded worker issues closed months, or finance can post `{"month":"2026-10"}` manually. Invoice and credit-note numbers are unique within Indian financial years, and issued records never change ([ADR-042](docs/decisions/ADR-042-merchant-billing.md)).
+
+These are service-billing records, not certified production GST tax invoices. Tax profiles, place-of-supply treatment, e-invoicing applicability and payment-method fee restrictions still require deployment/legal review. Current invoices are payable by the merchant; settlement deduction belongs to aggregator mode. See the [billing runbook](docs/runbooks.md#billing).
 
 International cards are off by default. Enable a merchant with `PATCH /admin/v1/merchants/{id}` and `{"international_cards":true}`. Non-INR payments use cards only, with integer ISO 4217 minor units: JPY 1300 means JPY 1300, USD 1300 means USD 13.00, and KWD 1300 means KWD 1.300. Refunds stay in the original currency. Payments, refunds and disputes expose `conversion` once the PSP reports the INR amount; rates are exact decimal strings when supplied. The ledger balances each currency and books FX gains or losses (ADR-040).
 
@@ -215,6 +223,7 @@ src/main/java/com/payments/gateway/
                  resolver, expiry, review queue), infrastructure (JDBC), api (DTOs/mapper), web (controllers)
   webhook/       inbound PSP inbox, outbound merchant outbox + delivery worker
   ledger/        double-entry shadow ledger (postings on capture/refund/fee/chargeback/settlement), admin API
+  billing/       service pricing, billable activity, immutable monthly invoices, credit notes and billing worker
   reconciliation/ settlement-report matching (incl. chargebacks and PSP adjustments), auto-heal, exception queue with owner and SLA,
                  daily report, admin API
   checkout/      hosted checkout sessions and server-rendered pages (UPI QR as inline SVG)
@@ -277,9 +286,9 @@ Region failover is a [runbook](docs/runbooks.md#region-failover).
 | 22 | Dispute evidence (ADR-039): evidence files uploaded through the API, encrypted per file and never deleted; one contest or acceptance per dispute, delivered to the PSP with retries until its deadline; `dispute.evidence_due` 3 days ahead and an operator alert; the mock PSP and Razorpay's Documents and Disputes APIs | Done (sandbox run needs keys) |
 | 23 | International cards (ADR-040): merchant opt-in, PSP currency ranges and steps, integer minor units, immutable INR conversions, per-currency ledger balance and FX gains/losses, INR reconciliation; mock rates and Razorpay `base_amount` | Done (sandbox run needs keys) |
 | 24 | Cost-aware and adaptive routing (ADR-041): versioned PSP fees, cost per predicted success, method/bank Beta posteriors, bounded exploration, independent shadow decisions, read-only previews, 90-day decision history and settlement fee checks | Done |
+| 25 | Merchant billing (ADR-042): immutable plans and service events, monthly INR invoices with minimum/GST allocation, transactional financial-year numbering, bounded credit notes, delayed-FX blockers and hourly issuance | Done (production tax/legal review remains a deployment gate) |
 
-**Next: V2, phases 25–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
-- merchant billing;
+**Next: V2, phases 26–28**, accepted in [ADR-034](docs/decisions/ADR-034-post-v1-scope.md):
 - Payment Aggregator mode: onboarding, escrow and settlement, payouts.
 
 The [implementation plan](docs/implementation-plan.md) gives each phase's exit criteria and size, and measures progress.

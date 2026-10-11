@@ -1684,10 +1684,14 @@ Requirements: [§8.8](requirements.md#88-merchant-billing-phase-25). Gateway ser
 - Separate `INV` and `CN` counters per financial-year start year. April through March share one year; issue date, not service month, selects the series. Numbers such as `INV/2026/000001` are unique and at most 16 characters; exhaustion fails explicitly.
 - Lock order: billing account, then series counter. Payment transactions insert/complete activity without locking billing accounts or counters. Issuance reads immutable prices and known activity values, then appends documents and assignment links; it never takes a payment lock.
 - Counter increments roll back with failed documents. Unique merchant/month and event-assignment constraints protect repeated and concurrent issuance.
+- Issuance uses repeatable-read isolation so blocker checks, grouping and event assignment see the same snapshot. Serialization conflicts retry up to five attempts. Activity committed after that snapshot stays unassigned for the next month; payment transactions do not take billing-account locks.
+- Series allow sequences 1 through 9,999,999, padded to at least six digits; even the largest invoice number fits the 16-character limit. Exhaustion returns `billing_invalid_state` without advancing the account's month.
 
 ### 25.7 Worker and operational scope
 
 - An hourly billing job issues closed months in order for enrolled merchants, bounded by account and month batches. It skips no blocked month, logs failures with merchant/month, and retries later. Tests drive it explicitly; the existing worker enable switch controls it.
+- `pg.billing.account-batch` defaults to 100 (maximum 1000); `pg.billing.months-per-account` defaults to 12 (maximum 120). A per-instance keyset cursor pages past blocked accounts and wraps after the last merchant, so a blocked first batch does not starve later accounts.
+- Event listings include `pricing_status` (`conversion_pending`, `price_pending`, `priced`) and `invoice_id` once assigned. `billing_invoice_blocked` includes at most 20 event ids/statuses. Conflicting credit-note reference reuse returns `billing_reference_reuse`.
 - Finance can inspect unbilled events and retry issuance after a delayed conversion or explicit price resolution. Service billing does not include email delivery, PDF rendering or a merchant dashboard.
 - The assumed GST calculation is an engineering billing model. Production tax documents still require legal review of tax profiles, place of supply, GST split/e-invoicing and payment-method fee restrictions; no RBI or GST authorization is implied.
 
@@ -1695,5 +1699,9 @@ Requirements: [§8.8](requirements.md#88-merchant-billing-phase-25). Gateway ser
 
 `V21__merchant_billing.sql` adds billing accounts, immutable plan versions, set-once service-event pricing, invoices/lines/event assignments, credit notes/lines and transactional series counters. Financial documents and pricing history reject updates/deletes; the application role receives only the mutations each table needs. The integration-test reset includes standalone series counters.
 
+Deferred database checks match document totals to lines and assigned events, enforce minimum shortfall and credit bounds, and verify cumulative credited tax against the original line. Child lines and event assignments can be inserted only in the transaction that creates their document; an issued header cannot gain extra lines later.
+
 Coverage includes effective-date boundaries, accepted versus duplicate/late PSP outcomes, mandate registration exclusions, refund policy, delayed FX, missing prices, exact fee/minimum/GST arithmetic, month and financial-year boundaries, carry-forward events, immutable issue and credit notes, idempotency, concurrent numbering/credits, rollback, account isolation and database rules. Mutation checks and a green build/CI gate completion.
+
+All 54 targeted billing mutations are caught. Three survivors strengthened first-plan backdating, successive small credit-tax allocation and independent invoice-total validation. Counter privileges also prevent changing a series identity or financial year. Mutations run in an isolated workspace with fresh test results and source-hash verification.
 

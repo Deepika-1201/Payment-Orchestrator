@@ -1,5 +1,6 @@
 package com.payments.gateway.platform;
 
+import com.payments.gateway.billing.BillingJob;
 import com.payments.gateway.payment.application.DisputeDeadlineJob;
 import com.payments.gateway.payment.application.DisputeResponseService;
 import com.payments.gateway.payment.application.ExpiryJob;
@@ -31,11 +32,12 @@ public class WorkerScheduler {
     private final MandateScheduler mandates;
     private final DisputeResponseService disputeResponses;
     private final DisputeDeadlineJob disputeDeadlines;
+    private final BillingJob billing;
 
     public WorkerScheduler(StatusResolver statusResolver, ExpiryJob expiryJob, ProviderWebhookService inbox,
                            WebhookDeliveryWorker deliveries, ReconciliationService reconciliation,
                            RetentionJob retention, MandateScheduler mandates, DisputeResponseService disputeResponses,
-                           DisputeDeadlineJob disputeDeadlines) {
+                           DisputeDeadlineJob disputeDeadlines, BillingJob billing) {
         this.statusResolver = statusResolver;
         this.expiryJob = expiryJob;
         this.inbox = inbox;
@@ -45,6 +47,7 @@ public class WorkerScheduler {
         this.mandates = mandates;
         this.disputeResponses = disputeResponses;
         this.disputeDeadlines = disputeDeadlines;
+        this.billing = billing;
     }
 
     @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
@@ -89,6 +92,11 @@ public class WorkerScheduler {
     @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
     void retention() {
         run("retention", retention::run);
+    }
+
+    @Scheduled(fixedDelay = 1, initialDelay = 1, timeUnit = TimeUnit.HOURS)
+    void billing() {
+        run("billing", billing::run);
     }
 
     @Scheduled(cron = "0 30 2 * * *", zone = "${pg.reconciliation.zone:Asia/Kolkata}")

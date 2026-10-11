@@ -125,6 +125,17 @@ Open disputes are due within 3 days, or already overdue, and have no response pe
 - Contact the merchant. It can upload evidence and contest (`POST /v1/disputes/{id}/evidence_files`, then `.../contest`), or accept (`.../accept`). On PSPs without dispute responses (Cashfree), it answers on the PSP's dashboard.
 - A dispute stays on the list until it is answered or the PSP decides it. Past `respond_by` the PSP decides without evidence; if no decision arrives, check the dispute at the PSP.
 
+## Billing
+
+- Publishing `POST $ADMIN/merchants/{id}/billing-plans` enrolls a merchant prospectively. Prices are gateway service fees in INR, not the PSP fee schedules used for routing. Versions cannot be backdated or edited; publish a new prospective version when contracts change.
+- Issue `POST $ADMIN/merchants/{id}/invoices {month}` after the India-time month closes. Months must be issued in order from enrollment. Repeating an issued month returns the same invoice; it does not consume another number. The hourly worker catches up with bounded account/month batches and pages past blocked merchants.
+- `billing_invoice_blocked`: `GET $ADMIN/merchants/{id}/billing-events?unbilled=true` shows `pricing_status`. For `conversion_pending`, recover the PSP's conversion by status/reconciliation and retry issuance. Never invent an exchange rate. For `price_pending`, finance may post `{amount, reason}` to `.../billing-events/{event}/price`; this is an audited, set-once resolution after INR is known.
+- `billing_invalid_state`: inspect the detail for an unclosed month, the next required month, an already-frozen price, an excessive credit or an exhausted series. Never reset a financial-year counter to reuse numbers; exhaustion requires a reviewed numbering change.
+- Corrections use `POST $ADMIN/merchants/{id}/invoices/{invoice}/credit-notes` with a stable merchant-scoped `reference`, a `reason` and `{invoice_line_id, amount}` lines. Amounts are taxable paise; tax is reversed proportionally from the original line. Reuse the same content on retries. `billing_reference_reuse` means the invoice, reason or amounts changed under that reference.
+- A credit note does not refund a customer's payment and does not edit the invoice. Current `MERCHANT_PAYMENT` invoices do not deduct PSP funds. Do not create shadow-ledger adjustments to simulate aggregator settlement deductions.
+- Worker logs name blocked merchants/months. The defaults are 100 accounts and 12 months per account per run (`pg.billing.account-batch`, `pg.billing.months-per-account`). Resolving an earlier blocked month allows later months to proceed; new late activity carries forward without reopening prior invoices.
+- Before production billing, obtain legal/tax review of the assumed 18% GST, supplier/recipient profiles, place of supply, GST split/e-invoicing and applicable restrictions on payment-method charges, including UPI. The reference billing records are not regulatory certification.
+
 ## Security
 
 ### AdminAccessDeniedSpike

@@ -96,7 +96,7 @@ public class PaymentConversionService {
             return compare(repository.find(kind, referenceId).orElseThrow(), payment.id(), attemptId, amount, conversion);
         }
         events.publishEvent(new CurrencyConversion(stored.id(), kind, payment.merchantId(), attempt.providerCode(),
-                conversion.settled(), carried, now));
+            conversion.settled(), carried, now, referenceId));
         return Result.RECORDED;
     }
 

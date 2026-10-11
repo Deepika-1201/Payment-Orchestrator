@@ -7,6 +7,7 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
 import com.payments.gateway.payment.domain.Refund;
 import com.payments.gateway.shared.events.FundsMovement;
+import com.payments.gateway.shared.events.BillableActivity;
 import com.payments.gateway.shared.events.MerchantEventRequested;
 import java.time.Clock;
 import java.util.List;
@@ -73,5 +74,9 @@ public class PaymentEventPublisher {
 
     public void publishFundsMovement(FundsMovement movement) {
         publisher.publishEvent(movement);
+    }
+
+    public void publishBillableActivity(BillableActivity activity) {
+        publisher.publishEvent(activity);
     }
 }

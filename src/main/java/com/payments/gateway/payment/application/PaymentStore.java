@@ -9,6 +9,7 @@ import com.payments.gateway.payment.domain.Payment;
 import com.payments.gateway.payment.domain.PaymentEvent;
 import com.payments.gateway.payment.domain.PaymentStatus;
 import com.payments.gateway.payment.domain.Refund;
+import com.payments.gateway.payment.domain.RefundInitiator;
 import com.payments.gateway.payment.domain.RefundStatus;
 import com.payments.gateway.payment.domain.StatusChange;
 import com.payments.gateway.payment.domain.TransferCredit;
@@ -20,6 +21,9 @@ import com.payments.gateway.payment.infrastructure.TransferCreditRepository;
 import com.payments.gateway.payment.infrastructure.TransitionLog;
 import com.payments.gateway.provider.ProviderHealthTracker;
 import com.payments.gateway.shared.events.FundsMovement;
+import com.payments.gateway.shared.events.BillableActivity;
+import com.payments.gateway.shared.events.CurrencyConversion.Kind;
+import com.payments.gateway.shared.model.Conversion;
 import com.payments.gateway.shared.model.MethodType;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
@@ -45,11 +49,12 @@ public class PaymentStore {
     private final PaymentEventPublisher events;
     private final ProviderHealthTracker health;
     private final MeterRegistry meters;
+    private final PaymentConversionService conversions;
 
     public PaymentStore(PaymentRepository payments, RefundRepository refunds, TransferCreditRepository credits,
                         DisputeRepository disputes, MandateRepository mandates, MandateProperties mandateProperties,
                         TransitionLog transitions, PaymentEventPublisher events, ProviderHealthTracker health,
-                        MeterRegistry meters) {
+                        MeterRegistry meters, PaymentConversionService conversions) {
         this.payments = payments;
         this.refunds = refunds;
         this.credits = credits;
@@ -60,6 +65,7 @@ public class PaymentStore {
         this.events = events;
         this.health = health;
         this.meters = meters;
+        this.conversions = conversions;
     }
 
     public void save(Payment payment) {
@@ -73,6 +79,7 @@ public class PaymentStore {
         transitions.append(payment.id(), payment.merchantId(), changes);
         publishCaptures(payment, changes);
         followMandateDebit(payment, changes);
+        publishBillablePayment(payment, changes);
         if (refund != null) {
             saveRefund(payment, refund);
         }
@@ -93,6 +100,14 @@ public class PaymentStore {
                         refund.returnsCredit() ? FundsMovement.Type.CREDIT_RETURNED : FundsMovement.Type.REFUND,
                         refund.merchantId(), refund.providerCode(), refund.id(), payment.id(), refund.amount(),
                         change.occurredAt()));
+                    if (refund.initiatedBy() == RefundInitiator.MERCHANT) {
+                        var attempt = payment.attempt(refund.attemptId()).orElseThrow();
+                        events.publishBillableActivity(new BillableActivity(refund.merchantId(), BillableActivity.Kind.REFUND,
+                            refund.id(), payment.id(), attempt.method().type(), refund.amount(),
+                            refund.amount().inSettlementCurrency() ? refund.amount()
+                                : conversions.find(Kind.REFUND, refund.id()).map(Conversion::settled).orElse(null),
+                            change.occurredAt()));
+                    }
             }
         }
     }
@@ -172,6 +187,22 @@ public class PaymentStore {
                         payment.id(), attempt.capturedAmount(), change.occurredAt())));
             }
         }
+    }
+
+    private void publishBillablePayment(Payment payment, List<StatusChange> changes) {
+        if (payment.status() != PaymentStatus.SUCCEEDED || changes.stream().noneMatch(change ->
+                change.entity() == StatusChange.Entity.PAYMENT && PaymentStatus.SUCCEEDED.name().equals(change.toStatus()))) {
+            return;
+        }
+        if (payment.mandateId() != null && mandates.findById(payment.mandateId())
+                .map(mandate -> payment.id().equals(mandate.registrationPaymentId())).orElse(false)) {
+            return;
+        }
+        var attempt = payment.attempt(payment.succeededAttemptId()).orElseThrow();
+        var amount = attempt.capturedAmount();
+        events.publishBillableActivity(new BillableActivity(payment.merchantId(), BillableActivity.Kind.PAYMENT,
+                attempt.id(), payment.id(), attempt.method().type(), amount, amount.inSettlementCurrency() ? amount
+                        : conversions.find(Kind.CAPTURE, attempt.id()).map(Conversion::settled).orElse(null), payment.updatedAt()));
     }
 
     private void recordAttemptOutcomes(Payment payment, List<StatusChange> changes) {

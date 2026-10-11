@@ -20,6 +20,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MandateIntegrationTest extends MandateTestSupport {
 
     @ParameterizedTest
+    @ValueSource(strings = {"upi_autopay", "card", "enach"})
+    void billingChargesTheDebitButNotItsMandateRegistration(String instrument) {
+        TestMerchant merchant = createMerchant(ALPHA);
+        Response plan = admin("POST", "/admin/v1/merchants/" + merchant.id() + "/billing-plans", Map.of("name", "Recurring",
+                "payment_fees", Map.of("mandate", Map.of("fixed_amount", 17, "rate_bps", 100))));
+        assertThat(plan.status()).as(plan.raw()).isEqualTo(201);
+        String mandateId = activeMandate(merchant, instrument, 500_000);
+        assertThat(count("SELECT count(*) FROM billing_events")).isZero();
+        String debitId = createDebit(merchant, mandateId, 10_000, "billed_debit");
+        String reference = executeCycle(merchant, mandateId, debitId);
+        simulate(ALPHA, reference, "success", true);
+        assertThat(count("SELECT count(*) FROM billing_events")).isEqualTo(1);
+        assertThat(count("SELECT service_fee FROM billing_events")).isEqualTo(117);
+        assertThat(count("SELECT count(*) FROM billing_events WHERE method = 'MANDATE'")).isEqualTo(1);
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"upi_autopay", "card"})
     void upiAndCardMandatesAuthorizeWithARupeeChargeAndDebitAfterTheNotice(String instrument) {
         try (FakeMerchantEndpoint endpoint = new FakeMerchantEndpoint()) {

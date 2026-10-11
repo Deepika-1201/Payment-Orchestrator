@@ -50,6 +50,9 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     VALUES ('system', 'test', 'test.action', 'test', 'test', now())""")).isEqualTo(1);
             assertThat(sql.executeUpdate("DELETE FROM idempotency_records WHERE false")).isZero();
             assertThat(sql.executeUpdate("DELETE FROM routing_decisions WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE billing_events SET service_fee = service_fee WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE billing_accounts SET next_month = next_month WHERE false")).isZero();
+            assertThat(sql.executeUpdate("UPDATE billing_series SET last_value = last_value WHERE false")).isZero();
             assertThat(sql.executeUpdate("UPDATE dispute_evidence_files SET provider_document_id = 'doc_1', "
                     + "content_key_enc = content_key_enc WHERE false")).as("the two columns that may change").isZero();
         }
@@ -74,6 +77,20 @@ class DatabaseLeastPrivilegeIntegrationTest extends IntegrationTest {
                     "UPDATE provider_fee_schedules SET fixed_amount = fixed_amount + 1",
                     "DELETE FROM provider_fee_schedules",
                     "UPDATE routing_decisions SET chosen_provider = 'forged'",
+                    "UPDATE billing_plans SET monthly_minimum = 0",
+                    "DELETE FROM billing_plan_prices",
+                    "DELETE FROM billing_events",
+                    "UPDATE billing_events SET recognized_at = now()",
+                    "UPDATE billing_accounts SET enrolled_at = now()",
+                    "DELETE FROM billing_accounts",
+                    "UPDATE billing_invoices SET total = total + 1",
+                    "DELETE FROM billing_invoice_lines",
+                    "DELETE FROM billing_event_assignments",
+                    "UPDATE billing_credit_notes SET reason = 'forged'",
+                    "DELETE FROM billing_credit_lines",
+                    "DELETE FROM billing_series",
+                    "UPDATE billing_series SET financial_year = 2027",
+                    "UPDATE billing_series SET series = 'CN'",
                     "DELETE FROM payment_transitions",
                     "DELETE FROM dispute_evidence_files",
                     "UPDATE dispute_evidence_files SET content_enc = content_enc",
